@@ -474,28 +474,122 @@ placeholder, exactly as if the request had failed.
 
 ## 10. Events
 
-A tap inside a server-rendered fragment resolves on the server, because that is
-where the method lives.
+A tap inside a fragment runs on the server unless the fragment says otherwise.
+The server owns the fragment, so by default it owns what the fragment's
+buttons do.
 
-The fragment carries its callback expression map, exactly as mobile-web's
-snapshot carries `callbacks`. Callback ids are content-addressed, so replay
-does not depend on render order: the server rebuilds a fresh registry from the
-map, dispatches, re-renders, and returns a new fragment.
+### 10.1 Callback slots
 
-The client sends the expression, not its locally-derived id, because the two
-sides derive ids in different scopes.
+The slots are `on_press`, `on_long_press`, `on_double_tap`, `on_change` and
+`on_submit`. Each holds an object, never a string:
+
+```json
+"on_press": {"call": "shuffle", "args": [3]}
+"on_press": {"call": "celebrate", "args": [], "target": "client"}
+```
+
+- `call` is a method name: `^[A-Za-z_][A-Za-z0-9_]{0,99}$`.
+- `args` is a list of at most 16 JSON values (null, booleans, numbers,
+  strings, and lists or objects of those), nested at most 4 deep.
+- `target` is absent, `"server"` or `"client"`. No other keys are allowed.
+
+A server always sends `args`, even when empty. A client treats a missing
+`args` as empty. For `on_change` and `on_submit`, the control's value is
+appended to `args` on either target, the way client callbacks already work.
+
+The object is structured on purpose. Neither side parses a call expression out
+of a string, so there is no expression language to get wrong.
+
+A slot of any other shape is dropped and the node renders without that
+handler. A client in debug mode throws instead, so the mistake shows up while
+the server is being written.
+
+### 10.2 Server actions (the default)
+
+On a tap, the client sends the usual region request (§5.1) plus an `action`
+member, to the same endpoint:
+
+```json
+{"protocol": 1, "component": "app.native.screens.home", "region": "stats",
+ "state": {...}, "platform": "ios",
+ "action": {"call": "shuffle", "args": [3]}}
+```
+
+The server hydrates the component as for a render, runs the action, renders
+the region and answers with an ordinary fragment response. The client applies
+it the same way it applies a render.
+
+A server runs `call` only when all of these hold. Otherwise it answers
+`404 unknown_action`.
+
+- The method is public, not static, not magic, and declared on the app's own
+  component class rather than on the package's base class.
+- It carries `#[Action]`. A public method without it is not callable, which
+  is the same rule `#[Region]` applies to rendering.
+- It is not a `#[Region]` method.
+- Its parameters are all scalar or array typed and taken by value. Arguments
+  are passed positionally. There is no container injection and no implicit
+  model or enum binding, so a client cannot make the server load a record by
+  sending its id where a model was expected.
+
+An argument the method's types refuse is a `422`, not a `500`. Everything in
+`args` is untrusted input in the same sense as client state (§5.1): an action
+authorises against the bearer identity (§7.5), never against what it was sent.
+
+An action is stateless. Changes it makes to public properties last for that
+request only and are not sent back as client state. A server that needs to
+remember something across taps stores it itself.
+
+### 10.3 Client actions
+
+`"target": "client"` asks the device to run a method of its own. This is how a
+server-drawn button opens a sheet, plays a sound, or changes something on the
+screen around the region without a round trip.
+
+The server names the method, but the app decides whether it may. The device
+runs `call` only when:
+
+- the method is on the component that owns the region;
+- it carries `#[NativeAction]`;
+- it passes the same guard as any other UI interaction: public, not static,
+  not a lifecycle hook, not declared on `NativeComponent`;
+- its parameters are scalar or array typed and taken by value, with no
+  injection or binding, as in §10.2.
+
+If any of these fail, nothing runs and the device logs it. It **never** falls
+back to sending the call to the server. A misspelt client action that quietly
+became a server call would change where code runs without anyone noticing.
+
+Framework callbacks are out of reach. A fragment cannot name navigation,
+`emit`, `__syncProperty` or any other `NativeComponent` method, and §9.3
+already strips the attribute spellings that would bind them.
+
+**What this leaves a hostile server.** It can only trigger what the app chose
+to expose with `#[NativeAction]`, and it could already draw a button the user
+would tap. It does choose the label. A button reading "Cancel" can call
+whatever `#[NativeAction]` method the server likes. Keep destructive methods
+off `#[NativeAction]`, or have them confirm with the user themselves.
+
+### 10.4 Scopes
+
+Fragment callbacks register in the region's own registry scope
+(`server:<region>`, §9.2). The scope stores the target with the call, so a
+server callback can never be dispatched as a client one, and a fragment cannot
+reach the screen's callbacks or another region's.
+
+Callback ids are short hashes, so a hostile server could search for an
+expression whose id matches one of the screen's own. A client therefore drops
+any id claimed by more than one scope, and logs it, rather than run either
+handler. The worst a server can do this way is disable one button.
+
+A fragment's callbacks go when the fragment is replaced or cleared. A tap that
+arrives for a fragment that is no longer current does nothing.
 
 **Inherited wrinkle.** Child components mount during render and own their
-callbacks in per-child registries. mobile-web handles this by carrying a merged
-`childCallbacks` map and running one extra mounting render before dispatching a
-child-owned event. Asgard needs the same, and it needs a test that would fail
-without it.
-
-**Callable surface.** Callbacks resolve today via bare `method_exists()`, which
-means any public method on the component. When the expression comes from a
-server, that is too wide. Only methods marked with an explicit attribute
-(`#[NativeAction]`, alongside the existing `#[Computed]`, `#[Locked]`, `#[On]`)
-are dispatchable from a fragment.
+callbacks in per-child registries. A region inside a child component belongs
+to that child, and its client actions run on the child. Its scope is the
+child's scope followed by `server:<region>`, so two sibling cards showing the
+same fragment never share callback ids.
 
 ## 11. Versioning
 
