@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Asgard\Contracts;
 
 use Native\Mobile\Edge\Asgard\ActionRequest;
+use Native\Mobile\Edge\Asgard\RegionBatch;
 use Native\Mobile\Edge\Asgard\RegionRequest;
 
 /**
@@ -31,6 +32,20 @@ use Native\Mobile\Edge\Asgard\RegionRequest;
  * `ServerRegion::deliver($request, $tree)`. An ActionRequest is a
  * RegionRequest, so the answer path is the same one.
  *
+ * batch() is several regions of one component instance at once: the
+ * first frame of a screen with several regions, a refreshServerRegions()
+ * of all of them, or several hints and signals landing together. Send one
+ * request with `regions`, and answer with
+ * `ServerRegion::deliverBatch($batch, $fragments)`, where `$fragments` is
+ * the answer's `{region: {fragment, version?, chrome?}}`. A batch that
+ * fails as a whole is `ServerRegion::failedBatch($batch, $reason, $status)`.
+ * Each region in it still has its own request, timer and failure.
+ *
+ * An action's answer can carry other regions of the same component and
+ * refresh hints for other components. Hand them to deliver() with the
+ * action's fragment: `deliver($request, $tree, $chrome, $version,
+ * $fragments, $refresh)`.
+ *
  * watch() is the push stream (§8.1). It gets the whole set of
  * subscriptions the device wants, every time the set changes: an empty
  * list means close the stream. Each is
@@ -45,6 +60,8 @@ interface FragmentSource
     public function request(RegionRequest $request): void;
 
     public function action(ActionRequest $request): void;
+
+    public function batch(RegionBatch $batch): void;
 
     /**
      * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>  $subscriptions

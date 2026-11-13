@@ -75,7 +75,12 @@ class ServerMethods
      *
      *   ['component' => WeakReference, 'closure' => ?Closure,
      *    'method' => string, 'sent' => array<string,string>,
-     *    'address' => string, 'deadline' => ?float, 'timeout' => float]
+     *    'address' => string, 'deadline' => ?float, 'timeout' => float,
+     *    'stamp' => string, 'state' => array]
+     *
+     * `stamp` places the call in ServerRegion's request sequence and `state`
+     * is the state a region request would have carried when it went out.
+     * Both are for regions the answer carries.
      *
      * `sent` is fingerprints, not values: the values themselves went to
      * the transport and nothing here needs them again. Holding
@@ -142,6 +147,11 @@ class ServerMethods
 
         $state = static::snapshot($component);
 
+        // Taken as the call goes out, so regions its answer carries can be
+        // ordered against region requests (ServerRegion::paintInline()).
+        $stamp = ServerRegion::stamp();
+        $regionState = ServerRegion::stateOf($component);
+
         $request = new ServerRequest(
             component: ComponentAddress::for($component),
             method: $method,
@@ -192,6 +202,8 @@ class ServerMethods
             'address' => $request->component,
             'deadline' => $seconds > 0 ? ServerRegion::now() + $seconds * 1000 : null,
             'timeout' => $seconds,
+            'stamp' => $stamp,
+            'state' => $regionState,
         ];
 
         if ($early !== null) {
@@ -208,7 +220,15 @@ class ServerMethods
      * Payload shape, as posted by the native layer:
      *
      *   ['id' => string, 'ok' => bool, 'delta' => array,
-     *    'fragments' => array, 'error' => ?string, 'code' => int|string|null]
+     *    'fragments' => array, 'refresh' => array,
+     *    'error' => ?string, 'code' => int|string|null]
+     *
+     * `fragments` and `refresh` are what refresh() asked for on the server:
+     * other regions of the calling component,
+     * `{region: {fragment, version?, chrome?}}`, and hints naming other
+     * components. The regions are painted after the delta is applied and
+     * before the closure runs, as ServerRegion::paintInline() says. The
+     * hints go to ServerRegion::hints().
      *
      * `delta` is only the props the server changed (§5.1), never a full
      * state snapshot. A server that sends everything back maximises the
@@ -279,8 +299,13 @@ class ServerMethods
 
         $refusedFragments = static::applyFragments(
             $component,
+            $entry,
             is_array($payload['fragments'] ?? null) ? $payload['fragments'] : []
         );
+
+        if (is_array($payload['refresh'] ?? null) && $payload['refresh'] !== []) {
+            ServerRegion::hints($payload['refresh']);
+        }
 
         static::runClosure($component, $entry['closure'], new ServerResponse(
             id: $id,
@@ -546,53 +571,26 @@ class ServerMethods
     }
 
     /**
-     * Store any fragments the response carried, one per region (§9).
+     * Paint the regions the response carried (§9), through
+     * ServerRegion::paintInline(): only regions this component drew, only
+     * when no newer request for them went out, and through the same checks
+     * and stripping of compiler-internal prop keys as any fragment (§9.3).
+     * A server that could write `_press` into props would be choosing which
+     * CLIENT method runs, and the route a fragment took changes nothing
+     * about that.
      *
-     * A `#[Server]` response is allowed to update a region the same call
-     * touched, and it goes through `ServerRegion::applyFragment()` rather
-     * than around it — same validation, same stripping of
-     * compiler-internal prop keys (§9.3). A server that could write
-     * `_press` into props would be choosing which CLIENT method runs, and
-     * the fact that the fragment arrived by this route rather than a
-     * region render changes nothing about that.
+     * A fragment that cannot be rendered never throws out of delivery, even
+     * with `app.debug` on: §7 says the closure always runs unless the
+     * component is gone. The reason is reported on the response instead.
      *
-     * `applyFragment()` throws instead of returning false when
-     * `app.debug` is on. That is caught here: §7 says the closure always
-     * runs unless the component is gone, and a debug-mode throw out of
-     * delivery would skip it. The reason is reported on the response
-     * instead.
-     *
+     * @param  array{stamp: string, state: array}  $entry
      * @return array region => why the fragment was refused
      */
-    protected static function applyFragments(NativeComponent $component, array $fragments): array
+    protected static function applyFragments(NativeComponent $component, array $entry, array $fragments): array
     {
-        $refused = [];
-
-        foreach ($fragments as $region => $tree) {
-            $region = (string) $region;
-
-            if (! is_array($tree)) {
-                $refused[$region] = 'the fragment is not a tree';
-
-                continue;
-            }
-
-            try {
-                // The regions are the calling component's own: a fragment
-                // in a response lands where that component renders it.
-                if (! ServerRegion::applyFragment($region, $tree, $component)) {
-                    $refused[$region] = 'the fragment cannot be rendered by this build';
-                }
-            } catch (\Throwable $e) {
-                $refused[$region] = $e->getMessage();
-            }
-
-            if (isset($refused[$region])) {
-                NativeRouter::debugLog('Asgard: fragment for region ['.$region.'] refused — '.$refused[$region]);
-            }
-        }
-
-        return $refused;
+        return $fragments === []
+            ? []
+            : ServerRegion::paintInline($component, $entry['stamp'], $fragments, $entry['state']);
     }
 
     /**

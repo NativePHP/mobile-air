@@ -514,6 +514,12 @@ it('fails a region whose source throws, as a network failure', function () {
         {
             throw new RuntimeException('offline');
         }
+
+        // The screen's two regions go out together.
+        public function batch(\Native\Mobile\Edge\Asgard\RegionBatch $batch): void
+        {
+            throw new RuntimeException('offline');
+        }
     });
 
     $screen = regionScreen()->wait();

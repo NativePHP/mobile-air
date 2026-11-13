@@ -110,13 +110,62 @@ callback. An answer to a request that a newer one superseded, or for a
 component that has gone, is dropped. The default `NullFragmentSource` asks
 nobody.
 
+#### Several regions in one request
+
+When one component instance wants several regions after the same frame, it
+sends one request for all of them rather than one each. That happens on the
+first frame of a screen with several regions, on `refreshServerRegions()`
+with no name, and when several hints or signals for one instance land
+before it is drawn. The body names `regions` instead of `region`:
+
+```json
+{"protocol":1,"component":"app.native.screens.home","regions":["stats","feed"],
+ "state":{…},"platform":"ios"}
+```
+
+`regions` holds 1 to 16 distinct names, and a body has `region` or
+`regions`, never both. A batch never carries an `action`. The server checks
+every name before it renders anything, and answers an unknown one with the
+same `404 unknown_component` a single region gets. The answer has one part
+per region, each shaped like a single answer's:
+
+```json
+{"protocol":1,"fragments":{
+ "stats":{"version":"q3V0bG9yZW1pcHN1","fragment":{…}},
+ "feed":{"version":"bG9yZW1pcHN1cTNW","fragment":{…}}}}
+```
+
+A server screen's part carries `chrome` too. The counters for every
+region's token are read once, before any of them renders.
+
+On the device each region in a batch is still its own request, with its own
+id, its own timer and its own supersede rule. The source hands the answer to
+`ServerRegion::deliverBatch()`, which delivers each part as if it had been
+asked for alone. A region the answer left out fails with reason `invalid`. A
+batch that fails as a whole goes to `ServerRegion::failedBatch()`, and every
+region in it fails and fires its own `ServerRegionFailed`. More than 16
+regions go out as several batches.
+
+The answer is compressed only when every region in it allows it (§7.4). A
+batch that mixes a region with `compress: false` and others is sent
+uncompressed, so the opted-out fragment is never in a compressed body.
+
+#### Collapsing
+
+A refresh is a mark on an instance and a region, not a request. Many marks
+for the same instance and region before it is drawn (signals, hints,
+`refreshServerRegions()` calls) make one fetch, after the next frame that
+draws it. A signal whose version the instance already holds makes no mark at
+all (§8.1).
+
 #### Timeouts and failures
 
 Every region request waits at most its region timeout for the answer: 15
 seconds by default, from `nativephp.asgard.region_timeout`, or the owning
 component's `serverRegionTimeout()`. 0 means no limit. That covers the first
-fetch, `refreshServerRegions()`, and a fetch a push stream signal started
-(§8.1). A hard failure reported through `ServerRegion::failed()` counts at
+fetch, `refreshServerRegions()`, and a fetch a push stream signal or a
+refresh hint started (§8.1, §10.2). A region in a batch has its timer too.
+A hard failure reported through `ServerRegion::failed()` counts at
 once, with the reasons of §10.2.
 
 A failed region keeps what it had and fires
@@ -769,10 +818,13 @@ checks is logged and dropped, never acted on. Then it acts only on instances
 of that address that asked with that subscription's state:
 
 - On a `signal`, each instance whose token for the region differs from the
-  signal's fetches the region again, exactly as a refresh would (§3.1). The
-  fragment on screen stays until the answer lands, and a server screen's
-  chrome comes with it. An instance that already holds that version ignores
-  it.
+  signal's is marked to fetch the region again, exactly as a refresh would
+  (§3.1). It fetches after the next frame that draws it, so an instance on a
+  covered screen fetches when that screen is drawn again, and several
+  signals before then make one fetch. The fragment on screen stays until the
+  answer lands, and a server screen's chrome comes with it. An instance that
+  already holds that version ignores it. A refresh hint (§10.2) is handled
+  the same way, without a version.
 - On a `fragment`, it paints the fragment and keeps its `version`. `retry:` lines and `: ping` comments are not covered. They
 carry nothing a client paints. Within one live connection, ordering and
 duplication are TLS's job, as for any response.
@@ -1058,6 +1110,60 @@ An action is stateless. Changes it makes to public properties last for that
 request only and are not sent back as client state. A server that needs to
 remember something across taps stores it itself.
 
+#### Redrawing other regions
+
+An action, or a `#[Server]` method (§10.5), can say which other regions need
+drawing again, with `$this->refresh()`. There are three cases.
+
+**Same component, inline.** `$this->refresh('stats')`, with one or more
+region names of the same component. The server already has the component
+hydrated with the request's state, so after the method runs it renders
+those regions too, as the request's user, and puts them in the same answer.
+An action's own region is always answered as before, and is left out of
+`fragments` if the action names it as well.
+
+```json
+{"protocol":1,"region":"greeting","version":"…","fragment":{…},
+ "fragments":{"stats":{"version":"q3V0bG9yZW1pcHN1","fragment":{…}}}}
+```
+
+Each part is shaped like a batch part (§3.1). Its token is read after the
+method runs and before anything renders. The device paints a part only on
+the instance that sent the request, and only when that instance drew the
+region. It skips a region with a request that went out after this one,
+because that answer is newer. A painted part supersedes any older request
+for its region still in flight. Each part is checked as a region render is
+(§9.4), and one that is refused fires nothing. A name that is not a region
+of the component throws on the server, which answers `500`.
+
+**Other components on this phone, a hint.** `$this->refresh(InboxScreen::class,
+'unread')`, with a class or an address and at most one region. Leaving the
+region out means all of them. The server does not have that component's
+state, so it does not render it. It only names it, after checking the address
+and region exist as `Asgard::push()` does:
+
+```json
+{"protocol":1,"region":"greeting","fragment":{…},
+ "refresh":[{"component":"app.native.screens.inbox","region":"unread"}]}
+```
+
+A class registered under several addresses gives one hint per address. A
+hint for a whole component covers hints for its regions, and an answer
+carries at most 16 hints and 16 inline regions.
+
+On the device a hint is handled like a stream signal (§8.1): every live
+instance at that address that drew the region is marked, and fetches it with
+its own current state after its next frame. An instance on a covered screen
+fetches when that screen is drawn again. A hint for a region nobody drew, or
+for a screen that has closed, does nothing.
+
+**Other phones.** `Asgard::push()` and `Asgard::to()` (§8.1), as before.
+`refresh()` only reaches the phone that sent the request.
+
+`fragments` and `refresh` are only present when the method asked for them.
+An answer that carries inline regions is compressed only when its own region
+and all of them allow it (§7.4).
+
 #### Timeouts and failures
 
 The client waits at most its action timeout for the answer: 15 seconds by
@@ -1163,8 +1269,8 @@ nonce (§7.3):
 ```
 
 Its own endpoint rather than render with another member, because nothing
-about it is a region: there is no region to name, nothing is rendered, and
-the answer is a different shape. Folding it into render would have made every
+about it is a region: there is no region to name, and the answer is a
+different shape. Folding it into render would have made every
 render check carry a "unless this is a call" branch.
 
 The server hydrates the component as for a render, runs the method of that
@@ -1176,7 +1282,21 @@ differs from what hydration left (a prop the method filled in counts):
 ```
 
 `delta` is always an object. Each value must be a plain JSON value, or the
-answer is `500 invalid_delta`. A `#[Locked]` prop the method changed is in it:
+answer is `500 invalid_delta`.
+
+A method that called `$this->refresh()` (§10.2) also gets `fragments`, the
+regions of this component it named, rendered after the delta is worked out,
+and `refresh`, the hints for other components:
+
+```json
+{"protocol": 1, "delta": {"roll": 4},
+ "fragments": {"stats": {"version": "q3V0bG9yZW1pcHN1", "fragment": {…}}}}
+```
+
+The device applies the delta first, then paints the regions on the calling
+instance under the rules of §10.2, then handles the hints, then runs the
+closure. A call answer is never compressed, fragments or not, since the
+delta can mix the server's values with text the device chose (§7.4). A `#[Locked]` prop the method changed is in it:
 locking stops the client writing a prop, not the server. The client applies
 each prop under compare-and-set (ASGARD-SERVER-METHODS.md §5.2).
 

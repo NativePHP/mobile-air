@@ -22,6 +22,11 @@ class NullFragmentSource implements FragmentSource
         //
     }
 
+    public function batch(RegionBatch $batch): void
+    {
+        //
+    }
+
     public function watch(array $subscriptions, string $platform): void
     {
         //

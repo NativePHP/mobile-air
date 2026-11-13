@@ -4,6 +4,7 @@ use Native\Mobile\Edge\Asgard\ActionRequest;
 use Native\Mobile\Edge\Asgard\ComponentAddress;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\NullFragmentSource;
+use Native\Mobile\Edge\Asgard\RegionBatch;
 use Native\Mobile\Edge\Asgard\RegionRequest;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\ComponentRegistry;
@@ -131,6 +132,8 @@ it('keeps a source another provider bound before this one registered', function 
 
         public function action(ActionRequest $request): void {}
 
+        public function batch(RegionBatch $batch): void {}
+
         public function watch(array $subscriptions, string $platform): void {}
     };
 
@@ -166,6 +169,8 @@ it('keeps the screen up when the source throws', function () {
         }
 
         public function action(ActionRequest $request): void {}
+
+        public function batch(RegionBatch $batch): void {}
 
         public function watch(array $subscriptions, string $platform): void {}
     });
@@ -252,6 +257,8 @@ it('repaints when the fragment arrives through an AsyncTask completion', functio
 
         public function action(ActionRequest $request): void {}
 
+        public function batch(RegionBatch $batch): void {}
+
         public function watch(array $subscriptions, string $platform): void {}
     });
 
@@ -275,6 +282,8 @@ it('flags a repaint for a fragment that lands outside an event, until the next f
         }
 
         public function action(ActionRequest $request): void {}
+
+        public function batch(RegionBatch $batch): void {}
 
         public function watch(array $subscriptions, string $platform): void {}
     });

@@ -449,7 +449,7 @@ it('puts a fragment in a response through the same validation a region render ge
     $screen = Native::test(ServerMethodScreen::class)->tap('Refresh');
 
     $screen->emitNative(ServerMethods::RESPONSE_EVENT, $server->payload(fragments: [
-        'sales-summary' => [
+        'sales-summary' => ['fragment' => [
             'type' => 'text',
             'key' => 'total',
             'props' => [
@@ -458,7 +458,7 @@ it('puts a fragment in a response through the same validation a region render ge
                 // method runs (§9.3). It is stripped, here as anywhere.
                 '_press' => 'deleteAccount',
             ],
-        ],
+        ]],
     ]));
 
     $screen->assertSee('Revenue £12,400')->assertDontSee('Loading sales…');
@@ -475,7 +475,7 @@ it('reports a fragment the client cannot render instead of throwing out of deliv
     $screen = Native::test(ServerMethodScreen::class)->tap('Refresh');
 
     $server->resolve(fragments: [
-        'sales-summary' => ['type' => 'holographic_chart'],
+        'sales-summary' => ['fragment' => ['type' => 'holographic_chart']],
     ]);
 
     // The closure still ran (§7) and the region kept its placeholder.

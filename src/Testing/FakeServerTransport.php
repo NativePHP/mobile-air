@@ -177,13 +177,19 @@ class FakeServerTransport implements ServerTransport
      * changed (§5.1) — a full state snapshot is exactly what the protocol
      * tells servers not to send.
      */
-    public function payload(?string $id = null, array $delta = [], array $fragments = []): array
+    /**
+     * A good answer. `$fragments` is `{region: {fragment, version?, chrome?}}`
+     * and `$refresh` a list of `{component, region?}` hints, as the server
+     * sends them.
+     */
+    public function payload(?string $id = null, array $delta = [], array $fragments = [], array $refresh = []): array
     {
         return array_filter([
             'id' => $this->resolveId($id),
             'ok' => true,
             'delta' => $delta,
             'fragments' => $fragments,
+            'refresh' => $refresh,
         ], fn ($value) => $value !== []);
     }
 
@@ -198,9 +204,9 @@ class FakeServerTransport implements ServerTransport
     }
 
     /** Answer a request successfully, through the delivery path. */
-    public function resolve(?string $id = null, array $delta = [], array $fragments = []): bool
+    public function resolve(?string $id = null, array $delta = [], array $fragments = [], array $refresh = []): bool
     {
-        return ServerMethods::deliver($this->payload($id, $delta, $fragments));
+        return ServerMethods::deliver($this->payload($id, $delta, $fragments, $refresh));
     }
 
     /** Fail a request, through the delivery path. */

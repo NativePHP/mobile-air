@@ -63,7 +63,15 @@ use Native\Mobile\System;
  * that rendered it asks the bound `FragmentSource` for one, once per
  * component instance (requestMissing()). refresh() asks again. The
  * source answers later through deliver(), which hands the fragment to
- * the right component and flags a repaint.
+ * the right component and flags a repaint. An instance that wants several
+ * regions after one frame asks for them in one RegionBatch, and each
+ * region in it is still tracked on its own.
+ *
+ * refresh() only marks an instance and a region, so many marks before the
+ * next frame make one fetch. Stream signals (signal()) and refresh hints
+ * from an answer (hint()) mark the same way. An action or #[Server] call
+ * answer can also carry other regions of the same component, which
+ * paintInline() paints on the instance that asked.
  *
  * ## The push stream (§8.1)
  *
@@ -437,12 +445,18 @@ class ServerRegion
      * `$version` is the answer's version token (§8.1). An accepted answer
      * puts its region on the push stream, for the state it was asked with.
      *
+     * `$fragments` and `$refresh` are what an action's answer carries when
+     * the action called refresh() on the server: other regions of the same
+     * component, `{region: {fragment, version?, chrome?}}`, painted as
+     * paintInline() says, and hints for other components, handled as
+     * hints() says.
+     *
      * A fragment that cannot be rendered is a failure with reason `invalid`
      * (see failed()). For a server screen's body, or an action, that is all
      * that happens. Any other region also throws with `app.debug` on, as
      * applyFragment() does.
      */
-    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null): bool
+    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null, array $fragments = [], array $refresh = []): bool
     {
         $entry = static::$pending[$request->id] ?? null;
 
@@ -461,6 +475,30 @@ class ServerRegion
             return false;
         }
 
+        // An action's answer can carry more (refresh() on the server):
+        // other regions of this component, and hints for other components.
+        // They are applied after the action's own fragment, whatever
+        // became of it, and each one is checked on its own.
+        try {
+            return static::deliverTo($owner, $entry, $request, $tree, $chrome, $version);
+        } finally {
+            if ($fragments !== []) {
+                static::paintInline($owner, $request->id, $fragments, $request->state);
+            }
+
+            if ($refresh !== []) {
+                static::hints($refresh);
+            }
+        }
+    }
+
+    /**
+     * deliver() for an entry whose owner is still alive.
+     *
+     * @param  array{owner: \WeakReference<NativeComponent>, region: string}  $entry
+     */
+    protected static function deliverTo(NativeComponent $owner, array $entry, RegionRequest $request, array|string $tree, ?array $chrome, ?string $version): bool
+    {
         $latest = (static::requested()[$owner] ?? [])[$entry['region']] ?? null;
 
         unset(static::$pending[$request->id]);
@@ -836,6 +874,209 @@ class ServerRegion
     }
 
     /**
+     * The server named a component, and maybe one of its regions, as worth
+     * drawing again (a `refresh` hint from refresh() on the server, §10.2).
+     * It is handled like a stream signal without a version: every live
+     * instance of that address that drew the region is marked, and fetches
+     * it with its own current state after the next frame that draws it.
+     * An instance on a covered screen fetches when that screen is drawn
+     * again. With no region, every region the instance drew is marked.
+     *
+     * A region nobody drew, and a screen that has closed, get nothing.
+     * Marks collapse: many hints and signals for one instance and region
+     * before it is drawn make one fetch. Returns how many regions were
+     * marked.
+     */
+    public static function hint(string $component, ?string $region = null): int
+    {
+        $marked = 0;
+
+        foreach (static::requested() as $owner => $regions) {
+            if (ComponentAddress::for($owner) !== $component) {
+                continue;
+            }
+
+            $names = $region === null ? array_keys($regions) : (isset($regions[$region]) ? [$region] : []);
+
+            foreach ($names as $name) {
+                // A duplicate name (`stats#2`) never addresses anything.
+                if (str_contains((string) $name, '#')) {
+                    continue;
+                }
+
+                static::refresh($owner, (string) $name);
+                $marked++;
+            }
+        }
+
+        if ($marked > 0) {
+            // Take a turn of the runloop, so the next frame asks.
+            static::$repaint = true;
+        }
+
+        return $marked;
+    }
+
+    /**
+     * hint() for each `{component, region?}` in an answer's `refresh`. An
+     * entry of any other shape is skipped and logged, and at most
+     * MAX_REGIONS are read. Returns how many regions were marked.
+     */
+    public static function hints(array $refresh): int
+    {
+        $marked = 0;
+
+        foreach (array_slice(array_values($refresh), 0, self::MAX_REGIONS) as $hint) {
+            $component = is_array($hint) ? ($hint['component'] ?? null) : null;
+            $region = is_array($hint) ? ($hint['region'] ?? null) : null;
+
+            if (! is_string($component) || ($region !== null && ! is_string($region))) {
+                NativeRouter::debugLog('Asgard: a refresh hint that is not {component, region?}, skipped.');
+
+                continue;
+            }
+
+            $marked += static::hint($component, $region);
+        }
+
+        return $marked;
+    }
+
+    /**
+     * Paint regions an answer carried for a component beyond the one it was
+     * for: the `fragments` of an action's answer, or of a `#[Server]`
+     * call's (refresh() on the server). Each is
+     * `{region: {fragment, version?, chrome?}}`.
+     *
+     * `$id` is the request the answer is for, and `$state` the state that
+     * request carried. A region is painted only when this component drew
+     * it, and only when no request for it went out after `$id`, since that
+     * answer will be newer. It is checked and painted as deliver() would,
+     * chrome and version included, and it supersedes any older request for
+     * it still in flight. Nothing fires for a part that is refused.
+     *
+     * Returns `region => why` for each part that was not painted.
+     *
+     * @return array<string, string>
+     */
+    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state): array
+    {
+        $refused = [];
+        $sequence = static::sequenceOf($id);
+
+        foreach ($fragments as $region => $part) {
+            $region = (string) $region;
+            $latest = (static::requested()[$owner] ?? [])[$region] ?? null;
+
+            $reason = match (true) {
+                ! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment'])) => 'it is not a fragment',
+                $latest === null => 'this component never drew it',
+                $latest !== $id && static::sequenceOf($latest) > $sequence => 'a newer request for it went out',
+                default => null,
+            };
+
+            if ($reason === null) {
+                try {
+                    $reason = static::applyFragment($region, $part['fragment'], $owner) ? null : 'the fragment cannot be rendered by this build';
+                } catch (\RuntimeException $e) {
+                    $reason = $e->getMessage();
+                }
+            }
+
+            if ($reason !== null) {
+                $refused[$region] = $reason;
+                NativeRouter::debugLog("Asgard: fragment for region [{$region}] refused: {$reason}");
+
+                continue;
+            }
+
+            $requested = static::requested()[$owner];
+            $requested[$region] = $id;
+            static::requested()[$owner] = $requested;
+
+            static::applyChrome($owner, is_array($part['chrome'] ?? null) ? $part['chrome'] : null);
+            static::answer($owner, $region, $state, is_string($part['version'] ?? null) ? $part['version'] : null);
+        }
+
+        return $refused;
+    }
+
+    /**
+     * Answer a batch (§3.1): each region's part goes through deliver() as
+     * if it had been asked for alone. A region the answer left out fails
+     * with reason `invalid`. Returns how many regions were painted.
+     *
+     * In debug, a fragment that cannot be rendered still throws as
+     * deliver() does, once every region has been handled.
+     *
+     * @param  array<string, mixed>  $fragments  `{region: {fragment, version?, chrome?}}`
+     */
+    public static function deliverBatch(RegionBatch $batch, array $fragments): int
+    {
+        $painted = 0;
+        $thrown = null;
+
+        foreach ($batch->requests as $request) {
+            $part = $fragments[$request->region] ?? null;
+
+            if (! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment']))) {
+                static::failed($request, self::INVALID, null, 'the answer has no fragment for this region');
+
+                continue;
+            }
+
+            try {
+                $painted += static::deliver(
+                    $request,
+                    $part['fragment'],
+                    is_array($part['chrome'] ?? null) ? $part['chrome'] : null,
+                    is_string($part['version'] ?? null) ? $part['version'] : null,
+                ) ? 1 : 0;
+            } catch (\RuntimeException $e) {
+                $thrown ??= $e;
+            }
+        }
+
+        if ($thrown !== null) {
+            throw $thrown;
+        }
+
+        return $painted;
+    }
+
+    /**
+     * A batch failed as a whole: each region in it fails as failed() says,
+     * with its own event. Returns how many were acted on.
+     */
+    public static function failedBatch(RegionBatch $batch, string $reason, ?int $status = null, ?string $message = null): int
+    {
+        $acted = 0;
+
+        foreach ($batch->requests as $request) {
+            $acted += static::failed($request, $reason, $status, $message) ? 1 : 0;
+        }
+
+        return $acted;
+    }
+
+    /**
+     * A request id that is not sent anywhere, in the same sequence as
+     * region and action requests. A `#[Server]` call takes one when it
+     * goes out, so fragments its answer carries can be ordered against
+     * region requests (paintInline()).
+     */
+    public static function stamp(): string
+    {
+        return 'call-'.(++static::$sequence);
+    }
+
+    /** Where an id from this class falls in its sequence, or 0 for any other id. */
+    protected static function sequenceOf(string $id): int
+    {
+        return preg_match('/^(?:region|action|call)-(\d+)$/D', $id, $match) ? (int) $match[1] : 0;
+    }
+
+    /**
      * The live instances of an address that asked for a region with this
      * state: the state their fragment was answered for, or the state they
      * have asked with since. Either one makes them this subscription's.
@@ -1044,6 +1285,8 @@ class ServerRegion
      */
     public static function requestMissing(): void
     {
+        $wanted = [];
+
         foreach (static::$frame as $record) {
             $owner = $record['owner']?->get();
 
@@ -1053,16 +1296,23 @@ class ServerRegion
 
             $name = $record['name'];
             $refreshing = static::refreshing()[$owner] ?? [];
-            $wanted = isset($refreshing['*']) || isset($refreshing[$name]);
+            $asked = isset($refreshing['*']) || isset($refreshing[$name]);
 
-            if (! $wanted && ($record['has_fragment'] || isset((static::requested()[$owner] ?? [])[$name]))) {
+            if (! $asked && ($record['has_fragment'] || isset((static::requested()[$owner] ?? [])[$name]))) {
                 continue;
             }
 
             unset($refreshing[$name]);
             static::refreshing()[$owner] = $refreshing;
 
-            static::request($owner, $name);
+            $key = spl_object_id($owner);
+            $wanted[$key] ??= ['owner' => $owner, 'regions' => []];
+            $wanted[$key]['regions'][$name] = $name;
+        }
+
+        // One request per component instance, however many regions it wants.
+        foreach ($wanted as $want) {
+            static::request($want['owner'], array_values($want['regions']));
         }
 
         // A refresh of everything covers this frame's regions only.
@@ -1336,35 +1586,55 @@ class ServerRegion
     }
 
     /**
-     * Send one request for a region of a component, and remember it. It
-     * waits at most the component's serverRegionTimeout() for its answer.
-     * A server screen's body waits on the screen's own timer instead.
+     * Ask for regions of a component, and remember each one. A single
+     * region goes out as a RegionRequest. Several go out as one RegionBatch
+     * per 16 regions, sharing one copy of the state, and each region in it
+     * is still tracked on its own. Each waits at most the component's
+     * serverRegionTimeout() for its answer. A server screen's body waits
+     * on the screen's own timer instead.
+     *
+     * @param  list<string>  $regions
      */
-    protected static function request(NativeComponent $owner, string $region): void
+    protected static function request(NativeComponent $owner, array $regions): void
     {
-        $request = new RegionRequest(
-            id: 'region-'.(++static::$sequence),
-            component: ComponentAddress::for($owner),
-            region: $region,
-            state: static::stateOf($owner),
-            platform: static::platform(),
-            componentClass: $owner::class,
-        );
+        $state = static::stateOf($owner);
+        $requests = [];
 
-        $seconds = static::isScreenBody($owner, $region) ? 0 : $owner->serverRegionTimeout();
+        foreach ($regions as $region) {
+            $request = new RegionRequest(
+                id: 'region-'.(++static::$sequence),
+                component: ComponentAddress::for($owner),
+                region: $region,
+                state: $state,
+                platform: static::platform(),
+                componentClass: $owner::class,
+            );
 
-        static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
+            $seconds = static::isScreenBody($owner, $region) ? 0 : $owner->serverRegionTimeout();
 
-        $states = static::requestedStates()[$owner] ?? [];
-        $states[$region] = $request->state;
-        static::requestedStates()[$owner] = $states;
+            static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
 
-        try {
-            app(FragmentSource::class)->request($request);
-        } catch (\Throwable $e) {
-            NativeRouter::debugLog("Asgard: request for region [{$region}] could not start: ".$e->getMessage());
+            $states = static::requestedStates()[$owner] ?? [];
+            $states[$region] = $state;
+            static::requestedStates()[$owner] = $states;
 
-            static::failed($request, self::NETWORK, null, $e->getMessage());
+            $requests[] = $request;
+        }
+
+        foreach (array_chunk($requests, self::MAX_REGIONS) as $chunk) {
+            try {
+                if (count($chunk) === 1) {
+                    app(FragmentSource::class)->request($chunk[0]);
+                } else {
+                    app(FragmentSource::class)->batch(new RegionBatch($chunk));
+                }
+            } catch (\Throwable $e) {
+                foreach ($chunk as $request) {
+                    NativeRouter::debugLog("Asgard: request for region [{$request->region}] could not start: ".$e->getMessage());
+
+                    static::failed($request, self::NETWORK, null, $e->getMessage());
+                }
+            }
         }
     }
 

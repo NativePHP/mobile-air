@@ -92,17 +92,25 @@ like every other Asgard request, to `{prefix}/call`:
  "args":["30d"],"state":{"loading":true,"range":"30d"},"platform":"ios"}
 ```
 
-The server answers with the delta (§5.1) and nothing else:
+The server answers with the delta (§5.1):
 
 ```json
 {"protocol":1,"delta":{"chartData":[…]}}
 ```
 
-The answer carries no fragments yet. `ServerMethods::deliver()` can apply
-them (a `fragments` member, region => tree, validated as a region render is),
-but no server sends them. A closure that wants a region redrawn after the call
-asks for it again with `ServerRegion::refresh($this, 'region')`, which carries
-the state the delta left.
+A server method can also ask for regions to be drawn again, with
+`$this->refresh()` (protocol §10.2). Regions of the same component are
+rendered on the server after the method runs, with the state it left, and
+come back in `fragments`, keyed by region, each with its version token.
+Other components are only named, in `refresh`:
+
+```json
+{"protocol":1,"delta":{"roll":4},
+ "fragments":{"stats":{"version":"q3V0bG9yZW1pcHN1","fragment":{…}}},
+ "refresh":[{"component":"app.native.screens.inbox","region":"unread"}]}
+```
+
+Both are left out when the method asked for nothing.
 
 ## 3. The request runs off the UI thread
 
@@ -146,8 +154,17 @@ When a response arrives:
    delta and the closure, log at debug. A continuation for a screen the user
    has left has nothing to update.
 3. Apply the state delta under the rule in §5.
-4. Invoke the closure bound to the component instance.
-5. Re-render.
+4. Paint the regions in `fragments` on the calling component, through
+   `ServerRegion::paintInline()`. Only a region the component drew is
+   painted, and only when no request for it went out after the call did,
+   since that answer is newer. Each one is checked as a region render is
+   (protocol §9), and its version puts it on the push stream. A part that is
+   refused is listed on the response's `refusedFragments`.
+5. Hand the hints in `refresh` to `ServerRegion::hints()`. Every live
+   instance of a named component that drew the region fetches it again with
+   its own state (protocol §10.2).
+6. Invoke the closure bound to the component instance.
+7. Re-render.
 
 **The response does not come back to the component that made the call.** The
 `EVENT_NATIVE` frame lands on whichever component owns the runloop, which is
