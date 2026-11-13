@@ -110,11 +110,12 @@ class NativeTagPrecompiler
      * precompiler active. Missing files return false; the caller's
      * compile() handles both cases identically.
      *
-     * Deliberately unmemoized: in a long-lived dev-server process a web
+     * Not memoized across frames: in a long-lived dev-server process a web
      * request can recompile the same view without the marker between
-     * native frames, so a cached "marked" answer could go stale. The
-     * marker sits in the file's first bytes — a 256-byte head read per
-     * view per frame is noise next to the render itself.
+     * native frames, so a cached "marked" answer could go stale. Within a
+     * frame, use compiledFileIsNativeThisFrame(): the same view renders
+     * once per row of a list of child components or @include partials,
+     * and a head read each time adds up across the list.
      */
     public static function compiledFileIsNative(string $compiledPath): bool
     {
@@ -125,6 +126,68 @@ class NativeTagPrecompiler
         $head = @file_get_contents($compiledPath, false, null, 0, 256);
 
         return $head !== false && str_contains($head, self::COMPILED_MARKER);
+    }
+
+    /**
+     * compiledFileIsNative(), read once per compiled file per native render
+     * (beginRender()): a file found marked stays marked until the next one.
+     * Outside a native render it reads the file every time.
+     */
+    public static function compiledFileIsNativeThisFrame(string $compiledPath): bool
+    {
+        if (self::$renderDepth > 0 && (self::$markedInFrame[$compiledPath] ?? null) === self::$frame) {
+            return true;
+        }
+
+        if (! self::compiledFileIsNative($compiledPath)) {
+            return false;
+        }
+
+        self::$markedInFrame[$compiledPath] = self::$frame;
+
+        return true;
+    }
+
+    /**
+     * Whether $key was already settled in this native render, recording it as
+     * settled. The native render path checks a root view is compiled and
+     * current once per render with it, however many child components render
+     * that view. Outside a native render nothing is ever settled.
+     */
+    public static function onceThisFrame(string $key): bool
+    {
+        if (self::$renderDepth === 0) {
+            return false;
+        }
+
+        if ((self::$settledInFrame[$key] ?? null) === self::$frame) {
+            return true;
+        }
+
+        self::$settledInFrame[$key] = self::$frame;
+
+        return false;
+    }
+
+    /**
+     * A native Blade render begins. The outermost one (a screen's frame, a
+     * partial() built outside render(), a streaming render) starts a new frame,
+     * so compiled views are checked again, once each; nested ones (child
+     * components, partials) share it. Pair with endRender().
+     *
+     * @internal NativeComponent brackets each native Blade render with these.
+     */
+    public static function beginRender(): void
+    {
+        if (self::$renderDepth++ === 0) {
+            self::$frame++;
+        }
+    }
+
+    /** @internal A native Blade render ended (see beginRender()). */
+    public static function endRender(): void
+    {
+        self::$renderDepth = max(0, self::$renderDepth - 1);
     }
 
     /**
@@ -142,6 +205,18 @@ class NativeTagPrecompiler
      * the precompiler is a no-op. See NativeComponent::renderBladeBoundToSelf().
      */
     private static bool $active = false;
+
+    /** Counts outermost native renders (beginRender()), to scope the per-frame checks. */
+    private static int $frame = 0;
+
+    /** How many native Blade renders are open (beginRender() / endRender()). */
+    private static int $renderDepth = 0;
+
+    /** @var array<string, int> Compiled path => the frame it was last found marked in */
+    private static array $markedInFrame = [];
+
+    /** @var array<string, int> onceThisFrame() key => the frame it was settled in */
+    private static array $settledInFrame = [];
 
     public static function active(): bool
     {

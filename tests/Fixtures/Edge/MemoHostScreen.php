@@ -20,6 +20,12 @@ class MemoHostScreen extends NativeComponent
 
     public bool $withClosureChild = false;
 
+    public bool $withObjectChild = false;
+
+    public ?MemoItem $item = null;
+
+    public MemoTone $tone = MemoTone::Calm;
+
     public function render(): View
     {
         return view('memo-host-screen');

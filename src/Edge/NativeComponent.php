@@ -1487,6 +1487,7 @@ abstract class NativeComponent
         // must run under the flag; everything outside stays plain HTML. Restore
         // the previous state so nested native renders unwind cleanly.
         $wasActive = NativeTagPrecompiler::setActive(true);
+        NativeTagPrecompiler::beginRender();
 
         try {
             $compiledPath = $compiler->getCompiledPath($bladePath);
@@ -1496,8 +1497,13 @@ abstract class NativeComponent
             // `view:cache` got there first), which would include as plain
             // HTML and collect zero elements. Nested @includes get the
             // same guard via the view creator in NativeServiceProvider.
-            if ($compiler->isExpired($bladePath)
-                || ! NativeTagPrecompiler::compiledFileIsNative($compiledPath)) {
+            // Once per view per frame: a list of child components renders the
+            // same view once per row, and each check stats the file twice and
+            // reads its head. A view edited (or hot reloaded) is still picked
+            // up on the next frame.
+            if (! NativeTagPrecompiler::onceThisFrame('current:'.$compiledPath)
+                && ($compiler->isExpired($bladePath)
+                    || ! NativeTagPrecompiler::compiledFileIsNative($compiledPath))) {
                 $compiler->compile($bladePath);
             }
 
@@ -1545,6 +1551,7 @@ abstract class NativeComponent
             $factory->decrementRender();
             $factory->flushStateIfDoneRendering();
         } finally {
+            NativeTagPrecompiler::endRender();
             NativeTagPrecompiler::setActive($wasActive);
             TailwindParser::endViewDiagnostics();
         }
@@ -1586,16 +1593,37 @@ abstract class NativeComponent
 
     private function getPublicProperties(): array
     {
-        $reflect = new \ReflectionClass($this);
         $props = [];
 
-        foreach ($reflect->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
-            if (! $prop->isStatic()) {
-                $props[$prop->getName()] = $prop->getValue($this);
-            }
+        foreach (self::publicPropertiesOf(static::class) as $name => $prop) {
+            $props[$name] = $this->{$name};
         }
 
         return $props;
+    }
+
+    /**
+     * A component class's public instance properties, reflected once per class.
+     * They're read on every render (view data and, for a #[Memo] child, its
+     * fingerprint), once per child in a list.
+     *
+     * @param  class-string<NativeComponent>  $class
+     * @return array<string, \ReflectionProperty>
+     */
+    private static function publicPropertiesOf(string $class): array
+    {
+        if (isset(self::$nativePublicProperties[$class])) {
+            return self::$nativePublicProperties[$class];
+        }
+
+        $props = [];
+        foreach ((new \ReflectionClass($class))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
+            if (! $prop->isStatic()) {
+                $props[$prop->getName()] = $prop;
+            }
+        }
+
+        return self::$nativePublicProperties[$class] = $props;
     }
 
     // ── Computed properties (#[Computed]) ────────────
@@ -4328,8 +4356,16 @@ abstract class NativeComponent
      */
     protected array $nativeChildEventBindings = [];
 
-    /** #[Memo]: the fingerprint of this child's state at its last render. */
-    private ?string $nativeMemoFingerprint = null;
+    /**
+     * #[Memo]: what this child rendered from at its last render (memoState()),
+     * or null when it must render (never rendered, or state not comparable).
+     *
+     * @var array{0: array<string, mixed>, 1: array<string, string>, 2: array<string, mixed>, 3: int}|null
+     */
+    private ?array $nativeMemoState = null;
+
+    /** #[Memo]: that state serialised, kept only when it holds an object that could change in place. */
+    private ?string $nativeMemoSerialized = null;
 
     /**
      * #[Memo]: the top-level elements this child built at its last render.
@@ -4340,6 +4376,12 @@ abstract class NativeComponent
 
     /** @var array<class-string, bool> Which component classes carry #[Memo] */
     private static array $nativeMemoClasses = [];
+
+    /** @var array<class-string, array<string, \ReflectionProperty>> */
+    private static array $nativePublicProperties = [];
+
+    /** @var array<class-string, array<string, \ReflectionProperty|null>> */
+    private static array $nativeChildPropMatches = [];
 
     /**
      * Start a render frame's child bookkeeping: occurrence counters restart
@@ -4462,10 +4504,7 @@ abstract class NativeComponent
             return;
         }
 
-        if (! $isNew
-            && $child->nativeMemoRoots !== null
-            && $child->nativeMemoFingerprint !== null
-            && $child->nativeMemoFingerprint === $child->memoFingerprint()) {
+        if (! $isNew && $child->nativeMemoRoots !== null && $child->memoUnchanged()) {
             foreach ($child->nativeMemoRoots as $root) {
                 NativeElementCollector::attachElement($root);
             }
@@ -4476,13 +4515,13 @@ abstract class NativeComponent
         $roots = NativeElementCollector::captureRoots(fn () => $child->renderAsChild());
 
         foreach ($roots as $root) {
-            NativeElementCollector::attachElement($root);
+            NativeElementCollector::attachElement($root->markReusedAsBuilt());
         }
 
         // Taken after the render, so state the render itself settles counts
         // as the baseline for the next frame.
         $child->nativeMemoRoots = $roots;
-        $child->nativeMemoFingerprint = $child->memoFingerprint();
+        $child->rememberMemoState();
     }
 
     /** Whether this component's class opts in to #[Memo]. */
@@ -4495,31 +4534,86 @@ abstract class NativeComponent
      * What this component renders from: its public properties (its props and
      * its own state), its @event bindings, the same for every nested child, and
      * the force-full-frame epoch (a region reset or hot reload drops every memo).
-     * Null when that state can't be serialised (a closure, a resource), which
-     * means render every frame.
+     *
+     * @return array{0: array<string, mixed>, 1: array<string, string>, 2: array<string, mixed>, 3: int}
      */
-    private function memoFingerprint(): ?string
+    private function memoState(): array
     {
         $children = [];
         foreach ($this->nativeChildComponents as $identity => $child) {
-            $childFingerprint = $child->memoFingerprint();
-            if ($childFingerprint === null) {
-                return null;
-            }
-            $children[$identity] = $childFingerprint;
+            $children[$identity] = $child->memoState();
+        }
+
+        return [
+            $this->getPublicProperties(),
+            $this->nativeChildEventBindings,
+            $children,
+            nativephp_force_full_frame_epoch(),
+        ];
+    }
+
+    /**
+     * Record what this #[Memo] child rendered from, to compare the next frame
+     * against. Arrays and scalars compare with ===. State holding an object (an
+     * enum aside) compares as a serialised copy instead, which catches an object
+     * changed in place and matches an equal fresh instance. State that can't be
+     * serialised (a closure, a resource) isn't recorded, so the child renders
+     * every frame.
+     */
+    private function rememberMemoState(): void
+    {
+        $state = $this->memoState();
+        $this->nativeMemoState = $state;
+        $this->nativeMemoSerialized = null;
+
+        if (! self::holdsMutableObject($state)) {
+            return;
         }
 
         try {
-            return hash('xxh128', serialize([
-                static::class,
-                $this->getPublicProperties(),
-                $this->nativeChildEventBindings,
-                $children,
-                nativephp_force_full_frame_epoch(),
-            ]));
+            $this->nativeMemoSerialized = serialize($state);
         } catch (\Throwable) {
-            return null;
+            $this->nativeMemoState = null;
         }
+    }
+
+    /** Whether this #[Memo] child's state is what it was at its last render. */
+    private function memoUnchanged(): bool
+    {
+        if ($this->nativeMemoState === null) {
+            return false;
+        }
+
+        $state = $this->memoState();
+
+        // Plain values compare as they are. State holding objects compares by
+        // value instead: `===` would miss an object mutated in place, and
+        // would re-render a child handed an equal but fresh instance each frame.
+        if ($this->nativeMemoSerialized === null) {
+            return $state === $this->nativeMemoState;
+        }
+
+        try {
+            return serialize($state) === $this->nativeMemoSerialized;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /** @param  array<array-key, mixed>  $values */
+    private static function holdsMutableObject(array $values): bool
+    {
+        foreach ($values as $value) {
+            if (is_array($value)) {
+                if (self::holdsMutableObject($value)) {
+                    return true;
+                }
+            } elseif (is_object($value) && ! $value instanceof \UnitEnum) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -4564,15 +4658,13 @@ abstract class NativeComponent
      */
     private function applyChildProps(NativeComponent $child, array $attrs): void
     {
-        $reflect = new \ReflectionClass($child);
-
         foreach ($attrs as $attrName => $value) {
             // Collector-internal leftovers are never props.
             if (str_starts_with($attrName, 'native-') || str_starts_with($attrName, '_')) {
                 continue;
             }
 
-            $property = $this->matchChildProp($reflect, $attrName);
+            $property = self::matchChildProp($child::class, (string) $attrName);
 
             if ($property === null) {
                 continue;
@@ -4593,19 +4685,29 @@ abstract class NativeComponent
         }
     }
 
-    /** Resolve an attribute name to the child's public prop, if declared. */
-    private function matchChildProp(\ReflectionClass $reflect, string $attrName): ?\ReflectionProperty
+    /**
+     * Resolve an attribute name to the child's public prop, if declared. Cached
+     * per class and attribute: every child tag in a list resolves the same
+     * attributes on every frame.
+     *
+     * @param  class-string<NativeComponent>  $class
+     */
+    private static function matchChildProp(string $class, string $attrName): ?\ReflectionProperty
     {
+        if (array_key_exists($attrName, self::$nativeChildPropMatches[$class] ?? [])) {
+            return self::$nativeChildPropMatches[$class][$attrName];
+        }
+
+        $props = self::publicPropertiesOf($class);
+        $match = null;
         foreach (array_unique([$attrName, Str::camel($attrName)]) as $candidate) {
-            if ($reflect->hasProperty($candidate)) {
-                $property = $reflect->getProperty($candidate);
-                if ($property->isPublic() && ! $property->isStatic()) {
-                    return $property;
-                }
+            if (isset($props[$candidate])) {
+                $match = $props[$candidate];
+                break;
             }
         }
 
-        return null;
+        return self::$nativeChildPropMatches[$class][$attrName] = $match;
     }
 
     /**

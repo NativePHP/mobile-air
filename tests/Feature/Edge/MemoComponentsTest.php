@@ -1,11 +1,17 @@
 <?php
 
 use Native\Mobile\Edge\ComponentRegistry;
+use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Testing\Native;
+use Native\Mobile\Testing\TestableComponent;
 use Tests\Fixtures\Edge\MemoClosureChild;
 use Tests\Fixtures\Edge\MemoHostScreen;
+use Tests\Fixtures\Edge\MemoItem;
+use Tests\Fixtures\Edge\MemoObjectChild;
 use Tests\Fixtures\Edge\MemoRowChild;
 use Tests\Fixtures\Edge\MemoTallyChild;
+use Tests\Fixtures\Edge\MemoTone;
 use Tests\Fixtures\Edge\PlainRowChild;
 
 beforeEach(function () {
@@ -17,10 +23,12 @@ beforeEach(function () {
         'plain-row-child' => PlainRowChild::class,
         'memo-tally-child' => MemoTallyChild::class,
         'memo-closure-child' => MemoClosureChild::class,
+        'memo-object-child' => MemoObjectChild::class,
     ]);
 
     MemoRowChild::$rendered = [];
     MemoClosureChild::$renders = 0;
+    MemoObjectChild::$renders = 0;
 });
 
 afterEach(function () {
@@ -103,4 +111,88 @@ it('drops a #[Memo] child and its elements when it leaves the tree', function ()
         ->set('rows', ['a' => 'Alpha', 'b' => 'Bravo', 'c' => 'Charlie'])->assertSee('Row: Bravo T0');
 
     expect(array_count_values(MemoRowChild::$rendered)['Bravo'])->toBe(2);
+});
+
+it('re-renders a #[Memo] child whose object prop changed in place, but not one handed an equal fresh object', function () {
+    $screen = Native::test(MemoHostScreen::class)
+        ->set('item', new MemoItem('First'))->set('withObjectChild', true)->assertSee('Item: First calm');
+    $before = MemoObjectChild::$renders;
+
+    $screen->set('item', new MemoItem('First'))->set('title', 'Again')->assertSee('Item: First calm');
+    expect(MemoObjectChild::$renders)->toBe($before);
+
+    $screen->instance()->item->label = 'Edited';
+    $screen->set('title', 'Once more')->assertSee('Item: Edited calm');
+    expect(MemoObjectChild::$renders)->toBe($before + 1);
+});
+
+it('keeps a #[Memo] child with an enum prop memoised until the enum changes', function () {
+    $screen = Native::test(MemoHostScreen::class)->set('withObjectChild', true)->assertSee('Item: none calm');
+    $before = MemoObjectChild::$renders;
+
+    $screen->set('title', 'Again')->set('title', 'Once more');
+    expect(MemoObjectChild::$renders)->toBe($before);
+
+    $screen->set('tone', MemoTone::Loud)->assertSee('Item: none loud');
+    expect(MemoObjectChild::$renders)->toBe($before + 1);
+});
+
+/**
+ * Publishes from a run of frames over the memo host with subtree memo on:
+ * skipped frames, a changed row, a reorder with a removal, a row's own tap.
+ * With $walkEveryRow each kept row forgets its last walk before every frame,
+ * so toArray() walks it instead of answering from what it recorded.
+ *
+ * @return list<array<string, mixed>>
+ */
+function memoPublishes(bool $walkEveryRow): array
+{
+    $bridge = Native::fakeBridge();
+    $bridge->runtimeFlags = 2;
+    $from = count($bridge->publishes);
+
+    $screen = Native::test(MemoHostScreen::class);
+    $frames = [
+        fn (TestableComponent $s) => $s->set('title', 'One'),
+        fn (TestableComponent $s) => $s->set('title', 'Two'),
+        fn (TestableComponent $s) => $s->set('rows', ['a' => 'Alpha', 'b' => 'Bravo two', 'c' => 'Charlie']),
+        fn (TestableComponent $s) => $s->set('title', 'Three'),
+        fn (TestableComponent $s) => $s->set('rows', ['c' => 'Charlie', 'a' => 'Alpha']),
+        fn (TestableComponent $s) => $s->tap('tap-a'),
+        fn (TestableComponent $s) => $s->set('title', 'Four'),
+    ];
+
+    foreach ($frames as $frame) {
+        if ($walkEveryRow) {
+            forgetLastWalks($screen->instance());
+        }
+
+        $frame($screen);
+    }
+
+    return array_slice($bridge->publishes, $from);
+}
+
+function forgetLastWalks(NativeComponent $component): void
+{
+    $children = (new ReflectionProperty(NativeComponent::class, 'nativeChildComponents'))->getValue($component);
+    $memoRoots = new ReflectionProperty(NativeComponent::class, 'nativeMemoRoots');
+    $lastWalk = new ReflectionProperty(Element::class, 'lastWalk');
+
+    foreach ($children as $child) {
+        foreach ($memoRoots->getValue($child) ?? [] as $root) {
+            $lastWalk->setValue($root, null);
+        }
+
+        forgetLastWalks($child);
+    }
+}
+
+it('publishes the same frames when a kept row answers from its last walk as when it is walked', function () {
+    $answered = memoPublishes(walkEveryRow: false);
+    $walked = memoPublishes(walkEveryRow: true);
+
+    expect($answered)->toHaveCount(8)
+        ->and(json_encode($answered))->toBe(json_encode($walked))
+        ->and(substr_count(json_encode(end($answered)), '"flags":1'))->toBeGreaterThan(0);
 });

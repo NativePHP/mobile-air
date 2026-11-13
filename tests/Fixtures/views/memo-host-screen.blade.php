@@ -10,4 +10,7 @@
     @if ($withClosureChild)
         <native:memo-closure-child />
     @endif
+    @if ($withObjectChild)
+        <native:memo-object-child :item="$item" :tone="$tone" />
+    @endif
 </native:column>
