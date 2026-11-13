@@ -178,10 +178,10 @@ class TestableComponent
         // regression can hide from an otherwise thorough suite.
         $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['screen'] ?? null);
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['screen'] ?? null, $resolved['title'] ?? null);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, ?string $screen = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, ?string $screen = null, ?string $title = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
@@ -208,7 +208,7 @@ class TestableComponent
 
         // A server route opens the generic ServerScreen for one server screen.
         if ($screen !== null && $component instanceof ServerScreen) {
-            $component->showScreen($screen);
+            $component->showScreen($screen, $title);
         }
 
         $this->component = $component;
@@ -763,7 +763,7 @@ class TestableComponent
         // re-fire it (NativeRouter::loop does exactly this).
         $this->component->resetNavigationIntent();
 
-        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, screen: $resolved['screen'] ?? null);
+        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, screen: $resolved['screen'] ?? null, title: $resolved['title'] ?? null);
 
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.

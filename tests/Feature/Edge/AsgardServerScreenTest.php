@@ -257,11 +257,158 @@ it('sends the search query to the server action the chrome names', function () {
         ->and($source->lastAction('screen')->args)->toBe(['all', 'shoes']);
 });
 
-it('starts a screen opened again in the chrome it last had', function () {
-    $screen = Native::visit('/promos/42');
-    answer($screen, PROMO_BODY, ['nav_bar' => ['title' => 'Remembered']]);
+// ── Titles before the body ──────────────────────────
 
-    Native::visit('/promos/43')->assertNavTitle('Remembered');
+/** Every nav bar title in the screen's current tree. */
+function navTitles(TestableComponent $screen): array
+{
+    return Closure::bind(fn () => $this->navTitles($this->tree()), $screen, TestableComponent::class)();
+}
+
+it('keeps a route title template and drops a bad one with its route kept', function () {
+    NativeRouter::registerServerRoutes([
+        ['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}'],
+        ['uri' => '/inbox', 'screen' => 'inbox', 'title' => "In\nbox"],
+        ['uri' => '/deals', 'screen' => 'deals', 'title' => str_repeat('a', 101)],
+        ['uri' => '/news', 'screen' => 'news', 'title' => ['News']],
+    ]);
+
+    expect(NativeRouter::resolve('/promos/42')['title'])->toBe('Promo #{id}')
+        ->and(NativeRouter::resolve('/inbox')['title'])->toBeNull()
+        ->and(NativeRouter::resolve('/deals')['title'])->toBeNull()
+        ->and(NativeRouter::resolve('/news')['title'])->toBeNull();
+});
+
+it('shows the route title with its parameters filled in before any answer', function () {
+    $source = Native::fakeFragmentSource();
+    NativeRouter::registerServerRoutes([['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}']]);
+
+    $screen = Native::visit('/promos/42');
+
+    $screen->assertNavTitle('Promo #42');
+    expect(ServerRegion::hasFragment('screen', $screen->instance()))->toBeFalse();
+    $source->assertRequested('screen', times: 1);
+});
+
+it('removes placeholders with no route parameter, and never reads the query string', function () {
+    NativeRouter::registerServerRoutes([
+        ['uri' => '/tickets/{id?}', 'screen' => 'tickets', 'title' => 'Ticket {id} {ref}'],
+    ]);
+
+    expect(navTitles(Native::visit('/tickets?ref=mail&id=spoof')))->toBe(['Ticket']);
+    expect(navTitles(Native::visit('/tickets/7?ref=mail')))->toBe(['Ticket 7']);
+});
+
+it('turns control characters in a parameter into spaces and caps the length', function () {
+    NativeRouter::registerServerRoutes([['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo {id}']]);
+
+    expect(navTitles(Native::visit('/promos/a%0Ab')))->toBe(['Promo a b']);
+    expect(mb_strlen(navTitles(Native::visit('/promos/'.str_repeat('x', 200)))[0]))->toBe(ServerScreen::TITLE_MAX);
+});
+
+it('falls back to the placeholder when a title comes out blank', function () {
+    NativeRouter::registerServerRoutes([['uri' => '/tickets/{id?}', 'screen' => 'tickets', 'title' => '{id}']]);
+
+    expect(navTitles(Native::visit('/tickets')))->toBe(['Loading…']);
+});
+
+it('shows Loading… for a route with no title', function () {
+    expect(navTitles(Native::visit('/promos/42')))->toBe(['Loading…']);
+});
+
+it('translates the default placeholder', function () {
+    app('translator')->addLines(['*.Loading…' => 'Chargement…'], 'fr');
+    app()->setLocale('fr');
+
+    try {
+        expect(navTitles(Native::visit('/promos/42')))->toBe(['Chargement…']);
+    } finally {
+        app()->setLocale('en');
+    }
+});
+
+it('takes the placeholder from titlePlaceholderUsing(), with the screen uri', function () {
+    ServerScreen::titlePlaceholderUsing(fn (string $uri) => "Opening {$uri}");
+
+    expect(navTitles(Native::visit('/promos/42?ref=mail')))->toBe(['Opening /promos/42?ref=mail']);
+
+    ServerScreen::titlePlaceholderUsing(null);
+
+    expect(navTitles(Native::visit('/promos/42')))->toBe(['Loading…']);
+});
+
+it('takes the placeholder from a subclass', function () {
+    $screen = new class extends ServerScreen
+    {
+        public function titlePlaceholder(): string
+        {
+            return 'One moment';
+        }
+    };
+
+    config(['nativephp.asgard.screen' => $screen::class]);
+    NativeRouter::registerServerRoutes([
+        ['uri' => '/promos/{id}', 'screen' => 'promos.show'],
+        ['uri' => '/deals/{id}', 'screen' => 'deals', 'title' => 'Deal {id}'],
+    ]);
+
+    expect(navTitles(Native::visit('/promos/42')))->toBe(['One moment'])
+        ->and(navTitles(Native::visit('/deals/3')))->toBe(['Deal 3']);
+});
+
+it('does not borrow the title another screen of the route had', function () {
+    $screen = Native::visit('/promos/42');
+    answer($screen, PROMO_BODY, ['nav_bar' => ['title' => 'Promo #42', 'actions' => [['id' => 'like', 'on_press' => ['call' => 'like', 'args' => []]]]]]);
+
+    $next = Native::visit('/promos/43');
+
+    expect(navTitles($next))->toBe(['Loading…'])
+        ->and(pressIdOf($next->tree(), 'top_bar_action', fn () => true))->toBeNull();
+});
+
+it('replaces the early title with the chrome title when the body lands', function () {
+    NativeRouter::registerServerRoutes([
+        ['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}'],
+        ['uri' => '/inbox', 'screen' => 'inbox'],
+    ]);
+    $screen = Native::visit('/promos/42');
+
+    expect(navTitles(answer($screen, PROMO_BODY, ['nav_bar' => ['title' => 'Summer sale']])))->toBe(['Summer sale']);
+
+    $inbox = Native::visit('/inbox');
+
+    expect(navTitles(answer($inbox, PROMO_BODY, ['nav_bar' => ['title' => 'Inbox']])))->toBe(['Inbox']);
+});
+
+it('keeps the route title, but never the placeholder, under chrome with no title', function () {
+    NativeRouter::registerServerRoutes([
+        ['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}'],
+        ['uri' => '/inbox', 'screen' => 'inbox'],
+    ]);
+
+    $promo = Native::visit('/promos/42');
+    expect(navTitles(answer($promo, PROMO_BODY, ['nav_bar' => ['back' => true]])))->toBe(['Promo #42']);
+
+    $inbox = Native::visit('/inbox');
+    expect(navTitles(answer($inbox, PROMO_BODY, ['nav_bar' => ['back' => true]])))->toBe([]);
+
+    // A later answer without a title leaves it that way.
+    expect(ServerRegion::push('inbox', [], 'screen', PROMO_BODY, ['nav_bar' => []]))->toBe(1);
+    expect(navTitles(repaint($inbox)))->toBe([]);
+});
+
+it('drops the placeholder once a body lands without any chrome', function () {
+    $inbox = Native::visit('/inbox');
+
+    expect(navTitles($inbox))->toBe(['Loading…'])
+        ->and(navTitles(answer($inbox, PROMO_BODY)))->toBe([]);
+});
+
+it('adds no nav bar to chrome that has none', function () {
+    NativeRouter::registerServerRoutes([['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}']]);
+    $screen = Native::visit('/promos/42');
+
+    expect(navTitles(answer($screen, PROMO_BODY, [])))->toBe([]);
 });
 
 it('applies chrome pushed with a fragment', function () {

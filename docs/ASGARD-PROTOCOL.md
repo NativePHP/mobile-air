@@ -1368,8 +1368,9 @@ server cannot point a route at app code. Its body is a single region named
   `int` or `float` property and `"true"`, `"false"`, `"1"` or `"0"` to a
   `bool` property, for screens only. Anything else must match exactly, as
   in §5.1.
-- Until an answer lands, it shows a placeholder skeleton. It does not wait
-  for ever: see "Giving up" below.
+- Until an answer lands, it shows a placeholder skeleton and a plain nav
+  bar with a title (see "The title before the body" below). It does not
+  wait for ever: see "Giving up" below.
 - Server actions, client actions and pushed fragments work as in regions.
   A client target can only reach a `#[NativeAction]` on the generic screen,
   and it has none, so a client target in a server screen runs nothing.
@@ -1417,7 +1418,38 @@ that body on screen, as for any region. Leaving the screen stops it too.
 
 Every server route opens the class named in `nativephp.asgard.screen`, which
 must extend `ServerScreen`, or `ServerScreen` itself when that is unset. An
-app uses its own subclass to change the skeleton or the timeout.
+app uses its own subclass to change the skeleton, the timeout or the
+placeholder title.
+
+#### The title before the body
+
+A screen shows a nav bar title from its first frame, before it has asked
+the server for anything:
+
+1. The route's title template (§12.3), when it has one, with each `{name}`
+   filled from the route parameter of that name. A placeholder with no
+   such parameter, such as an optional one left out, is removed. The query
+   string is never used. Control characters in a value become spaces, and
+   the result is cut to 100 characters. A title that comes out blank
+   counts as none.
+2. Otherwise the placeholder title. That is `ServerScreen::titlePlaceholder()`,
+   which a subclass can override. By default it returns what the callback
+   set with `ServerScreen::titlePlaceholderUsing(fn (string $uri) => ...)`
+   gives for the screen's URI, or `__('Loading…')`, so the app's
+   translation files cover it. `titlePlaceholderUsing(null)` resets it.
+3. When the body's answer lands, its chrome takes over (§12.2).
+
+A screen never borrows the title or any other chrome of an earlier screen,
+even one of the same route: `/promos/2` must not open under the title and
+buttons `/promos/1` had.
+
+Once chrome has arrived it is used as sent, with one addition: a nav bar
+with no `title`, `title_view` or `logo` of its own shows the route title, if
+there is one. Chrome with no `nav_bar` gets none. The placeholder only stands
+in for a body on its way, so it never comes back: not under chrome without a
+title, and not when a body lands with no chrome at all.
+
+The title is plain text in a native nav bar. It is never parsed as markup.
 
 ### 12.2 Chrome
 
@@ -1432,8 +1464,8 @@ vocabulary: every key known, every value its type, every button slot a
 valid slot (§10.1, §12.4), every tab URL an app path, every content slot a
 valid fragment (§9.3, §9.4). Chrome that fails keeps the screen on the
 chrome it had and is logged, or throws with `app.debug` on. Until the first
-answer, a screen wears the chrome it last had in this process, or a plain
-nav bar with a back button when it is not the root.
+answer, a screen wears a plain nav bar, with a back button when it is not
+the root and the title from §12.1, "The title before the body".
 
 Buttons in chrome register in the `screen` region's callback scope (§10.4),
 so a chrome tap dispatches exactly like a tap in the body.
@@ -1483,13 +1515,21 @@ A server lists its screens' routes at one more endpoint, sealed like render
 
 ←  200
    {"protocol": 1, "version": "3f9c0a1b2c3d4e5f",
-    "routes": [{"uri": "/promos/{id}", "screen": "promos.show"}]}
+    "routes": [{"uri": "/promos/{id}", "screen": "promos.show", "title": "Promo #{id}"}]}
 ```
 
 - `uri` is a route pattern of literal segments (`A-Za-z0-9._~-`) and
   `{name}` parameters, with an optional `{name?}` allowed last. `/` is the
   root. Nothing else.
 - `screen` is a dot-notation screen address, as in §4.
+- `title` is optional: a title template the client shows the moment the
+  screen opens (§12.1). It is a string of 1 to 100 characters, not blank,
+  with no control characters. `{name}` placeholders name route parameters;
+  the reference server refuses a placeholder the route does not have. The
+  client checks a title again and drops one that fails, keeping its route,
+  so the screen opens with the placeholder title instead.
+- The route list goes to every client, so a title template must never hold
+  anything private. Only route parameters are filled in, on the device.
 - `version` changes whenever the list does.
 
 The client fetches the list **in the background, never in the way of boot
