@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Native chrome renderer for the `native_root_tabs` sentinel. Uses
 /// SwiftUI's `TabView` — system tab styling, selection
@@ -84,20 +85,31 @@ struct NativeRootTabsRenderer: View {
         // NavigationStack rather than full-screen-replacing the layout.
         // Falls back to `BottomNavItem.active` (TabBar::highlight set
         // the same way) so non-prefix tab layouts still pick correctly.
-        let owningIdx = owningTabIndex(for: currentUri, tabs: tabs)
-            ?? (tabs.firstIndex { $0.props.getBool("active") } ?? 0)
-        let owningId = owningIdx < tabs.count
-            ? tabs[owningIdx].props.getString("id", default: "")
-            : ""
+        
+        
+        // Determine if current URI belongs to a tab
+        let matchedIdx = owningTabIndex(for: currentUri, tabs: tabs)
+            ?? tabs.firstIndex { $0.props.getBool("active") }
+
+        // Keep selection bound to active or fallback tab so screen content doesn't turn black
+        let owningId: String = matchedIdx.map { idx in
+            tabs[idx].props.getString("id", default: "tab_\(idx)")
+        } ?? tabs.first.map { $0.props.getString("id", default: "tab_0") } ?? ""
+
+        let isUnownedRoute = owningTabIndex(for: currentUri, tabs: tabs) == nil
+        
+        let owningIdx = matchedIdx
+        let activeCoordIdx = matchedIdx ?? 0
+
 
         // Sync the owning tab's coordinator with this publish — cache
         // synchronously so the destination resolver always sees the
         // freshest tree, then defer the path mutation (push / pop) via
         // async since `path` is @Published.
-        if !currentUri.isEmpty, owningIdx < tabs.count {
-            let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
+        if !currentUri.isEmpty, tabs.indices.contains(activeCoordIdx) {
+            let owningRootUri = tabs[activeCoordIdx].props.getString("url", default: "")
             let stackDepth = node.props.getInt("stack_depth", default: 0)
-            let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
+            let coord = tabBag.coordinator(forIdx: activeCoordIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
                 coord.receive(uri: currentUri, depth: stackDepth, rootNode: node)
@@ -243,8 +255,8 @@ struct NativeRootTabsRenderer: View {
                     sourceIdentifiers: tabs.enumerated().map { index, tab in
                         tab.props.getString("id", default: "tab_\(index)")
                     },
-                    selectedSourceIdentifier: selection,
-                    fallbackIndex: owningIdx
+                    selectedSourceIdentifier: selection ?? owningId ?? "",
+                    fallbackIndex: owningIdx ?? -1
                 ),
                 configuration: configuration,
                 isHidden: hidesCustomPresentation,
@@ -283,12 +295,14 @@ struct NativeRootTabsRenderer: View {
                 // fight the system here is pointless — Apple's own
                 // apps (Music, Mail, Photos) all show filled icons in
                 // every tab state on iOS 26.
+                let isSelectedTab = selection != "__none__" && tabId == selection
+
                 let label: String = {
                     switch labelVisibility {
                     case "unlabeled":
                         return ""
                     case "selected":
-                        return tabId == selection ? rawLabel : ""
+                        return isSelectedTab ? rawLabel : ""
                     default:
                         return rawLabel
                     }
@@ -303,7 +317,7 @@ struct NativeRootTabsRenderer: View {
                         fallbackShowBack: navBack,
                         fallbackTextArgb: navTextArgb,
                         fallbackBgArgb: navBgArgb,
-                        isSelected: tabId == selection,
+                        isSelected: isSelectedTab,
                         onPushVisibilityChange: { hidden in
                             if customPresentationHiddenForPush != hidden {
                                 customPresentationHiddenForPush = hidden
@@ -313,7 +327,6 @@ struct NativeRootTabsRenderer: View {
                     .modifier(SystemTabBarSuppressionModifier(
                         suppressed: customPresenter != nil
                     ))
-
                 }
                 .badge(badgeFor(tab))
             }
@@ -342,7 +355,9 @@ struct NativeRootTabsRenderer: View {
                 .badge(badgeFor(searchTab))
             }
         }
-        .tint(activeColor)
+        .tint(isUnownedRoute ? Color.primary : activeColor)
+        .background(TabBarSelectionPlateHider(isUnownedRoute: isUnownedRoute))
+        .modifier(SystemTabBarUnselectedModifier(isUnownedRoute: isUnownedRoute, activeColor: activeColor))
         .modifier(ExplicitBarBackgroundModifier(
             argb: bgArgb,
             placement: .tabBar
@@ -373,30 +388,10 @@ struct NativeRootTabsRenderer: View {
             }
         }
         .onChange(of: owningId) { newId in
-            // PHP-driven owning-tab change (publish landed under a
-            // different tab's URL prefix) — sync our SwiftUI selection.
-            if let pending = pendingTabId, newId != pending {
-                if supersededTabIds.contains(newId),
-                   let tab = tabs.first(where: { $0.props.getString("id", default: "") == pending }),
-                   tab.onPress != 0 {
-                    // Stale publish: a navigation the user superseded by
-                    // tapping again finished late. Hold `selection` where
-                    // the user put it, and re-fire the pending tab's
-                    // press — the tap-time press carried the previous
-                    // tree's callback id, which the component that just
-                    // published doesn't own, so PHP dropped it. This
-                    // tree's id is live.
-                    NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
-                    return
-                }
-                // Unrelated navigation won the race (programmatic
-                // replace, mount() redirect, or the pending tab left
-                // the layout) — accept the publish as authoritative.
-            }
             pendingTabId = nil
             supersededTabIds.removeAll()
             if selection != newId {
-                selection = newId
+                selection = newId // Sets selection to "" on unowned routes
             }
         }
         .onChange(of: currentUri) { _ in
@@ -423,18 +418,44 @@ struct NativeRootTabsRenderer: View {
         }
     }
 
+    private func handleOwningIdChange(newId: String, tabs: [NativeUINode]) {
+        if let pending = pendingTabId, newId != pending {
+            if supersededTabIds.contains(newId) {
+                let matchingTab = tabs.first { node in
+                    node.props.getString("id", default: "") == pending
+                }
+                if let tab = matchingTab, tab.onPress != 0 {
+                    NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
+                    return
+                }
+            }
+        }
+        
+        pendingTabId = nil
+        supersededTabIds.removeAll()
+        
+        if selection != newId {
+            selection = newId
+        }
+    }
+
     private func requestTabActivation(at index: Int, tabs: [NativeUINode], owningId: String) {
         guard tabs.indices.contains(index) else { return }
         let identifier = tabs[index].props.getString("id", default: "tab_\(index)")
+        
+        let coord = tabBag.coordinator(forIdx: index, rootUri: tabs[index].props.getString("url", default: ""))
+        
         if selection == identifier {
+            // Pop navigation stack to root when re-tapping the active tab
+            coord.path.removeAll()
             activateTab(at: index, tabs: tabs, owningId: owningId)
         } else {
             selection = identifier
         }
     }
-
+    
     private func activateSelection(_ newId: String, tabs: [NativeUINode], owningId: String) {
-        if newId == owningId && pendingTabId == nil { return }
+        if owningId != "__none__" && newId == owningId && pendingTabId == nil { return }
         guard let index = tabs.firstIndex(where: { $0.props.getString("id", default: "") == newId }) else { return }
         activateTab(at: index, tabs: tabs, owningId: owningId)
     }
@@ -443,9 +464,15 @@ struct NativeRootTabsRenderer: View {
         guard tabs.indices.contains(index) else { return }
         let tab = tabs[index]
         let newId = tab.props.getString("id", default: "tab_\(index)")
-        if newId == owningId && pendingTabId == nil { return }
+        
+        // Do not short-circuit if on an unselected route (owningId == "")
+        if !owningId.isEmpty && newId == owningId && pendingTabId == nil {
+            return
+        }
+        
         let url = tab.props.getString("url", default: "")
         let isSearch = tab.props.getBool("search")
+        
         if tab.onPress != 0 {
             if !url.isEmpty && !isSearch {
                 if let previous = pendingTabId, previous != newId {
@@ -455,11 +482,8 @@ struct NativeRootTabsRenderer: View {
             }
             NativeElementBridge.sendPressEvent(tab.onPress, nodeId: tab.id)
         }
-        if url.isEmpty && !isSearch {
-            DispatchQueue.main.async {
-                selection = pendingTabId ?? owningId
-            }
-        }
+        
+        selection = newId
     }
 
     /// Longest URL prefix match against tab URLs. A pushed sub-route
@@ -527,14 +551,14 @@ private struct PerTabContent: View {
     let isSelected: Bool
     let onPushVisibilityChange: (Bool) -> Void
 
+    // Locate PerTabContent's body and update its onChange handlers:
+
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
                 levelView(uri: coordinator.rootLevelUri, isRoot: true)
                     .navigationDestination(for: String.self) { uri in
-                        StackLevelView(level: coordinator.level(for: uri)) {
-                            levelView(uri: uri, isRoot: false)
-                        }
+                        levelView(uri: uri, isRoot: false)
                     }
             }
             .id(coordinator.rootUri)
@@ -543,11 +567,22 @@ private struct PerTabContent: View {
                 reportPushVisibility(path: newPath)
             }
             .onAppear { reportPushVisibility(path: coordinator.path) }
-            .onChange(of: isSelected) { _ in reportPushVisibility(path: coordinator.path) }
+            .onChange(of: isSelected) { nowSelected in
+                reportPushVisibility(path: coordinator.path)
+                // When leaving this tab, clear its pushed routes so returning later lands cleanly on root
+                if !nowSelected {
+                    coordinator.path.removeAll()
+                }
+            }
         } else {
             levelContent(for: coordinator.rootNodeCache[coordinator.rootLevelUri])
                 .onAppear { reportPushVisibility(path: []) }
-                .onChange(of: isSelected) { _ in reportPushVisibility(path: []) }
+                .onChange(of: isSelected) { nowSelected in
+                    reportPushVisibility(path: [])
+                    if !nowSelected {
+                        coordinator.path.removeAll()
+                    }
+                }
         }
     }
 
@@ -996,7 +1031,9 @@ private struct HideTabBarOnPushModifier: ViewModifier {
     let forceHide: Bool
 
     func body(content: Content) -> some View {
-        if isRoot && !forceHide {
+        // Updated: Only hide the tab bar if forceHide is explicitly requested.
+        // Pushed destinations will now retain the bottom tab bar.
+        if !forceHide {
             content
         } else {
             content
@@ -1482,5 +1519,96 @@ private struct ObjectResultRow: View {
         }
         .buttonStyle(.plain)
         .disabled(tapCallback == 0)
+    }
+}
+
+struct SystemTabBarUnselectedModifier: ViewModifier {
+    let isUnownedRoute: Bool
+    let activeColor: Color
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { applyAppearance() }
+            .onChange(of: isUnownedRoute) { _ in applyAppearance() }
+    }
+
+    private func applyAppearance() {
+        let appearance = UITabBarAppearance()
+        appearance.configureWithDefaultBackground()
+
+        if isUnownedRoute {
+            // Force selected tab items to render using the normal (unselected) icon & text styling
+            let unselectedColor = UIColor.label.withAlphaComponent(0.6)
+            
+            appearance.stackedLayoutAppearance.selected.iconColor = unselectedColor
+            appearance.stackedLayoutAppearance.selected.titleTextAttributes = [
+                .foregroundColor: unselectedColor
+            ]
+            appearance.inlineLayoutAppearance.selected.iconColor = unselectedColor
+            appearance.inlineLayoutAppearance.selected.titleTextAttributes = [
+                .foregroundColor: unselectedColor
+            ]
+            
+            // Set selection indicator to an empty transparent image
+            appearance.selectionIndicatorImage = UIImage()
+        } else {
+            // Restore standard active selection colors when returning to a tab
+            let uiActiveColor = UIColor(activeColor)
+            
+            appearance.stackedLayoutAppearance.selected.iconColor = uiActiveColor
+            appearance.stackedLayoutAppearance.selected.titleTextAttributes = [
+                .foregroundColor: uiActiveColor
+            ]
+            appearance.inlineLayoutAppearance.selected.iconColor = uiActiveColor
+            appearance.inlineLayoutAppearance.selected.titleTextAttributes = [
+                .foregroundColor: uiActiveColor
+            ]
+            appearance.selectionIndicatorImage = nil
+        }
+
+        UITabBar.appearance().standardAppearance = appearance
+        if #available(iOS 15.0, *) {
+            UITabBar.appearance().scrollEdgeAppearance = appearance
+        }
+    }
+}
+
+private struct TabBarSelectionPlateHider: UIViewRepresentable {
+    let isUnownedRoute: Bool
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isHidden = true
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = uiView.window,
+                  let rootVC = window.rootViewController else { return }
+            
+            func findTabBar(in vc: UIViewController?) -> UITabBar? {
+                if let tbc = vc as? UITabBarController { return tbc.tabBar }
+                for child in vc?.children ?? [] {
+                    if let bar = findTabBar(in: child) { return bar }
+                }
+                return nil
+            }
+
+            if let tabBar = findTabBar(in: rootVC) {
+                hideSelectionPlates(in: tabBar, hide: isUnownedRoute)
+            }
+        }
+    }
+
+    private func hideSelectionPlates(in view: UIView, hide: Bool) {
+        for subview in view.subviews {
+            let className = String(describing: type(of: subview))
+            // Target iOS 18/26 tab selection background layers
+            if className.contains("Selection") || className.contains("Indicator") || className.contains("Highlight") {
+                subview.alpha = hide ? 0.0 : 1.0
+            }
+            hideSelectionPlates(in: subview, hide: hide)
+        }
     }
 }
