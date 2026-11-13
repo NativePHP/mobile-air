@@ -1,10 +1,14 @@
 <?php
 
+use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\Asgard\ComponentAddress;
+use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
 use Native\Mobile\Edge\Asgard\ServerMethods;
 use Native\Mobile\Edge\Asgard\ServerRegion;
+use Native\Mobile\Edge\Asgard\ServerRequest;
 use Native\Mobile\Edge\Asgard\ServerResponse;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
+use Native\Mobile\Events\Asgard\ServerActionFailed;
 use Native\Mobile\Testing\FakeServerTransport;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\ServerMethodScreen;
@@ -73,7 +77,11 @@ it('sends the method, its arguments and state, and nothing else', function () {
 
     $body = $server->lastRequest()->toArray();
 
-    expect(array_keys($body))->toBe(['component', 'method', 'args', 'state']);
+    expect(array_keys($body))->toBe(['component', 'method', 'args', 'state', 'platform']);
+
+    // Off a device System reports no platform, and the request says so
+    // rather than guessing, as a region request does.
+    expect($body['platform'])->toBe('unknown');
 
     // The closure is a PHP value held on the device: never serialised,
     // inspected or transmitted. If one had leaked into the request, this
@@ -358,6 +366,77 @@ it('behaves like an offline device when no transport is bound', function () {
     expect($screen->get('completions'))->toBe(1);
     expect($screen->get('error'))->toContain('No Asgard transport is bound');
     expect(ServerMethods::pending())->toBe([]);
+});
+
+// ── A transport that answers inline (§3) ────────────
+
+/**
+ * A transport that answers before send() has returned, as a faked lane
+ * does in a test, or a real one that fails before it starts.
+ */
+function inlineTransport(array $answer): ServerTransport
+{
+    $transport = new class($answer) implements ServerTransport
+    {
+        public function __construct(public array $answer) {}
+
+        public function send(ServerRequest $request): string
+        {
+            ServerMethods::deliver(['id' => 'inline-1', ...$this->answer]);
+
+            return 'inline-1';
+        }
+    };
+
+    app()->instance(ServerTransport::class, $transport);
+
+    return $transport;
+}
+
+it('holds an answer that arrives before send() returns and delivers it', function () {
+    inlineTransport(['ok' => true, 'delta' => ['total' => '£9']]);
+
+    $screen = Native::test(ServerMethodScreen::class)->tap('Refresh');
+
+    expect($screen->get('completions'))->toBe(1);
+    expect($screen->get('loading'))->toBeFalse();
+    expect($screen->get('total'))->toBe('£9');
+    expect(ServerMethods::pending())->toBe([]);
+});
+
+it('holds a failure that arrives before send() returns and reports it', function () {
+    Event::fake([ServerActionFailed::class]);
+    inlineTransport(['ok' => false, 'error' => 'No lane.', 'code' => null]);
+
+    $screen = Native::test(ServerMethodScreen::class)->tap('Refresh');
+
+    expect($screen->get('completions'))->toBe(1);
+    expect($screen->get('error'))->toBe('No lane.');
+    expect(ServerMethods::pending())->toBe([]);
+
+    Event::assertDispatched(ServerActionFailed::class, fn ($e) => $e->action === 'refreshChart' && $e->reason === 'network');
+});
+
+it('drops an early answer for an id send() never returned', function () {
+    $transport = new class implements ServerTransport
+    {
+        public function send(ServerRequest $request): string
+        {
+            ServerMethods::deliver(['id' => 'someone-else', 'ok' => true, 'delta' => ['total' => '£1']]);
+
+            return 'mine';
+        }
+    };
+    app()->instance(ServerTransport::class, $transport);
+
+    $screen = Native::test(ServerMethodScreen::class)->tap('Refresh');
+
+    expect($screen->get('completions'))->toBe(0);
+    expect($screen->get('total'))->toBe('—');
+    expect(ServerMethods::pending())->toBe(['mine']);
+
+    // Still dropped later: nothing held it past send().
+    expect(ServerMethods::deliver(['id' => 'someone-else', 'ok' => true]))->toBeFalse();
 });
 
 // ── Fragments in a response (§9) ────────────────────

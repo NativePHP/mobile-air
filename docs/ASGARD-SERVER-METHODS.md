@@ -1,8 +1,10 @@
 # `#[Server]` methods
 
-**Status:** draft, unimplemented. Companion to `ASGARD-PROTOCOL.md`, which
+**Status:** implemented. The device half is here, the HTTP transport is
+`HttpServerTransport` in `nativephp/midgard`, and the server half is the
+`call` endpoint in `nativephp/asgard`. Companion to `ASGARD-PROTOCOL.md`, which
 defines the transport, session, crypto and component addressing this reuses
-wholesale.
+wholesale (§10.5 there has the wire).
 
 `@server` regions are declarative: a part of a screen renders on a server.
 `#[Server]` methods are the imperative counterpart: a method call goes to a
@@ -82,20 +84,58 @@ region render, and resolves that name through the same boot-time registry
 Arguments are client-authored and therefore untrusted, on the same footing as
 state. See §5.1 of the protocol doc.
 
-## 3. The request must be issued natively
+The platform goes too, as it does on a region request. On the wire, sealed
+like every other Asgard request, to `{prefix}/call`:
+
+```json
+{"protocol":1,"component":"app.native.screens.home","method":"refreshChart",
+ "args":["30d"],"state":{"loading":true,"range":"30d"},"platform":"ios"}
+```
+
+The server answers with the delta (§5.1) and nothing else:
+
+```json
+{"protocol":1,"delta":{"chartData":[…]}}
+```
+
+The answer carries no fragments yet. `ServerMethods::deliver()` can apply
+them (a `fragments` member, region => tree, validated as a region render is),
+but no server sends them. A closure that wants a region redrawn after the call
+asks for it again with `ServerRegion::refresh($this, 'region')`, which carries
+the state the delta left.
+
+## 3. The request runs off the UI thread
 
 PHP on device runs a blocking runloop: it waits on `nativephp_element_wait_event()`,
 dispatches, re-renders, waits again. A blocking HTTP call inside that loop
 freezes the UI for the whole round trip, which is exactly what the closure
 design exists to avoid.
 
-So the request is handed to the native layer and performed asynchronously
-there. On completion, native posts an `EVENT_NATIVE` frame (type 20) carrying
-the response. The runloop wakes on its existing event channel and
-`NativeComponent::dispatchNativeEvent()` routes it.
+So the transport never makes the call on the UI thread. midgard's
+`HttpServerTransport` hands it to an `AsyncTask` lane, the same way region
+fetches go out: a background PHP context signs, encrypts and sends it,
+handshaking and retrying a 419 once, and verifies and opens the answer. The
+lane's completion comes back as an `EVENT_NATIVE` frame on the event channel
+the runloop is already waiting on, and the transport hands the answer to
+`ServerMethods::deliver()` from there. No bridge function of its own is
+needed: the lanes are the native part.
 
-This needs a bridge function on both platforms. It is the main new native work
-for this feature, and the reason `#[Server]` is not implementable purely in PHP.
+`send()` makes the request id, starts the lane and returns the id. The
+completion is taken on whichever screen is on top when it lands, because the
+pending table is keyed by id (§4) and needs no particular screen to be
+showing. An answer can also land before `send()` has returned, from a lane
+that is faked in a test or one that fails before it starts. `ServerMethods`
+holds it until the call is in the table, then delivers it.
+
+How a failure maps to a reason (§7): a lane that died or got no response is
+`network`, as is an answer with no HTTP status. An answer with an HTTP status
+that is not a good call answer is `server`, with that status. That includes
+one that fails verification, since the server did answer.
+
+The HTTP timeout (`midgard.asgard.timeout`, 20 seconds by default) is longer
+than the device's action timeout on purpose. The device timeout is the one
+that should fire, so a slow server reads as `timeout` and not as a `network`
+failure.
 
 ## 4. Delivery
 
@@ -224,8 +264,9 @@ up. Drift is reported as a refusal plus a debug log instead. The same applies
 to a fragment that fails §9.4 validation, which is reported rather than raised.
 
 **A send that never starts runs its closure inline**, before the calling method
-has returned. That is worth knowing before writing a closure that assumes it
-runs on a later frame.
+has returned. So does an answer that lands before `send()` returns (§3). That
+is worth knowing before writing a closure that assumes it runs on a later
+frame.
 
 ## 8. Security
 

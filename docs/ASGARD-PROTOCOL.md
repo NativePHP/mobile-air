@@ -372,11 +372,12 @@ parameter, a missing one, an `alg` other than `hmac-sha256`, a `tag` other
 than `asgard/1`, and a `keyid` that is not the `Asgard-Session-Id`.
 
 A server action (a request with an `action` member, §10.2) is not a safe
-request, so its signature also carries a `nonce` parameter: 16 to 64
-base64url characters, which the client fills with 16 random bytes. The server
-remembers nonces per session until their `expires`, plus the clock skew
-allowance, and refuses a repeat with 403. An action whose signature has no
-nonce is `403 {"error":"nonce_required"}`. Region renders and stream requests
+request, and neither is a `#[Server]` call (§10.5), so its signature also
+carries a `nonce` parameter: 16 to 64 base64url characters, which the client
+fills with 16 random bytes. The server remembers nonces per session until
+their `expires`, plus the clock skew allowance, and refuses a repeat with 403.
+An action or call whose signature has no nonce is
+`403 {"error":"nonce_required"}`. Region renders and stream requests
 are reads and skip the nonce.
 
 **A response** covers:
@@ -1004,7 +1005,9 @@ remember something across taps stores it itself.
 The client waits at most its action timeout for the answer: 15 seconds by
 default, from `nativephp.asgard.action_timeout`, or the sending component's
 `serverActionTimeout()`. 0 means no limit. The same applies to a chrome
-action (§12.2) and to a `#[Server]` method call.
+action (§12.2) and to a `#[Server]` method call. The transport's own HTTP
+timeout is set longer, so this is the one that fires and a slow server reads
+as `timeout` rather than `network`.
 
 An action fails when the timeout passes, or at once on a hard failure. The
 transport reports one with `ServerRegion::failed($request, $reason, $status)`:
@@ -1088,6 +1091,45 @@ callbacks in per-child registries. A region inside a child component belongs
 to that child, and its client actions run on the child. Its scope is the
 child's scope followed by `server:<region>`, so two sibling cards showing the
 same fragment never share callback ids.
+
+### 10.5 `#[Server]` method calls
+
+A `#[Server]` method (ASGARD-SERVER-METHODS.md) is a method call rather than
+a tap in a fragment. It goes to its own endpoint, `{prefix}/call`, in the same
+two forms as render (§8), signed and encrypted like everything else and with a
+nonce (§7.3):
+
+```json
+{"protocol": 1, "component": "app.native.screens.home", "method": "roll",
+ "args": [], "state": {...}, "platform": "ios"}
+```
+
+Its own endpoint rather than render with another member, because nothing
+about it is a region: there is no region to name, nothing is rendered, and
+the answer is a different shape. Folding it into render would have made every
+render check carry a "unless this is a call" branch.
+
+The server hydrates the component as for a render, runs the method of that
+name, and answers with only the public props whose `serialize()` value
+differs from what hydration left (a prop the method filled in counts):
+
+```json
+{"protocol": 1, "delta": {"roll": 4}}
+```
+
+`delta` is always an object. Each value must be a plain JSON value, or the
+answer is `500 invalid_delta`. A `#[Locked]` prop the method changed is in it:
+locking stops the client writing a prop, not the server. The client applies
+each prop under compare-and-set (ASGARD-SERVER-METHODS.md §5.2).
+
+A server runs `method` only under the rules of §10.2, with `#[Server]` in
+place of `#[Action]`. The two are separate allowlists, so an `#[Action]` is
+not callable as a call and the other way round. Otherwise it answers
+`404 unknown_method`. An unknown address is `404 unknown_component`, and a
+malformed body, an unknown member, or state or args that do not fit their
+types is `422 invalid_request`.
+
+Failures and timeouts are as in §10.2, with `region` null on the event.
 
 ## 11. Versioning
 

@@ -18,9 +18,10 @@ use Native\Mobile\Events\Asgard\ServerActionFailed;
  *  1. **Invoke** (§2). Run the client body, snapshot the component's
  *     public state AFTER it returns, hand method + args + state to the
  *     transport, and keep the closure the body returned.
- *  2. **Deliver** (§4). A response arrives as an `EVENT_NATIVE` frame on
- *     the runloop's event channel — because the request itself is
- *     performed natively while PHP blocks (§3) — and lands here.
+ *  2. **Deliver** (§4). The transport performs the request off the UI
+ *     thread (§3) and hands the answer to deliver() on it. A transport
+ *     may also post it as an `EVENT_NATIVE` frame, which the runloop
+ *     routes here too.
  *  3. **Reconcile** (§5). Apply the server's delta prop by prop, but only
  *     where the client's value has not moved since the request left.
  *
@@ -87,6 +88,17 @@ class ServerMethods
     protected static array $attributeCache = [];
 
     /**
+     * How many send() calls are running. An answer that arrives while one
+     * is running may be for the request it is starting, whose id is not in
+     * the table yet. A transport that answers inline does that: a faked
+     * lane in a test, or one that fails before it starts.
+     */
+    protected static int $sending = 0;
+
+    /** Answers that arrived during a send(), by id, held until it returns. */
+    protected static array $early = [];
+
+    /**
      * Call a `#[Server]` method: run its body here, send the request, and
      * hold its closure until an answer arrives (§2).
      *
@@ -135,11 +147,16 @@ class ServerMethods
             method: $method,
             args: $args,
             state: $state,
+            platform: ServerRegion::platform(),
         );
+
+        static::$sending++;
 
         try {
             $id = static::transport()->send($request);
         } catch (\Throwable $e) {
+            static::sent();
+
             // §7: network unreachable is a failure like any other. The
             // client body has already run; run the closure so the screen
             // leaves its loading state, and queue nothing.
@@ -150,6 +167,11 @@ class ServerMethods
 
             return null;
         }
+
+        // An answer that beat send() back, held until the call is known.
+        $early = static::$early[$id] ?? null;
+        unset(static::$early[$id]);
+        static::sent();
 
         if ($id === '') {
             NativeRouter::debugLog('Asgard: transport returned an empty request id for '.$method.'() — treating as a failure.');
@@ -172,6 +194,10 @@ class ServerMethods
             'timeout' => $seconds,
         ];
 
+        if ($early !== null) {
+            static::deliver($early);
+        }
+
         return $id;
     }
 
@@ -193,6 +219,12 @@ class ServerMethods
     {
         $id = (string) ($payload['id'] ?? '');
         $entry = static::$pending[$id] ?? null;
+
+        if ($entry === null && static::$sending > 0 && $id !== '') {
+            static::$early[$id] = $payload;
+
+            return false;
+        }
 
         if ($entry === null) {
             NativeRouter::debugLog('Asgard: response for unknown request id ['.$id.'] — discarded.');
@@ -389,9 +421,24 @@ class ServerMethods
     public static function flush(): void
     {
         static::$pending = [];
+        static::$early = [];
+        static::$sending = 0;
     }
 
     // ── Internals ────────────────────────────────────
+
+    /**
+     * A send() finished. Once none is running, any early answer left over
+     * is for a call that never got an id, so it is dropped.
+     */
+    protected static function sent(): void
+    {
+        static::$sending = max(0, static::$sending - 1);
+
+        if (static::$sending === 0) {
+            static::$early = [];
+        }
+    }
 
     protected static function fireFailed(string $method, string $component, string $reason, ?int $status, string $id, ?string $message): void
     {

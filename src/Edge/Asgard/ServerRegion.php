@@ -1485,9 +1485,9 @@ class ServerRegion
     /**
      * The platform the request is rendered for. Off a device (tests, a
      * web server) System reports none, and the request says `unknown`
-     * rather than guessing.
+     * rather than guessing. Public so a `#[Server]` call says the same.
      */
-    protected static function platform(): string
+    public static function platform(): string
     {
         try {
             return app(System::class)->platform() ?? 'unknown';

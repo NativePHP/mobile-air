@@ -227,14 +227,12 @@ class NativeServiceProvider extends PackageServiceProvider
      * The seam a `#[Server]` method's request goes out through
      * (docs/ASGARD-SERVER-METHODS.md §3).
      *
-     * Bound to a transport that always fails, because the native bridge
-     * function that performs Asgard requests is a separate workstream.
-     * That is deliberately not a fatal: an unsent request takes the same
-     * path as a device with no network, so a screen written against
-     * `#[Server]` behaves correctly — loading flag cleared, error branch
-     * run — before there is anything to send with. `bind` rather than
-     * `singleton` so an app (or that workstream) can replace it without
-     * fighting a resolved instance.
+     * Bound by default to a transport that always fails. The real one
+     * comes from a client package (midgard) when the app has an Asgard
+     * server configured. Failing is deliberately not a fatal: an unsent
+     * request takes the same path as a device with no network, so a
+     * screen written against `#[Server]` behaves correctly (loading flag
+     * cleared, error branch run) with nothing to send with.
      */
     protected function registerAsgardTransport(): void
     {
