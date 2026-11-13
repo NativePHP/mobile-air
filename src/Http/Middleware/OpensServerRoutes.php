@@ -46,7 +46,7 @@ class OpensServerRoutes
 
         NativeRouter::debugLog("server route {$path} opens {$screen}");
 
-        return $this->router->prepareResponse($request, NativeScreenEntry::handle(ServerScreen::class));
+        return $this->router->prepareResponse($request, NativeScreenEntry::handle(ServerScreen::screenClass()));
     }
 
     /**

@@ -560,6 +560,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Asgard
+    |--------------------------------------------------------------------------
+    |
+    | Server-rendered regions, screens and actions (docs/ASGARD-PROTOCOL.md).
+    |
+    | screen_timeout: seconds a server screen waits for its body. When none
+    | has arrived by then, the app goes back to the screen below, or to `/`
+    | when there is none, and fires ServerScreenFailed. A ServerScreen
+    | subclass can override screenTimeout(). 0 turns the timer off, but a
+    | hard failure (no network, a server error) still gives up at once.
+    |
+    | action_timeout: seconds a server action or #[Server] method waits for
+    | its answer. After that ServerActionFailed fires on its screen. A
+    | component can override serverActionTimeout(). 0 turns it off.
+    |
+    | screen: the class every server route opens. Set it to your own
+    | subclass of Native\Mobile\Edge\Asgard\ServerScreen to change its
+    | skeleton or timeout. null means the package's own.
+    |
+    */
+    'asgard' => [
+        'screen_timeout' => (float) env('NATIVEPHP_ASGARD_SCREEN_TIMEOUT', 15),
+        'action_timeout' => (float) env('NATIVEPHP_ASGARD_ACTION_TIMEOUT', 15),
+        'screen' => null,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Device Orientation Support
     |--------------------------------------------------------------------------
     |

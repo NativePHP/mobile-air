@@ -999,6 +999,43 @@ An action is stateless. Changes it makes to public properties last for that
 request only and are not sent back as client state. A server that needs to
 remember something across taps stores it itself.
 
+#### Timeouts and failures
+
+The client waits at most its action timeout for the answer: 15 seconds by
+default, from `nativephp.asgard.action_timeout`, or the sending component's
+`serverActionTimeout()`. 0 means no limit. The same applies to a chrome
+action (§12.2) and to a `#[Server]` method call.
+
+An action fails when the timeout passes, or at once on a hard failure. The
+transport reports one with `ServerRegion::failed($request, $reason, $status)`:
+
+| reason    | when                                                                       |
+|-----------|----------------------------------------------------------------------------|
+| `timeout` | no answer in time                                                          |
+| `network` | the request never reached the server, or nothing came back                |
+| `server`  | the server answered with an error, including a 419 after its one retry    |
+| `invalid` | the answer failed verification, or its fragment cannot be rendered (§9.4) |
+
+A failed action fires `Native\Mobile\Events\Asgard\ServerActionFailed` on
+the screen it was sent from: the owner, or the screen a child component that
+sent it is on. Its public properties are `action` (the call), `component`
+(the address), `region`, `reason`, `status` (the HTTP status, or null),
+`requestId` and `message`. The screen hears it with `#[On]`, filters included,
+and draws a frame after; listeners anywhere in the app hear it with
+`Event::listen`:
+
+```php
+#[On(ServerActionFailed::class, when: ['action' => 'like'])]
+public function likeFailed(string $reason): void {}
+```
+
+The region keeps what it had. An answer that lands after the failure is
+dropped. A failure for an action that a newer request for the same region
+has superseded fires nothing, since its answer would have been dropped
+anyway. Timers are acted on by the runloop of the screen the component is
+on, which wakes for the deadline with no input needed. A covered screen's
+timers wait until it is on top again.
+
 ### 10.3 Client actions
 
 `"target": "client"` asks the device to run a method of its own. This is how a
@@ -1111,8 +1148,8 @@ server cannot point a route at app code. Its body is a single region named
   `int` or `float` property and `"true"`, `"false"`, `"1"` or `"0"` to a
   `bool` property, for screens only. Anything else must match exactly, as
   in §5.1.
-- Until an answer lands, it shows a placeholder skeleton. Offline, that is
-  all it shows, as for a region.
+- Until an answer lands, it shows a placeholder skeleton. It does not wait
+  for ever: see "Giving up" below.
 - Server actions, client actions and pushed fragments work as in regions.
   A client target can only reach a `#[NativeAction]` on the generic screen,
   and it has none, so a client target in a server screen runs nothing.
@@ -1131,6 +1168,36 @@ the fragment:
 
 `chrome` is always an object for a screen, `{}` for none, and absent for
 any other component. On a push it rides in the same event body (§8.1).
+
+#### Giving up
+
+A server screen waits at most its screen timeout for its first body: 15
+seconds from its first frame by default, from
+`nativephp.asgard.screen_timeout`, or the screen class's `screenTimeout()`.
+It gives up when that passes, or at once when the request for the body fails
+hard (the reasons in §10.2: `network`, `server` or `invalid`). Giving up
+means:
+
+1. It goes back to the screen below. When there is none, a cold deep link
+   straight onto a server screen, it replaces itself with the app's `/`
+   route.
+2. Once that screen is the live one,
+   `Native\Mobile\Events\Asgard\ServerScreenFailed` fires, with `uri`,
+   `address`, `reason`, `status` and `message`. The screen hears it with
+   `#[On]`, and the app with `Event::listen`:
+
+```php
+#[On(ServerScreenFailed::class)]
+public function serverScreenFailed(string $uri, string $reason, ?int $status): void {}
+```
+
+An answer that lands after the screen gave up is dropped. The timer stops for
+good once a body lands: a later refresh, action or push that fails leaves
+that body on screen, as for any region. Leaving the screen stops it too.
+
+Every server route opens the class named in `nativephp.asgard.screen`, which
+must extend `ServerScreen`, or `ServerScreen` itself when that is unset. An
+app uses its own subclass to change the skeleton or the timeout.
 
 ### 12.2 Chrome
 
@@ -1300,6 +1367,10 @@ path that matches nothing runs nothing and is logged, or throws with
    each of them a signal at about the same time, and each fetches the region
    at once. Whether clients should spread those fetches out (a random delay
    of a second or two, say) is open. Nothing does it today.
+9. Timeouts are fixed per component or screen class, not per action. Whether
+   an action should be able to say it needs longer (an upload, say) is open.
+   A plain region request has no timeout: it keeps its placeholder, as §3
+   says.
 
 ## 14. Notes for implementers
 

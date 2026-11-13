@@ -2,11 +2,13 @@
 
 namespace Native\Mobile\Edge\Asgard;
 
+use Illuminate\Support\Carbon;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Events\Asgard\ServerActionFailed;
 use Native\Mobile\System;
 
 /**
@@ -74,6 +76,19 @@ use Native\Mobile\System;
  * through signal(), which fetches it again, or for a shared region hands
  * over the fragment itself through push(). Both name the subscription's
  * address and state.
+ *
+ * ## Timeouts and failures
+ *
+ * A server action waits at most its component's serverActionTimeout() for
+ * an answer, and a server screen waits at most its screenTimeout() for its
+ * first body. A source reports a hard failure (no network, a server error,
+ * an answer that fails verification) through failed(), and deliver()
+ * reports a fragment it cannot render the same way. Either one is acted on
+ * at the next turn of the runloop of the screen the component is on:
+ * expire() runs there, and nextDeadline() tells the loop when to wake for
+ * the next one. A server screen gives up and leaves; an action fires
+ * ServerActionFailed on its screen. An answer that lands after either is
+ * dropped.
  *
  * ## What is deliberately NOT here
  *
@@ -186,7 +201,11 @@ class ServerRegion
      */
     protected static ?\WeakMap $refreshing = null;
 
-    /** Requests in flight: `id => ['owner' => WeakReference, 'region' => name]`. */
+    /**
+     * Requests in flight: `id => ['owner' => WeakReference, 'region' => name,
+     * 'deadline' => ?ms, 'request' => RegionRequest]`. Only an action has a
+     * deadline.
+     */
     protected static array $pending = [];
 
     /** Set when a fragment lands; cleared when the next frame begins. */
@@ -223,6 +242,35 @@ class ServerRegion
     public const MAX_SUBSCRIPTIONS = 16;
 
     public const MAX_REGIONS = 16;
+
+    /** Why a request failed: no answer in time. */
+    public const TIMEOUT = 'timeout';
+
+    /** Why a request failed: it never reached the server, or nothing came back. */
+    public const NETWORK = 'network';
+
+    /** Why a request failed: the server answered with an error. */
+    public const SERVER = 'server';
+
+    /** Why a request failed: the answer failed verification, or its fragment cannot be rendered. */
+    public const INVALID = 'invalid';
+
+    /**
+     * Server screens still waiting for their first body:
+     * `screen => ['at' => ?deadline ms, 'failure' => ?['reason', 'status', 'message']]`.
+     * A failure, or a deadline that has passed, makes the screen give up at
+     * its next turn.
+     *
+     * @var \WeakMap<ServerScreen, array{at: ?float, failure: ?array{reason: string, status: ?int, message: ?string}}>|null
+     */
+    protected static ?\WeakMap $awaiting = null;
+
+    /**
+     * Failed actions waiting for their component's next turn.
+     *
+     * @var list<array{owner: \WeakReference<NativeComponent>, event: ServerActionFailed}>
+     */
+    protected static array $failures = [];
 
     /**
      * Open a region. Returns true when the caller should render the
@@ -354,6 +402,12 @@ class ServerRegion
             $held[$region] = $nodes;
             static::fragments()[$owner] = $held;
             static::dropRegistry($region, $owner);
+
+            // A server screen's body has landed, so its timer is off. A
+            // later answer that fails leaves this one on screen.
+            if ($owner instanceof ServerScreen && $region === ServerScreen::REGION) {
+                unset(static::awaiting()[$owner]);
+            }
         }
 
         static::$repaint = true;
@@ -380,6 +434,11 @@ class ServerRegion
      *
      * `$version` is the answer's version token (§8.1). An accepted answer
      * puts its region on the push stream, for the state it was asked with.
+     *
+     * A fragment that cannot be rendered is a failure with reason `invalid`
+     * (see failed()). For a server screen still waiting for its body, or an
+     * action, that is all that happens. For any other region it keeps what
+     * it had, and with `app.debug` on it throws, as applyFragment() does.
      */
     public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null): bool
     {
@@ -410,7 +469,22 @@ class ServerRegion
             return false;
         }
 
-        if (! static::applyFragment($entry['region'], $tree, $owner)) {
+        $rejected = null;
+
+        try {
+            $applied = static::applyFragment($entry['region'], $tree, $owner);
+        } catch (\RuntimeException $e) {
+            $applied = false;
+            $rejected = $e;
+        }
+
+        if (! $applied) {
+            $handled = static::fail($owner, $entry['region'], $request, self::INVALID, null, $rejected?->getMessage() ?? 'the fragment cannot be rendered');
+
+            if ($rejected !== null && ! $handled) {
+                throw $rejected;
+            }
+
             return false;
         }
 
@@ -418,6 +492,256 @@ class ServerRegion
         static::answer($owner, $entry['region'], $request->state, $version);
 
         return true;
+    }
+
+    /**
+     * A request failed without an answer the client can use: the seam a
+     * FragmentSource calls instead of deliver(). `$reason` is one of
+     * TIMEOUT, NETWORK, SERVER or INVALID, and `$status` the HTTP status
+     * when the server answered with one.
+     *
+     * The request stops being in flight, so a late answer to it is dropped.
+     * Then, on the next turn of the runloop of the screen it belongs to:
+     *
+     *  - A server screen still waiting for its body gives up and leaves
+     *    (ServerScreen::screenTimeout() has the details).
+     *  - An action fires ServerActionFailed on the screen it was sent
+     *    from.
+     *  - Any other region keeps what it had: its placeholder, or the last
+     *    fragment it painted. That is the offline state of §3, not an
+     *    error.
+     *
+     * A failure for a request that is not in flight, or that a newer one
+     * for the same region has superseded, is ignored. Returns whether it
+     * was acted on.
+     */
+    public static function failed(RegionRequest $request, string $reason, ?int $status = null, ?string $message = null): bool
+    {
+        $entry = static::$pending[$request->id] ?? null;
+
+        if ($entry === null) {
+            NativeRouter::debugLog("Asgard: failure for request [{$request->id}] is not one in flight — ignored.");
+
+            return false;
+        }
+
+        unset(static::$pending[$request->id]);
+        $owner = $entry['owner']->get();
+
+        if ($owner === null) {
+            return false;
+        }
+
+        if (((static::requested()[$owner] ?? [])[$entry['region']] ?? null) !== $request->id) {
+            NativeRouter::debugLog("Asgard: failure for [{$request->region}] was superseded by a newer request — ignored.");
+
+            return false;
+        }
+
+        return static::fail($owner, $entry['region'], $request, $reason, $status, $message);
+    }
+
+    /**
+     * Start a server screen's wait for its body. Called by the screen when
+     * it first renders. `$seconds` of 0 or less waits for ever, though a
+     * hard failure still ends the wait.
+     */
+    public static function awaitBody(ServerScreen $screen, float $seconds): void
+    {
+        if (isset(static::awaiting()[$screen]) || static::hasFragment(ServerScreen::REGION, $screen)) {
+            return;
+        }
+
+        static::awaiting()[$screen] = [
+            'at' => $seconds > 0 ? static::now() + $seconds * 1000 : null,
+            'failure' => null,
+        ];
+    }
+
+    /** Whether a server screen is still waiting for its first body. */
+    public static function awaitingBody(ServerScreen $screen): bool
+    {
+        return isset(static::awaiting()[$screen]);
+    }
+
+    /**
+     * Whether any timer or failure is waiting to be acted on, anywhere. A
+     * cheap check the runloop makes before it works out which are its own.
+     */
+    public static function hasDeadlines(): bool
+    {
+        if (static::$failures !== [] || (static::$awaiting !== null && count(static::$awaiting) > 0)) {
+            return true;
+        }
+
+        foreach (static::$pending as $entry) {
+            if ($entry['deadline'] !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * When the next timer or failure of these components is due, in
+     * milliseconds on the clock of now(), or null when there is none. A
+     * failure waiting to be acted on is due now. The runloop passes the
+     * components of its screen, so it never wakes for a covered screen's.
+     *
+     * @param  iterable<NativeComponent>  $owners
+     */
+    public static function nextDeadline(iterable $owners): ?float
+    {
+        $mine = static::idsOf($owners);
+        $next = null;
+
+        foreach (static::awaiting() as $screen => $wait) {
+            if (isset($mine[spl_object_id($screen)])) {
+                $at = $wait['failure'] !== null ? static::now() : $wait['at'];
+                $next = $at === null ? $next : min($next ?? $at, $at);
+            }
+        }
+
+        foreach (static::$pending as $entry) {
+            $owner = $entry['owner']->get();
+
+            if ($entry['deadline'] !== null && $owner !== null && isset($mine[spl_object_id($owner)])) {
+                $next = min($next ?? $entry['deadline'], $entry['deadline']);
+            }
+        }
+
+        foreach (static::$failures as $failure) {
+            $owner = $failure['owner']->get();
+
+            if ($owner !== null && isset($mine[spl_object_id($owner)])) {
+                $next = min($next ?? static::now(), static::now());
+            }
+        }
+
+        return $next;
+    }
+
+    /**
+     * Act on every timer and failure of these components that is due:
+     * a server screen whose body did not come gives up, and an action that
+     * timed out or failed fires ServerActionFailed. The runloop of the
+     * screen is the live one, so the screen hears it on its next turn.
+     * Called by the runloop at the top of each turn, with its screen's
+     * components. Returns whether anything was acted on, which the loop
+     * takes as a reason to draw a frame.
+     *
+     * A screen that gives up is leaving, so nothing else is acted on in
+     * that turn.
+     *
+     * @param  iterable<NativeComponent>  $owners
+     */
+    public static function expire(iterable $owners): bool
+    {
+        $mine = static::idsOf($owners);
+        $now = static::now();
+
+        foreach (static::awaiting() as $screen => $wait) {
+            if (! isset($mine[spl_object_id($screen)])) {
+                continue;
+            }
+
+            if ($wait['failure'] === null && ($wait['at'] === null || $wait['at'] > $now)) {
+                continue;
+            }
+
+            unset(static::awaiting()[$screen]);
+            $failure = $wait['failure'] ?? ['reason' => self::TIMEOUT, 'status' => null, 'message' => null];
+
+            \Closure::bind(
+                fn () => $this->giveUp($failure['reason'], $failure['status'], $failure['message']),
+                $screen,
+                ServerScreen::class,
+            )();
+
+            return true;
+        }
+
+        $due = [];
+
+        foreach (static::$pending as $id => $entry) {
+            if ($entry['deadline'] === null || $entry['deadline'] > $now) {
+                continue;
+            }
+
+            $owner = $entry['owner']->get();
+
+            if ($owner === null) {
+                unset(static::$pending[$id]);
+
+                continue;
+            }
+
+            if (! isset($mine[spl_object_id($owner)])) {
+                continue;
+            }
+
+            unset(static::$pending[$id]);
+
+            // A superseded action's answer would have been dropped anyway.
+            if (((static::requested()[$owner] ?? [])[$entry['region']] ?? null) !== $id) {
+                continue;
+            }
+
+            $request = $entry['request'];
+            NativeRouter::debugLog("Asgard: action [{$request->call}] for region [{$request->region}] timed out.");
+
+            $due[] = new ServerActionFailed(
+                $request->call, $request->component, $request->region, self::TIMEOUT, null, $request->id,
+                'no answer within '.round(($entry['deadline'] - $entry['sent']) / 1000, 3).' seconds',
+            );
+        }
+
+        foreach (static::$failures as $i => $failure) {
+            $owner = $failure['owner']->get();
+
+            if ($owner === null) {
+                unset(static::$failures[$i]);
+
+                continue;
+            }
+
+            if (isset($mine[spl_object_id($owner)])) {
+                unset(static::$failures[$i]);
+                $due[] = $failure['event'];
+            }
+        }
+
+        static::$failures = array_values(static::$failures);
+
+        foreach ($due as $event) {
+            static::fire($event);
+        }
+
+        return $due !== [];
+    }
+
+    /**
+     * Fire an event through Laravel, best-effort: a listener that throws
+     * must not take the screen down. An event marked BroadcastsGlobally
+     * also lands in the live screen's inbox, for its next turn.
+     */
+    public static function fire(object $event): void
+    {
+        try {
+            event($event);
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog('Asgard: a listener for '.$event::class.' failed: '.$e->getMessage());
+        }
+    }
+
+    /**
+     * The clock timers run on, in milliseconds. It is Carbon's, so a test
+     * can move it with `$this->travel()` or Carbon::setTestNow().
+     */
+    public static function now(): float
+    {
+        return (float) Carbon::now()->getPreciseTimestamp(3);
     }
 
     /**
@@ -784,7 +1108,13 @@ class ServerRegion
             static::ownedRegistries()[$owner],
             static::requestedStates()[$owner],
             static::answered()[$owner],
+            static::awaiting()[$owner],
         );
+
+        static::$failures = array_values(array_filter(
+            static::$failures,
+            fn (array $failure) => ! in_array($failure['owner']->get(), [null, $owner], true),
+        ));
     }
 
     /**
@@ -821,8 +1151,11 @@ class ServerRegion
      * The request carries the component's state as it is now, and it
      * becomes the region's latest request, so an answer to an older one
      * is dropped when it lands. The answer comes back through deliver().
-     * A source that throws is logged and otherwise ignored, as for
-     * request().
+     * A source that throws fails the action with reason `network`, as for a
+     * source that reports the failure itself (failed()).
+     *
+     * It waits at most the component's serverActionTimeout() for its
+     * answer. After that it fails with reason `timeout`.
      */
     public static function action(NativeComponent $owner, string $region, string $call, array $args): ActionRequest
     {
@@ -837,12 +1170,16 @@ class ServerRegion
             componentClass: $owner::class,
         );
 
-        static::track($owner, $region, $request->id);
+        $seconds = $owner->serverActionTimeout();
+
+        static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
 
         try {
             app(FragmentSource::class)->action($request);
         } catch (\Throwable $e) {
             NativeRouter::debugLog("Asgard: action [{$call}] for region [{$region}] could not start: ".$e->getMessage());
+
+            static::failed($request, self::NETWORK, null, $e->getMessage());
         }
 
         return $request;
@@ -865,6 +1202,8 @@ class ServerRegion
         static::$requestedStates = null;
         static::$answered = null;
         static::$watching = [];
+        static::$awaiting = null;
+        static::$failures = [];
     }
 
     /**
@@ -987,7 +1326,7 @@ class ServerRegion
             componentClass: $owner::class,
         );
 
-        static::track($owner, $region, $request->id);
+        static::track($owner, $region, $request);
 
         $states = static::requestedStates()[$owner] ?? [];
         $states[$region] = $request->state;
@@ -997,20 +1336,81 @@ class ServerRegion
             app(FragmentSource::class)->request($request);
         } catch (\Throwable $e) {
             NativeRouter::debugLog("Asgard: request for region [{$region}] could not start: ".$e->getMessage());
+
+            static::failed($request, self::NETWORK, null, $e->getMessage());
         }
     }
 
-    /** Make an id the region's latest request, and remember it as in flight. */
-    protected static function track(NativeComponent $owner, string $region, string $id): void
+    /** Make a request the region's latest, and remember it as in flight. */
+    protected static function track(NativeComponent $owner, string $region, RegionRequest $request, ?float $deadline = null): void
     {
         $requested = static::requested()[$owner] ?? [];
-        $requested[$region] = $id;
+        $requested[$region] = $request->id;
         static::requested()[$owner] = $requested;
 
-        static::$pending[$id] = [
+        static::$pending[$request->id] = [
             'owner' => \WeakReference::create($owner),
             'region' => $region,
+            'deadline' => $deadline,
+            'sent' => $deadline === null ? null : static::now(),
+            'request' => $request,
         ];
+    }
+
+    /**
+     * Act on a failed request that was the region's latest. Returns whether
+     * it was a server screen's body or an action, which are acted on at the
+     * owner's next turn (see expire()). Anything else just keeps what it had.
+     */
+    protected static function fail(NativeComponent $owner, string $region, RegionRequest $request, string $reason, ?int $status, ?string $message): bool
+    {
+        NativeRouter::debugLog("Asgard: request [{$request->id}] for region [{$region}] failed ({$reason}".($status === null ? '' : " {$status}").'): '.($message ?? ''));
+
+        if ($owner instanceof ServerScreen && $region === ServerScreen::REGION && isset(static::awaiting()[$owner])) {
+            static::awaiting()[$owner] = [
+                'at' => static::awaiting()[$owner]['at'],
+                'failure' => ['reason' => $reason, 'status' => $status, 'message' => $message],
+            ];
+
+            // Take a turn of the runloop, which acts on it.
+            static::$repaint = true;
+
+            return true;
+        }
+
+        if ($request instanceof ActionRequest) {
+            static::$failures[] = [
+                'owner' => \WeakReference::create($owner),
+                'event' => new ServerActionFailed($request->call, $request->component, $region, $reason, $status, $request->id, $message),
+            ];
+
+            static::$repaint = true;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /** @return \WeakMap<ServerScreen, array{at: ?float, failure: ?array}> */
+    protected static function awaiting(): \WeakMap
+    {
+        return static::$awaiting ??= new \WeakMap;
+    }
+
+    /**
+     * @param  iterable<NativeComponent>  $owners
+     * @return array<int, NativeComponent>
+     */
+    protected static function idsOf(iterable $owners): array
+    {
+        $ids = [];
+
+        foreach ($owners as $owner) {
+            $ids[spl_object_id($owner)] = $owner;
+        }
+
+        return $ids;
     }
 
     protected static function newRegistry(string $region, ?NativeComponent $owner, string $ownerScope): FragmentCallbacks

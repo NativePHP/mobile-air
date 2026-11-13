@@ -16,8 +16,14 @@ use Native\Mobile\Edge\Asgard\RegionRequest;
  * `ServerRegion::deliver($request, $tree)`, or from an AsyncTask
  * `->finished()` callback with `$this->receiveFragment($request, $tree)`.
  *
- * Never delivering is allowed. The region keeps its placeholder, which
- * is the intended offline state rather than an error.
+ * A request that fails without an answer the client can use is reported
+ * with `ServerRegion::failed($request, $reason, $status)`, where the
+ * reason is ServerRegion::NETWORK, SERVER or INVALID. A region keeps its
+ * placeholder, or the last fragment it painted, which is the intended
+ * offline state rather than an error. A server screen still waiting for
+ * its body gives up and leaves, and an action fires ServerActionFailed.
+ * Never answering is allowed too: a server screen and an action then
+ * fail when their timeout passes.
  *
  * action() is a tap inside a fragment whose callback targets the server
  * (§10). It is fire and forget in the same way: send it, and deliver the

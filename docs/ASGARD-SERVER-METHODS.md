@@ -196,6 +196,27 @@ Network unreachable is a failure like any other. A `#[Server]` method called
 offline runs its client body, fails fast, and runs its closure. Nothing queues
 in v1.
 
+A call waits at most its component's `serverActionTimeout()` for an answer:
+`nativephp.asgard.action_timeout`, 15 seconds by default, or 0 for no limit.
+After that its closure runs with a failed response (`code` is `timeout`), and
+an answer that lands later is dropped. The timer is acted on by the runloop of
+the screen the component is on, which wakes for it with no input needed.
+
+Every failure, a timeout included, also fires
+`Native\Mobile\Events\Asgard\ServerActionFailed` on the screen, the same
+event a failed fragment action fires (protocol §10.2). `action` is the
+method's name and `region` is null, so a screen can handle every failed server
+call in one place:
+
+```php
+#[On(ServerActionFailed::class, when: ['action' => 'refreshChart'])]
+public function refreshFailed(string $reason, ?int $status): void {}
+```
+
+`reason` is `timeout`, `network` (it could not be sent, or the native layer
+reported no HTTP status) or `server` (the failure carried an HTTP status,
+which is `status`).
+
 **Delivery never throws.** §5.3 of the protocol doc wants a throw in debug when
 the two halves have drifted, and that collides with the promise above: a throw
 out of delivery skips the closure and strands whatever it was going to clean

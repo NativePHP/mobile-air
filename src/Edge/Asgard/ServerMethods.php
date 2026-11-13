@@ -7,6 +7,7 @@ use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
 use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Events\Asgard\ServerActionFailed;
 
 /**
  * The client half of `#[Server]` methods
@@ -40,6 +41,16 @@ use Native\Mobile\Edge\NativeRouter;
  * a call with no continuation, since a closure holds its `$this` strongly.
  * Both routes end the same way — a response for a component that has gone
  * is discarded, closure and all (§4).
+ *
+ * ## Failures and the timeout
+ *
+ * A call waits at most its component's serverActionTimeout() for an
+ * answer. A call that times out, fails to send, or comes back failed runs
+ * its closure with a failed ServerResponse, as before, and also fires
+ * ServerActionFailed on the screen, so a screen can handle every failed
+ * server call in one #[On] listener. A timeout is acted on by the runloop
+ * of the screen the component is on (expire()), and an answer that lands
+ * after it is dropped.
  */
 class ServerMethods
 {
@@ -62,7 +73,8 @@ class ServerMethods
      * In-flight requests, keyed by the id the transport returned:
      *
      *   ['component' => WeakReference, 'closure' => ?Closure,
-     *    'method' => string, 'sent' => array<string,string>]
+     *    'method' => string, 'sent' => array<string,string>,
+     *    'address' => string, 'deadline' => ?float, 'timeout' => float]
      *
      * `sent` is fingerprints, not values: the values themselves went to
      * the transport and nothing here needs them again. Holding
@@ -134,6 +146,7 @@ class ServerMethods
             NativeRouter::debugLog('Asgard: send failed for '.$request->component.'::'.$method.'() — '.$e->getMessage());
 
             static::runClosure($component, $closure, ServerResponse::failure('', $e->getMessage()));
+            static::fireFailed($method, $request->component, ServerRegion::NETWORK, null, '', $e->getMessage());
 
             return null;
         }
@@ -142,15 +155,21 @@ class ServerMethods
             NativeRouter::debugLog('Asgard: transport returned an empty request id for '.$method.'() — treating as a failure.');
 
             static::runClosure($component, $closure, ServerResponse::failure('', 'The transport returned no request id.'));
+            static::fireFailed($method, $request->component, ServerRegion::NETWORK, null, '', 'The transport returned no request id.');
 
             return null;
         }
+
+        $seconds = $component->serverActionTimeout();
 
         static::$pending[$id] = [
             'component' => \WeakReference::create($component),
             'closure' => $closure,
             'method' => $method,
             'sent' => static::fingerprints($state),
+            'address' => $request->component,
+            'deadline' => $seconds > 0 ? ServerRegion::now() + $seconds * 1000 : null,
+            'timeout' => $seconds,
         ];
 
         return $id;
@@ -204,11 +223,18 @@ class ServerMethods
             // No state delta is applied for a failed response (§7). Not
             // even a partial one: a server that failed has no claim on
             // the client's state.
+            $error = isset($payload['error']) ? (string) $payload['error'] : null;
+
             static::runClosure($component, $entry['closure'], ServerResponse::failure(
                 id: $id,
-                error: isset($payload['error']) ? (string) $payload['error'] : null,
+                error: $error,
                 code: is_int($code) || is_string($code) ? $code : null,
             ));
+
+            // An HTTP status means the server answered. Anything else is
+            // the network's (a native error code, or none).
+            $status = is_int($code) && $code >= 100 ? $code : null;
+            static::fireFailed($entry['method'], $entry['address'], $status === null ? ServerRegion::NETWORK : ServerRegion::SERVER, $status, $id, $error);
 
             return true;
         }
@@ -269,6 +295,85 @@ class ServerMethods
             ->getAttributes(Server::class) !== [];
     }
 
+    /** Whether any call in flight has a deadline. */
+    public static function hasDeadlines(): bool
+    {
+        foreach (static::$pending as $entry) {
+            if ($entry['deadline'] !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * When the next call of these components times out, in milliseconds on
+     * ServerRegion::now()'s clock, or null when none will.
+     *
+     * @param  iterable<NativeComponent>  $components
+     */
+    public static function nextDeadline(iterable $components): ?float
+    {
+        $mine = static::idsOf($components);
+        $next = null;
+
+        foreach (static::$pending as $entry) {
+            $owner = $entry['component']->get();
+
+            if ($entry['deadline'] !== null && $owner !== null && isset($mine[spl_object_id($owner)])) {
+                $next = min($next ?? $entry['deadline'], $entry['deadline']);
+            }
+        }
+
+        return $next;
+    }
+
+    /**
+     * Time out every call of these components whose deadline has passed:
+     * its closure runs with a failed response, ServerActionFailed fires
+     * with reason `timeout`, and an answer that lands later is dropped.
+     * Called by the runloop with its screen's components. Returns whether
+     * any timed out.
+     *
+     * @param  iterable<NativeComponent>  $components
+     */
+    public static function expire(iterable $components): bool
+    {
+        $mine = static::idsOf($components);
+        $now = ServerRegion::now();
+        $due = [];
+
+        foreach (static::$pending as $id => $entry) {
+            if ($entry['deadline'] === null || $entry['deadline'] > $now) {
+                continue;
+            }
+
+            $owner = $entry['component']->get();
+
+            if ($owner === null) {
+                unset(static::$pending[$id]);
+
+                continue;
+            }
+
+            if (isset($mine[spl_object_id($owner)])) {
+                unset(static::$pending[$id]);
+                $due[$id] = [$owner, $entry];
+            }
+        }
+
+        foreach ($due as $id => [$owner, $entry]) {
+            $message = 'No answer within '.round($entry['timeout'], 3).' seconds.';
+            NativeRouter::debugLog('Asgard: '.$entry['address'].'::'.$entry['method'].'() timed out.');
+
+            static::runClosure($owner, $entry['closure'], ServerResponse::failure($id, $message, 'timeout'));
+            static::fireFailed($entry['method'], $entry['address'], ServerRegion::TIMEOUT, null, (string) $id, $message);
+        }
+
+        return $due !== [];
+    }
+
     /** Ids of the requests currently in flight. */
     public static function pending(): array
     {
@@ -287,6 +392,34 @@ class ServerMethods
     }
 
     // ── Internals ────────────────────────────────────
+
+    protected static function fireFailed(string $method, string $component, string $reason, ?int $status, string $id, ?string $message): void
+    {
+        ServerRegion::fire(new ServerActionFailed(
+            action: $method,
+            component: $component,
+            region: null,
+            reason: $reason,
+            status: $status,
+            requestId: $id,
+            message: $message,
+        ));
+    }
+
+    /**
+     * @param  iterable<NativeComponent>  $components
+     * @return array<int, NativeComponent>
+     */
+    protected static function idsOf(iterable $components): array
+    {
+        $ids = [];
+
+        foreach ($components as $component) {
+            $ids[spl_object_id($component)] = $component;
+        }
+
+        return $ids;
+    }
 
     protected static function transport(): ServerTransport
     {

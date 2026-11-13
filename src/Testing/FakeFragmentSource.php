@@ -32,6 +32,13 @@ use PHPUnit\Framework\Assert;
  *
  *     $source->assertActionSent('sales-summary', 'shuffle');
  *     $source->respondToAction('sales-summary', ['type' => 'text', 'props' => ['text' => 'Shuffled']]);
+ *
+ * A failure is reported with fail() or failAction(), through
+ * ServerRegion::failed(), as a real source reports one. The screen acts
+ * on it at its next turn, which wait() takes:
+ *
+ *     $source->failAction('sales-summary', ServerRegion::SERVER, 500);
+ *     $screen->wait();
  */
 class FakeFragmentSource implements FragmentSource
 {
@@ -235,5 +242,35 @@ class FakeFragmentSource implements FragmentSource
         }
 
         return ServerRegion::deliver($action, $tree);
+    }
+
+    /**
+     * Report a request as failed: the RegionRequest itself, or a region
+     * name for the latest request made for it. Returns whether the
+     * failure was acted on (see ServerRegion::failed()).
+     */
+    public function fail(RegionRequest|string $request, string $reason = ServerRegion::NETWORK, ?int $status = null, ?string $message = null): bool
+    {
+        if (is_string($request)) {
+            $region = $request;
+            $request = $this->lastRequest($region);
+
+            Assert::assertNotNull($request, "Region [{$region}] was never requested, so there is nothing to fail.");
+        }
+
+        return ServerRegion::failed($request, $reason, $status, $message);
+    }
+
+    /** Report a server action as failed. Same rules as fail(). */
+    public function failAction(ActionRequest|string $action, string $reason = ServerRegion::NETWORK, ?int $status = null, ?string $message = null): bool
+    {
+        if (is_string($action)) {
+            $region = $action;
+            $action = $this->lastAction($region);
+
+            Assert::assertNotNull($action, "Region [{$region}] never sent an action, so there is nothing to fail.");
+        }
+
+        return ServerRegion::failed($action, $reason, $status, $message);
     }
 }

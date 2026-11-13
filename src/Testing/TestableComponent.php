@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\Asgard\ServerScreen;
@@ -270,6 +271,10 @@ class TestableComponent
 
             $component->mountComponent();
             $component->flushDispatchedEvents();
+
+            // A server screen that gave up left for this one, and the
+            // router fires its event once this screen is live.
+            static::announceServerScreenFailures();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.
@@ -591,6 +596,45 @@ class TestableComponent
         return $this->afterInteraction(render: ! $unheard);
     }
 
+    /**
+     * Let time pass with no input, then take the turn the runloop takes
+     * when it wakes on its own: Asgard timers that are now due run out (a
+     * server screen with no body gives up, a server action or `#[Server]`
+     * call fails), failures a source reported are acted on, and the
+     * screen draws a frame.
+     *
+     *     $source->fail('screen', ServerRegion::NETWORK);
+     *     $screen->wait()->assertWentBack();
+     *
+     *     $screen->wait(16)->assertReplacedWith('/');
+     *
+     * Time moves on Carbon's clock (Carbon::setTestNow()), which is the one
+     * Asgard timers run on.
+     */
+    public function wait(float $seconds = 0): static
+    {
+        $this->startInteraction();
+
+        if ($seconds > 0) {
+            Carbon::setTestNow(Carbon::now()->addMilliseconds((int) round($seconds * 1000)));
+        }
+
+        $this->guard(fn () => $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $this->expireServerDeadlines();
+        }));
+
+        return $this->afterInteraction();
+    }
+
+    /** Fire the events of server screens that gave up, as the router does. */
+    protected static function announceServerScreenFailures(): void
+    {
+        foreach (ServerScreen::takeFailures() as $failure) {
+            ServerRegion::fire($failure);
+        }
+    }
+
     /** Simulate the system back gesture / hardware back button. */
     public function pressBack(): static
     {
@@ -719,7 +763,7 @@ class TestableComponent
         // re-fire it (NativeRouter::loop does exactly this).
         $this->component->resetNavigationIntent();
 
-        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri);
+        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, screen: $resolved['screen'] ?? null);
 
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.
@@ -804,6 +848,7 @@ class TestableComponent
         $this->guard(function () {
             $this->component->onResume();
             $this->component->flushDispatchedEvents();
+            static::announceServerScreenFailures();
             $this->takeTurns(render: true);
         });
 

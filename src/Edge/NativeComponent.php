@@ -1799,6 +1799,24 @@ abstract class NativeComponent
             return 0;
         }
 
+        $polls = $this->nextPollTimeout($definitions);
+
+        // An Asgard timer wakes the loop at its deadline, with no input
+        // needed, so a server screen or action that waits too long fails
+        // on time. It is on another clock than the polls (Carbon's, which
+        // tests can move), so it is worked out on its own.
+        $server = $this->serverDeadlineWait();
+
+        if ($server === null) {
+            return $polls;
+        }
+
+        return $polls === -1 ? $server : min($polls, $server);
+    }
+
+    /** The #[Poll] and native:poll part of nextEventTimeout(). */
+    private function nextPollTimeout(array $definitions): int
+    {
         $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
@@ -1827,6 +1845,60 @@ abstract class NativeComponent
         }
 
         return max(1, (int) ceil($soonest - $now));
+    }
+
+    /**
+     * Milliseconds until the next Asgard timer or failure of this screen
+     * or its children is due, or null when there is none. A covered
+     * screen's are left for when it runs again.
+     */
+    private function serverDeadlineWait(): ?int
+    {
+        if (! Asgard\ServerRegion::hasDeadlines() && ! Asgard\ServerMethods::hasDeadlines()) {
+            return null;
+        }
+
+        $tree = iterator_to_array($this->componentTree(), false);
+        $deadlines = array_filter(
+            [Asgard\ServerRegion::nextDeadline($tree), Asgard\ServerMethods::nextDeadline($tree)],
+            fn (?float $at) => $at !== null,
+        );
+
+        if ($deadlines === []) {
+            return null;
+        }
+
+        return max(0, (int) ceil(min($deadlines) - Asgard\ServerRegion::now()));
+    }
+
+    /**
+     * Act on the Asgard timers and failures of this screen and its children
+     * that are due (ServerRegion::expire(), ServerMethods::expire()). Run
+     * at the top of each turn of the loop. A closure of a `#[Server]`
+     * method that throws shows the error screen, as any interaction does.
+     * Returns whether anything was acted on.
+     */
+    private function expireServerDeadlines(): bool
+    {
+        if (! Asgard\ServerRegion::hasDeadlines() && ! Asgard\ServerMethods::hasDeadlines()) {
+            return false;
+        }
+
+        $acted = false;
+
+        $this->runGuardedInteraction('expireServerDeadlines()', function () use (&$acted) {
+            $tree = iterator_to_array($this->componentTree(), false);
+            $acted = Asgard\ServerRegion::expire($tree);
+
+            // A server screen that gave up has left, and its calls with it.
+            if ($this->nativeRunning) {
+                $acted = Asgard\ServerMethods::expire($tree) || $acted;
+            }
+
+            $this->flushDispatchedEvents();
+        });
+
+        return $acted;
     }
 
     /**
@@ -3013,6 +3085,18 @@ abstract class NativeComponent
     }
 
     /**
+     * Seconds a server action or `#[Server]` method sent from this
+     * component waits for its answer. After that it fails, and
+     * ServerActionFailed fires on the screen with reason `timeout`. From
+     * `nativephp.asgard.action_timeout`, 15 by default. Override it to
+     * set it for one component. 0 or less waits for ever.
+     */
+    public function serverActionTimeout(): float
+    {
+        return (float) config('nativephp.asgard.action_timeout', 15);
+    }
+
+    /**
      * Paint a fragment that a FragmentSource fetched. Made to be called
      * from an AsyncTask `->finished()` callback, which runs on the UI
      * thread bound to the screen:
@@ -3184,6 +3268,17 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Asgard timers and failures that are due: a server screen that
+            // gives up leaves, and a failed server action fires its event,
+            // which this screen hears on the next turn.
+            if ($this->expireServerDeadlines()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -3421,6 +3516,17 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Asgard timers and failures that are due: a server screen that
+            // gives up leaves, and a failed server action fires its event,
+            // which this screen hears on the next turn.
+            if ($this->expireServerDeadlines()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }

@@ -372,7 +372,7 @@ class NativeRouter
             }
 
             $kept[$uri] = [
-                'class' => Asgard\ServerScreen::class,
+                'class' => Asgard\ServerScreen::screenClass(),
                 'layout' => null,
                 'route' => $route,
                 'screen' => $screen,
@@ -873,6 +873,12 @@ class NativeRouter
             } catch (\Throwable $e) {
                 static::debugLog('mount/onResume FAILED in '.get_class($component).': '.$e->getMessage());
                 $component->renderErrorScreen($e);
+            }
+
+            // A server screen that gave up on its body left for this one.
+            // Fired now, with this screen the live one, so it hears it.
+            foreach (Asgard\ServerScreen::takeFailures() as $failure) {
+                $this->announce($failure);
             }
 
             $reenterCurrentScreen = false;
