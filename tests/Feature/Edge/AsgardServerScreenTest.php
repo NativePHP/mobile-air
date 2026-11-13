@@ -211,7 +211,7 @@ it('keeps the chrome it had when new chrome fails the check', function () {
 
     answer($screen, PROMO_BODY, ['nav_bar' => ['title' => 'Good']]);
 
-    expect(ServerRegion::push('promos.show', 'screen', PROMO_BODY, ['nav_bar' => ['title' => 'Bad', 'colour' => 'red']]))->toBe(1);
+    expect(ServerRegion::push('promos.show', ['id' => '42'], 'screen', PROMO_BODY, ['nav_bar' => ['title' => 'Bad', 'colour' => 'red']]))->toBe(1);
 
     repaint($screen)->assertNavTitle('Good');
 });
@@ -267,7 +267,7 @@ it('starts a screen opened again in the chrome it last had', function () {
 it('applies chrome pushed with a fragment', function () {
     $screen = Native::visit('/promos/42');
 
-    expect(ServerRegion::push('promos.show', 'screen', PROMO_BODY, ['nav_bar' => ['title' => 'Pushed']]))->toBe(1);
+    expect(ServerRegion::push('promos.show', ['id' => '42'], 'screen', PROMO_BODY, ['nav_bar' => ['title' => 'Pushed']]))->toBe(1);
 
     repaint($screen)->assertNavTitle('Pushed')->assertSee('Promo 42');
 });
@@ -278,10 +278,10 @@ it('keeps a pushed fragment off a screen of the same route with other parameters
     $first = Native::visit('/promos/1');
     answer($first, $body('Promo 1'), ['nav_bar' => ['title' => 'Promo #1']]);
 
-    // The next screen up the stack opens the address's stream with its own
-    // state, and the server pushes its body down it.
+    // The next screen up the stack is its own subscription, and the server
+    // pushes its body down it.
     $second = Native::visit('/promos/2');
-    expect(ServerRegion::push('promos.show', 'screen', $body('Promo 2'), ['nav_bar' => ['title' => 'Promo #2']]))->toBe(1);
+    expect(ServerRegion::push('promos.show', ['id' => '2'], 'screen', $body('Promo 2'), ['nav_bar' => ['title' => 'Promo #2']]))->toBe(1);
 
     repaint($second)->assertSee('Promo 2')->assertNavTitle('Promo #2');
 
@@ -290,70 +290,104 @@ it('keeps a pushed fragment off a screen of the same route with other parameters
     repaint($first)->assertSee('Promo 1')->assertDontSee('Promo 2')->assertNavTitle('Promo #1');
 });
 
-/** Resume a screen as the router does when the one above it pops. */
-function resume(TestableComponent $screen): TestableComponent
-{
-    Closure::bind(fn () => $this->resumeFromFlow(), $screen, TestableComponent::class)();
+it('paints a push on every screen that asked with the same state', function () {
+    $first = Native::visit('/promos/7');
+    $second = Native::visit('/promos/7');
 
-    return $screen;
-}
+    expect(ServerRegion::push('promos.show', ['id' => '7'], 'screen', PROMO_BODY))->toBe(2);
 
-it('takes its stream back when it comes back to the top of the stack', function () {
+    repaint($first)->assertSee('Promo 42');
+    repaint($second)->assertSee('Promo 42');
+});
+
+// ── The push stream ─────────────────────────────────
+
+it('keeps a covered screen of the same route on its own subscription', function () {
     $body = fn (string $text) => ['type' => 'text', 'props' => ['text' => $text]];
     $source = Native::fakeFragmentSource();
 
     $first = Native::visit('/promos/1');
     answer($first, $body('Promo 1'));
-
     $second = Native::visit('/promos/2');
     answer($second, $body('Promo 2'));
-    Closure::bind(fn () => $this->component->unmount(), $second, TestableComponent::class)();
 
-    resume($first);
+    // One stream, two subscriptions: one per state.
+    expect(array_column($source->watching(), 'state'))->toEqualCanonicalizing([['id' => '1'], ['id' => '2']]);
 
-    // It asks again with its own state, so the answer reopens the stream
-    // for /promos/1, and keeps what it had on screen meanwhile.
-    $source->assertRequested('screen', 3);
-    expect($source->lastRequest('screen')->state)->toMatchArray(['id' => '1']);
-    $first->assertSee('Promo 1');
+    // Each push lands on its own screen only, the covered one included.
+    expect(ServerRegion::push('promos.show', ['id' => '1'], 'screen', $body('Pushed to 1')))->toBe(1)
+        ->and(ServerRegion::push('promos.show', ['id' => '2'], 'screen', $body('Pushed to 2')))->toBe(1);
 
-    answer($first, $body('Promo 1 again'));
-    expect(ServerRegion::push('promos.show', 'screen', $body('Pushed to 1')))->toBe(1);
-    repaint($first)->assertSee('Pushed to 1');
-});
+    repaint($second)->assertSee('Pushed to 2')->assertDontSee('Pushed to 1');
+    repaint($first)->assertSee('Pushed to 1')->assertDontSee('Pushed to 2');
 
-it('leaves a resumed screen alone when its stream still has its state', function () {
-    $source = Native::fakeFragmentSource();
-
-    $first = Native::visit('/promos/1');
-    answer($first, PROMO_BODY);
-
-    resume($first);
-
-    $source->assertRequested('screen', 1);
-});
-
-it('only takes the stream back on the frame after a resume', function () {
-    $source = Native::fakeFragmentSource();
-
-    $first = Native::visit('/promos/1');
-    answer($first, PROMO_BODY);
-    $second = Native::visit('/promos/2');
-    answer($second, PROMO_BODY);
-
-    repaint($first);
-
+    // Nothing was fetched again to make that work.
     $source->assertRequested('screen', 2);
 });
 
-it('paints a push on every screen that asked with the same state', function () {
-    $first = Native::visit('/promos/7');
-    $second = Native::visit('/promos/7');
+it('fetches a signalled region again, keeping the fragment up meanwhile', function () {
+    $source = Native::fakeFragmentSource();
 
-    expect(ServerRegion::push('promos.show', 'screen', PROMO_BODY))->toBe(2);
+    $screen = Native::visit('/promos/1');
+    $source->respond('screen', PROMO_BODY, 'v1');
+    repaint($screen);
 
-    repaint($first)->assertSee('Promo 42');
-    repaint($second)->assertSee('Promo 42');
+    // The version it holds: nothing to do.
+    expect(ServerRegion::signal('promos.show', ['id' => '1'], 'screen', 'v1'))->toBe(0);
+    expect(ServerRegion::repaintPending())->toBeFalse();
+
+    expect(ServerRegion::signal('promos.show', ['id' => '1'], 'screen', 'v2'))->toBe(1);
+    expect(ServerRegion::repaintPending())->toBeTrue();
+
+    repaint($screen)->assertSee('Promo 42');
+    $source->assertRequested('screen', 2);
+
+    $source->respond('screen', ['type' => 'text', 'props' => ['text' => 'Fresh']], 'v2');
+    repaint($screen)->assertSee('Fresh');
+
+    // Caught up, so the same signal again does nothing.
+    expect(ServerRegion::signal('promos.show', ['id' => '1'], 'screen', 'v2'))->toBe(0);
+});
+
+it('fetches a covered screen\'s signalled region when it is drawn again', function () {
+    $body = fn (string $text) => ['type' => 'text', 'props' => ['text' => $text]];
+    $source = Native::fakeFragmentSource();
+
+    $first = Native::visit('/promos/1');
+    answer($first, $body('Promo 1'));
+    $second = Native::visit('/promos/2');
+    answer($second, $body('Promo 2'));
+
+    // A signal for the screen underneath does not fetch for the one on top.
+    expect(ServerRegion::signal('promos.show', ['id' => '1'], 'screen', 'v9'))->toBe(1);
+    repaint($second);
+    $source->assertRequested('screen', 2);
+
+    // It asks, with its own state, once it is drawn again.
+    repaint($first);
+    $source->assertRequested('screen', 3);
+    expect($source->lastRequest('screen')->state)->toMatchArray(['id' => '1']);
+});
+
+it('keeps getting its pushes after the screen above it pops', function () {
+    $body = fn (string $text) => ['type' => 'text', 'props' => ['text' => $text]];
+    $source = Native::fakeFragmentSource();
+
+    $first = Native::visit('/promos/1');
+    answer($first, $body('Promo 1'));
+    $second = Native::visit('/promos/2');
+    answer($second, $body('Promo 2'));
+
+    Closure::bind(fn () => $this->component->unmount(), $second, TestableComponent::class)();
+    ServerRegion::sync();
+
+    expect($source->watching())->toHaveCount(1)
+        ->and($source->watching()[0]['state'])->toBe(['id' => '1']);
+
+    expect(ServerRegion::push('promos.show', ['id' => '1'], 'screen', $body('Pushed to 1')))->toBe(1)
+        ->and(ServerRegion::push('promos.show', ['id' => '2'], 'screen', $body('Pushed to 2')))->toBe(0);
+    repaint($first)->assertSee('Pushed to 1');
+    $source->assertRequested('screen', 2);
 });
 
 // ── Navigation slots in fragments ───────────────────

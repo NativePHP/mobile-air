@@ -62,6 +62,19 @@ use Native\Mobile\System;
  * source answers later through deliver(), which hands the fragment to
  * the right component and flags a repaint.
  *
+ * ## The push stream (§8.1)
+ *
+ * Every region that got a good answer is watched on the device's one push
+ * stream. The set is worked out from live owners: per owner, each answered
+ * region, grouped by address and the state its answer was rendered for.
+ * sync() hands the whole set to the source whenever it changes, and the
+ * source opens, reopens or closes the stream to match. It runs at the end
+ * of every frame and after the router unmounts a screen, so changes that
+ * land together make one call. The stream tells a region it changed
+ * through signal(), which fetches it again, or for a shared region hands
+ * over the fragment itself through push(). Both name the subscription's
+ * address and state.
+ *
  * ## What is deliberately NOT here
  *
  * HTTP, sessions and crypto belong to other packages. This class holds
@@ -191,20 +204,25 @@ class ServerRegion
     protected static ?\WeakMap $requestedStates = null;
 
     /**
-     * The state of the latest region request per component address and
-     * region: `address => [region => state]`. A server's push stream for
-     * an address is opened with the state of the latest request, so that
-     * is the state every pushed fragment was rendered for.
+     * What each owner's answered regions were rendered for:
+     * `owner => [region => ['id' => subscription id, 'state' => …, 'version' => ?token]]`.
+     * Set when an answer is delivered, so only regions with a good answer
+     * are watched on the push stream. The version is updated by pushes.
      *
-     * @var array<string, array<string, array>>
+     * @var \WeakMap<NativeComponent, array<string, array{id: string, state: array, version: ?string}>>|null
      */
-    protected static array $streamStates = [];
+    protected static ?\WeakMap $answered = null;
 
     /**
-     * Set when a screen comes back to the top of the stack, so the next
-     * frame's requestMissing() can win its stream back. See resumed().
+     * The set last handed to the source's watch(), without versions, so an
+     * unchanged set is not sent again.
      */
-    protected static bool $resuming = false;
+    protected static array $watching = [];
+
+    /** At most this many subscriptions, and regions per subscription, on the stream. */
+    public const MAX_SUBSCRIPTIONS = 16;
+
+    public const MAX_REGIONS = 16;
 
     /**
      * Open a region. Returns true when the caller should render the
@@ -359,8 +377,11 @@ class ServerRegion
      * `$chrome` is the chrome part of a server screen's answer (§12). It
      * goes to the ServerScreen that asked, once its fragment is accepted,
      * and is ignored for any other component.
+     *
+     * `$version` is the answer's version token (§8.1). An accepted answer
+     * puts its region on the push stream, for the state it was asked with.
      */
-    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null): bool
+    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null): bool
     {
         $entry = static::$pending[$request->id] ?? null;
 
@@ -394,57 +415,198 @@ class ServerRegion
         }
 
         static::applyChrome($owner, $chrome);
+        static::answer($owner, $entry['region'], $request->state, $version);
 
         return true;
     }
 
     /**
      * Apply a fragment the server pushed, rather than one answering a request.
+     * Only a shared region is pushed this way (§8.1); any other gets a
+     * signal().
      *
-     * A push (an SSE event, say) carries no request id, so deliver() would
-     * drop it. It names a component address and a region instead, and lands
-     * on every live instance of that component that has asked for that
-     * region. A region a screen never declared gets nothing, so a server
-     * cannot use a push to paint somewhere the client did not offer it.
+     * A push (an SSE event) carries no request id, so deliver() would drop
+     * it. It names its subscription instead: a component address and the
+     * state the server rendered it for. It lands on every live instance of
+     * that address that asked for the region with that state. A region a
+     * screen never declared gets nothing, so a server cannot use a push to
+     * paint somewhere the client did not offer it.
      *
-     * Instances of one address can hold different state: two server
-     * screens of one route with other parameters (`/promos/1` under
-     * `/promos/2`), or two cards. The server rendered the push for one
-     * state, the one its stream was opened with, which is the state of
-     * the latest request for that address. Only instances that asked
-     * with that state are painted, so a screen further down the stack
-     * keeps its own fragment and chrome.
+     * Instances of one address with other state are other subscriptions:
+     * two server screens of one route with other parameters (`/promos/1`
+     * under `/promos/2`), or two cards. Each gets its own pushes, and a
+     * push for one never paints the other.
      *
      * Returns how many instances it painted. A server screen's chrome
-     * rides along as for deliver().
+     * rides along as for deliver(), and `$version` becomes the token each
+     * painted instance holds for the region.
      */
-    public static function push(string $component, string $region, array|string $tree, ?array $chrome = null): int
+    public static function push(string $component, array $state, string $region, array|string $tree, ?array $chrome = null, ?string $version = null): int
     {
         $painted = 0;
-        $state = static::$streamStates[$component][$region] ?? null;
+
+        foreach (static::subscribers($component, $state, $region) as $owner) {
+            if (static::applyFragment($region, $tree, $owner)) {
+                static::applyChrome($owner, $chrome);
+                static::answer($owner, $region, $state, $version);
+                $painted++;
+            }
+        }
+
+        if ($painted === 0) {
+            NativeRouter::debugLog("Asgard: pushed fragment for [{$component}] [{$region}] has no live region with its state — dropped.");
+        }
+
+        return $painted;
+    }
+
+    /**
+     * A region changed on the server, and the stream said so without
+     * sending it (a `signal`, §8.1). Every live instance of that address
+     * that asked for the region with that state, and does not already hold
+     * that version, fetches it again: the same as refresh(), so the request
+     * goes out after the next frame that draws the region and the fragment
+     * on screen stays until the answer lands. An instance that is not on
+     * screen (a screen under another) asks when it is drawn again.
+     *
+     * Returns how many instances will fetch.
+     */
+    public static function signal(string $component, array $state, string $region, string $version): int
+    {
+        $stale = 0;
+
+        foreach (static::subscribers($component, $state, $region) as $owner) {
+            if (((static::answered()[$owner] ?? [])[$region]['version'] ?? null) === $version) {
+                continue;
+            }
+
+            static::refresh($owner, $region);
+            $stale++;
+        }
+
+        if ($stale > 0) {
+            // Take a turn of the runloop, so the next frame asks.
+            static::$repaint = true;
+        }
+
+        return $stale;
+    }
+
+    /**
+     * The live instances of an address that asked for a region with this
+     * state: the state their fragment was answered for, or the state they
+     * have asked with since. Either one makes them this subscription's.
+     *
+     * @return list<NativeComponent>
+     */
+    protected static function subscribers(string $component, array $state, string $region): array
+    {
+        $id = static::subscriptionId($component, $state);
+        $owners = [];
 
         foreach (static::requested() as $owner => $regions) {
             if (! isset($regions[$region]) || ComponentAddress::for($owner) !== $component) {
                 continue;
             }
 
+            $answered = (static::answered()[$owner] ?? [])[$region]['id'] ?? null;
             $asked = (static::requestedStates()[$owner] ?? [])[$region] ?? null;
 
-            if ($state !== null && $asked !== null && $asked !== $state) {
-                continue;
-            }
-
-            if (static::applyFragment($region, $tree, $owner)) {
-                static::applyChrome($owner, $chrome);
-                $painted++;
+            if ($answered === $id || ($asked !== null && static::subscriptionId($component, $asked) === $id)) {
+                $owners[] = $owner;
             }
         }
 
-        if ($painted === 0) {
-            NativeRouter::debugLog("Asgard: pushed fragment for [{$component}] [{$region}] has no live region — dropped.");
+        return $owners;
+    }
+
+    /**
+     * The subscription id for an address and a state: a short hash of the
+     * address and the state in a canonical form, so the same instance
+     * always gets the same id and an unchanged set reads as unchanged.
+     */
+    public static function subscriptionId(string $component, array $state): string
+    {
+        $canonical = json_encode([$component, static::canonical($state)], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+
+        return substr(hash('sha256', (string) $canonical), 0, 16);
+    }
+
+    /**
+     * The push stream subscriptions live owners want now (§8.1): each
+     * answered region, grouped by address and the state it was answered
+     * for. Sorted by id, with regions sorted, so equal sets compare equal.
+     * A region's version is sent only when every owner holds the same one.
+     *
+     * @return list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>
+     */
+    public static function subscriptions(): array
+    {
+        $set = [];
+        $tokens = [];
+
+        foreach (static::answered() as $owner => $regions) {
+            $component = ComponentAddress::for($owner);
+
+            foreach ($regions as $region => $entry) {
+                $id = $entry['id'];
+                $set[$id] ??= ['id' => $id, 'component' => $component, 'regions' => [], 'state' => $entry['state'], 'versions' => []];
+                $set[$id]['regions'][$region] = $region;
+                $tokens[$id][$region][] = $entry['version'];
+            }
         }
 
-        return $painted;
+        ksort($set);
+
+        if (count($set) > self::MAX_SUBSCRIPTIONS) {
+            NativeRouter::debugLog('Asgard: '.count($set).' subscriptions on screen, and the push stream carries '.self::MAX_SUBSCRIPTIONS.'. The rest get no pushes.');
+            $set = array_slice($set, 0, self::MAX_SUBSCRIPTIONS, true);
+        }
+
+        foreach ($set as $id => $subscription) {
+            $regions = $subscription['regions'];
+            ksort($regions);
+            $regions = array_slice(array_values($regions), 0, self::MAX_REGIONS);
+
+            $versions = [];
+            foreach ($regions as $region) {
+                $held = array_unique($tokens[$id][$region], SORT_REGULAR);
+
+                if (count($held) === 1 && is_string($held[array_key_first($held)])) {
+                    $versions[$region] = $held[array_key_first($held)];
+                }
+            }
+
+            $set[$id]['regions'] = $regions;
+            $set[$id]['versions'] = $versions;
+        }
+
+        return array_values($set);
+    }
+
+    /**
+     * Hand the push stream set to the source when it has changed since the
+     * last call. Versions alone changing is not a change. Called at the end
+     * of every frame and by the router after it unmounts a screen.
+     *
+     * A source that throws is logged and otherwise ignored.
+     */
+    public static function sync(): void
+    {
+        $subscriptions = static::subscriptions();
+        $shape = array_map(fn (array $s) => array_diff_key($s, ['versions' => true]), $subscriptions);
+
+        if ($shape === static::$watching) {
+            return;
+        }
+
+        static::$watching = $shape;
+
+        try {
+            app(FragmentSource::class)->watch($subscriptions, static::platform());
+        } catch (\Throwable $e) {
+            NativeRouter::debugLog('Asgard: the push stream set could not be handed over: '.$e->getMessage());
+        }
     }
 
     /** Drop a region's fragment; it goes back to its placeholder. */
@@ -532,12 +694,11 @@ class ServerRegion
      * A source that throws is logged and otherwise ignored: a fetch that
      * could not start is a region that keeps its placeholder, not a
      * broken screen.
+     *
+     * Then the push stream set is synced (sync()).
      */
     public static function requestMissing(): void
     {
-        $resuming = static::$resuming;
-        static::$resuming = false;
-
         foreach (static::$frame as $record) {
             $owner = $record['owner']?->get();
 
@@ -547,8 +708,7 @@ class ServerRegion
 
             $name = $record['name'];
             $refreshing = static::refreshing()[$owner] ?? [];
-            $wanted = isset($refreshing['*']) || isset($refreshing[$name])
-                || ($resuming && $record['has_fragment'] && static::lostStream($owner, $name));
+            $wanted = isset($refreshing['*']) || isset($refreshing[$name]);
 
             if (! $wanted && ($record['has_fragment'] || isset((static::requested()[$owner] ?? [])[$name]))) {
                 continue;
@@ -574,6 +734,9 @@ class ServerRegion
             unset($refreshing['*']);
             static::refreshing()[$owner] = $refreshing;
         }
+
+        // The frame is the point where changes to the stream set settle.
+        static::sync();
     }
 
     /**
@@ -593,38 +756,7 @@ class ServerRegion
         static::refreshing()[$owner] = $refreshing;
     }
 
-    /**
-     * A screen came back to the top of the stack. Called by
-     * `NativeComponent::resumeComponent()` before onResume().
-     *
-     * The push stream is one per component address, opened with the
-     * state of the latest request. A screen pushed on top with the same
-     * address and other state (`/promos/2` over `/promos/1`) took it over,
-     * so the screen coming back would miss its pushes and show whatever
-     * it last had. On the next frame, every region it draws whose stream
-     * now carries other state is fetched again. That catches up on what
-     * it missed while it was covered, and the answer reopens the stream
-     * with its own state. A region whose stream still carries its state
-     * kept getting pushes all along and is left alone.
-     */
-    public static function resumed(): void
-    {
-        static::$resuming = true;
-    }
-
-    /** Whether the stream for a region's address now carries other state than the owner asked with. */
-    protected static function lostStream(NativeComponent $owner, string $region): bool
-    {
-        $asked = (static::requestedStates()[$owner] ?? [])[$region] ?? null;
-
-        if ($asked === null) {
-            return false;
-        }
-
-        return (static::$streamStates[ComponentAddress::for($owner)][$region] ?? null) !== $asked;
-    }
-
-    /** Whether a fragment has landed since the current frame was drawn. */
+    /** Whether a fragment has landed, or a signal asked for one, since the current frame was drawn. */
     public static function repaintPending(): bool
     {
         return static::$repaint;
@@ -633,6 +765,7 @@ class ServerRegion
     /**
      * Forget a component's requests. Called from `unmount()`, so an
      * answer that lands later is dropped rather than held for nobody.
+     * Its regions leave the push stream at the next sync().
      */
     public static function forget(NativeComponent $owner): void
     {
@@ -650,6 +783,7 @@ class ServerRegion
             static::fragments()[$owner],
             static::ownedRegistries()[$owner],
             static::requestedStates()[$owner],
+            static::answered()[$owner],
         );
     }
 
@@ -729,8 +863,8 @@ class ServerRegion
         static::$pending = [];
         static::$repaint = false;
         static::$requestedStates = null;
-        static::$streamStates = [];
-        static::$resuming = false;
+        static::$answered = null;
+        static::$watching = [];
     }
 
     /**
@@ -858,7 +992,6 @@ class ServerRegion
         $states = static::requestedStates()[$owner] ?? [];
         $states[$region] = $request->state;
         static::requestedStates()[$owner] = $states;
-        static::$streamStates[$request->component][$region] = $request->state;
 
         try {
             app(FragmentSource::class)->request($request);
@@ -901,6 +1034,40 @@ class ServerRegion
         $held = static::ownedRegistries()[$owner] ?? [];
         unset($held[$region]);
         static::ownedRegistries()[$owner] = $held;
+    }
+
+    /** Remember what a region's fragment was rendered for, which puts it on the push stream. */
+    protected static function answer(NativeComponent $owner, string $region, array $state, ?string $version): void
+    {
+        $held = static::answered()[$owner] ?? [];
+        $held[$region] = [
+            'id' => static::subscriptionId(ComponentAddress::for($owner), $state),
+            'state' => $state,
+            'version' => $version,
+        ];
+        static::answered()[$owner] = $held;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, array{id: string, state: array, version: ?string}>> */
+    protected static function answered(): \WeakMap
+    {
+        return static::$answered ??= new \WeakMap;
+    }
+
+    /** Assoc arrays with sorted keys, all the way down, so equal state hashes equally. */
+    protected static function canonical(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $value = array_map(static::canonical(...), $value);
+
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return $value;
     }
 
     /** @return \WeakMap<NativeComponent, array<string, array>> */

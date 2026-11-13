@@ -41,6 +41,13 @@ class FakeFragmentSource implements FragmentSource
     /** @var list<ActionRequest> oldest first */
     protected array $actions = [];
 
+    /**
+     * Every set handed to watch(), oldest first.
+     *
+     * @var list<list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>>
+     */
+    protected array $watches = [];
+
     /** Bind a fake source for this test (idempotent) and return it. */
     public static function enable(): static
     {
@@ -77,6 +84,11 @@ class FakeFragmentSource implements FragmentSource
     public function action(ActionRequest $request): void
     {
         $this->actions[] = $request;
+    }
+
+    public function watch(array $subscriptions, string $platform): void
+    {
+        $this->watches[] = $subscriptions;
     }
 
     // ── Inspection ──────────────────────────────────
@@ -158,6 +170,35 @@ class FakeFragmentSource implements FragmentSource
         return $this;
     }
 
+    /**
+     * Every set the push stream was told to watch, oldest first.
+     *
+     * @return list<list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>>
+     */
+    public function watches(): array
+    {
+        return $this->watches;
+    }
+
+    /**
+     * The set the push stream watches now: the last one handed over, or
+     * null when none ever was. An empty list means the stream is closed.
+     */
+    public function watching(): ?array
+    {
+        return $this->watches === [] ? null : $this->watches[array_key_last($this->watches)];
+    }
+
+    /** Assert how many times the push stream set was handed over. */
+    public function assertWatched(int $times): static
+    {
+        $count = count($this->watches);
+
+        Assert::assertSame($times, $count, "The push stream set was handed over {$count} times, not {$times}.");
+
+        return $this;
+    }
+
     // ── Answering ───────────────────────────────────
 
     /**
@@ -165,9 +206,10 @@ class FakeFragmentSource implements FragmentSource
      * latest request made for it. Returns whether the fragment was applied.
      *
      * The screen paints it on its next frame, as on a device, so follow
-     * with an interaction (or emitNative()) to see it.
+     * with an interaction (or emitNative()) to see it. `$version` is the
+     * answer's version token, as a server would send it.
      */
-    public function respond(RegionRequest|string $request, array|string $tree): bool
+    public function respond(RegionRequest|string $request, array|string $tree, ?string $version = null): bool
     {
         if (is_string($request)) {
             $region = $request;
@@ -176,7 +218,7 @@ class FakeFragmentSource implements FragmentSource
             Assert::assertNotNull($request, "Region [{$region}] was never requested, so there is nothing to answer.");
         }
 
-        return ServerRegion::deliver($request, $tree);
+        return ServerRegion::deliver($request, $tree, null, $version);
     }
 
     /**

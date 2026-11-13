@@ -3059,19 +3059,6 @@ abstract class NativeComponent
         //
     }
 
-    /**
-     * Resume this screen after the one above it popped: let its server
-     * regions win back their push stream, then run onResume().
-     *
-     * @internal Called by the router and the test harness.
-     */
-    final public function resumeComponent(): void
-    {
-        Asgard\ServerRegion::resumed();
-
-        $this->onResume();
-    }
-
     public function stop(): void
     {
         $this->nativeRunning = false;

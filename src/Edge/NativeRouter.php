@@ -864,7 +864,7 @@ class NativeRouter
 
                     if (! $component->hasNavigationIntent()) {
                         static::debugLog('loop: calling onResume() on '.get_class($component));
-                        $component->resumeComponent();
+                        $component->onResume();
                         $this->announce(new ScreenResumed(get_class($component), $entry['uri'] ?? null));
                     }
                 }
@@ -1065,6 +1065,10 @@ class NativeRouter
     protected function unmountComponent(NativeComponent $component): void
     {
         $component->unmount();
+
+        // Its server regions leave the push stream now, in one change with
+        // its children's, rather than waiting for a frame that may not come.
+        Asgard\ServerRegion::sync();
         $this->announce(new ScreenUnmounted(get_class($component), $this->currentUri()));
     }
 

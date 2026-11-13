@@ -3,6 +3,7 @@
 namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Traits\Macroable;
+use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\Asgard\ServerScreen;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Enums\ActionSource;
@@ -723,6 +724,7 @@ class TestableComponent
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.
             $this->component->unmount();
+            ServerRegion::sync();
             $next->parent = $this->parent;
             $this->suspended = true;
         } else {
@@ -766,6 +768,7 @@ class TestableComponent
         );
 
         $this->component->unmount();
+        ServerRegion::sync();
         $this->suspended = true;
 
         $this->parent->resumeFromFlow();
@@ -799,7 +802,7 @@ class TestableComponent
         NativeComponent::markActive($this->component);
 
         $this->guard(function () {
-            $this->component->resumeComponent();
+            $this->component->onResume();
             $this->component->flushDispatchedEvents();
             $this->takeTurns(render: true);
         });

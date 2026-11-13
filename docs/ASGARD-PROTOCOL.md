@@ -551,23 +551,111 @@ without already having a client:
 
 ### 8.1 The push stream
 
-A client can hold a Server-Sent Events stream open for the regions of one
-component, so the server can send fragments without being asked.
+A client holds one Server-Sent Events stream open per device, so the server
+can say a region changed without being asked. The stream carries a
+**subscription** for each component instance the device has on screen, and
+nothing else.
 
-**Opening it.** `{path}/stream`, in the same two forms as render. The body is
-a region request with `regions` (1 to 16 names) in place of `region`, and it
-never carries an `action`. The request is sealed exactly like a region request
-(§7.3, §7.4). It is a read, so it has no nonce.
+By default the stream renders nothing. When a region changes it sends a
+**signal**: the region and its new version. The client fetches the region
+through a normal region request, with its own credentials. A region the
+server marks **shared** renders the same for everyone with the same state,
+and for those the stream sends the fragment inline instead. Shared is
+opt-in, so a region left unmarked costs a round trip, never a leak.
+
+**Cost.** An open stream holds one server worker (a PHP-FPM child, say) for
+its whole lifetime. That is why a device opens one stream, not one per
+component, and why it drops what is no longer on screen. A device with no
+server regions on screen holds no stream at all.
+
+**Opening it.** `{path}/stream`, in the same two forms as render. The body
+lists every subscription the device wants:
+
+```json
+{"protocol":1,"platform":"ios","subscriptions":[
+ {"id":"3f9a0c1d2e4b5a6c","component":"promos.show","regions":["screen"],
+  "state":{"id":"1"},"versions":{"screen":"q3V0bG9yZW1pcHN1"}},
+ {"id":"8b2d77e01c9f4a35","component":"promos.show","regions":["screen"],
+  "state":{"id":"2"}}]}
+```
+
+- `subscriptions` holds 1 to 16 subscriptions.
+- `id` is the client's name for a subscription: 1 to 32 characters of
+  `A-Z a-z 0-9 _ -`, unique within the request. The server only echoes it.
+- `component`, `state` and each name in `regions` follow the rules of a
+  region request (§4, §5). `regions` holds 1 to 16 distinct names.
+- `versions` is optional. It maps a region to the version token the client
+  holds for it (below).
+- There is no `action`, at the top level or in a subscription, and a
+  subscription has no other members.
+
+A subscription is one component instance's view of the server: one address
+and one state. Two instances with the same address and the same state share a
+subscription. Two with different state (`/promos/1` under `/promos/2`) are
+two subscriptions, and each gets the pushes rendered for its own state.
+
+The server checks every subscription before it streams anything, and a
+request it refuses gets the answer render would give, sealed the same way:
+a 422 for a bad body, a 404 `unknown_component` for an unknown address or
+region in any subscription, a 500 `invalid_fragment` for a fragment it cannot
+send. It works out each subscription's channels from that subscription's
+state (§12, `channels()`), and reads every counter of every subscription in
+one read per poll.
+
+The request is sealed exactly like a region request (§7.3, §7.4). It is a
+read, so it has no nonce.
+
+**The device declares the whole set.** The client works the set out from what
+is on screen: for each live component instance, each region that holds a
+fragment from a good answer, grouped by address and by the state the answer
+was rendered for. Only answered regions are watched, so a session already
+exists when the stream opens. Whenever the set changes (a region gets its
+first answer, a state changes, an instance unmounts) the client opens the
+stream again with the new set, signed afresh. An empty set closes it. A
+change that leaves the set as it was does nothing, so subscription ids are
+derived from the address and the canonical state, and an unchanged set is
+recognisably unchanged. Changes that land together, such as a navigation
+that unmounts one screen and mounts another, make one reopen.
+
+**Version tokens.** Reopening is frequent, so the server does not send every
+region again each time. Every region answer carries a `version`: an opaque
+token of up to 64 characters of `A-Z a-z 0-9 _ -`, derived from the push
+counters that region watches for that address, state and set of channels.
+
+```json
+{"protocol":1,"region":"screen","version":"q3V0bG9yZW1pcHN1","fragment":{…}}
+```
+
+The client keeps the latest token per instance and region, from render
+answers and from fragment events, and sends it in `versions`. On connect the
+server sends an event only for regions whose current token differs from the
+client's, or that have none. The server reads the counters before it renders
+a region answer, so a push that lands between that answer and the stream
+opening leaves the client holding a stale token, and the stream sends the
+region again. Nothing is lost. Instances that share a subscription but hold
+different tokens for a region send none for it.
+
+**Shared regions.** A server renders a shared region once per push for each
+distinct address, region, platform, canonical state and version, and every
+stream that needs that answer reuses it (from a short-lived cache, say),
+sealing it for its own session. Because that cache is not keyed by user, a
+server renders a shared region on the stream with no authenticated user. A
+shared region therefore must not depend on the user or on secrets, which
+also makes compressing it safe (§7.4). The region request itself is not
+affected: a shared region renders there as any other, with the caller's
+credentials.
 
 **The answer** is `200 text/event-stream`, and its headers are not signed. The
 device's native code holds the connection and PHP never sees those headers, so
 a signature on them would protect nothing. Each event carries its own instead.
-A request refused before the stream starts gets the same answer render would
-give, sealed the same way.
 
-**Events.** Each `fragment` event looks like this:
+**Events.** There are two, `signal` and `fragment`, sealed the same way:
 
 ```
+id: 7
+event: signal
+data: {"body":"<base64url>","enc":"identity","sig":"<base64url>"}
+
 id: 7
 event: fragment
 data: {"body":"<base64url>","enc":"gzip","sig":"<base64url>"}
@@ -575,8 +663,12 @@ data: {"body":"<base64url>","enc":"gzip","sig":"<base64url>"}
 
 The three members are always present, in this order, and there are no others.
 
-`body` is the region's message, `{"protocol":1,"region":…,"fragment":…}`,
-compressed when `enc` says so, encrypted as `aes128gcm` under `enc_s` with
+A `signal`'s message is `{"protocol":1,"subscription":…,"region":…,"version":…}`
+and is never compressed. A `fragment` event is sent only for a shared region,
+and its message adds the fragment, with `chrome` too for a server screen
+(§12.2): `{"protocol":1,"subscription":…,"region":…,"version":…,"fragment":…}`.
+
+`body` is the message, compressed when `enc` says so, encrypted as `aes128gcm` under `enc_s` with
 the session id as `keyid`, a fresh salt per event and record size 4096, then
 encoded as base64url without padding.
 
@@ -612,8 +704,17 @@ a body that was never compressed, or paint a compressed one as it stands. The fi
 the string can never be read as an RFC 9421 signature base.
 
 The client verifies `sig`, then decrypts, then gunzips when `enc` is `gzip`,
-then checks that the region is one it subscribed to. An event that fails any of those is logged and dropped,
-never painted. `retry:` lines and `: ping` comments are not covered. They
+then checks that `subscription` is one it opened this stream with and that
+`region` is one of that subscription's. An event that fails any of those
+checks is logged and dropped, never acted on. Then it acts only on instances
+of that address that asked with that subscription's state:
+
+- On a `signal`, each instance whose token for the region differs from the
+  signal's fetches the region again, exactly as a refresh would (§3.1). The
+  fragment on screen stays until the answer lands, and a server screen's
+  chrome comes with it. An instance that already holds that version ignores
+  it.
+- On a `fragment`, it paints the fragment and keeps its `version`. `retry:` lines and `: ping` comments are not covered. They
 carry nothing a client paints. Within one live connection, ordering and
 duplication are TLS's job, as for any response.
 
@@ -634,14 +735,24 @@ is signed afresh.
 3. A 419 gets one new handshake, off the UI lane, and one more try. That
    allowance resets once a connection succeeds.
 4. A 403, a 204 or any other 4xx ends the stream. The regions keep their last
-   fragments, and the next region request subscribes again.
+   fragments, and the next change to the set opens it again.
 
-`Last-Event-ID` is not signed. A server treats it as a hint at most, and sends
-every region's current fragment on connect regardless.
+A reconnect sends the tokens the client holds, so it only hears about what
+it missed. A token that is behind only costs an extra event. `Last-Event-ID` is not signed, and a server ignores it: the
+tokens decide what is sent on connect.
+
+The server sends a `: ping` comment every 5 seconds. A server only learns
+that a client went away when a write fails, so the ping is also how soon a
+dead connection gives its worker back.
 
 The signature is checked once, when the stream opens. How long a server then
 keeps the stream open (`asgard.stream.lifetime`, 300 seconds by default) has
 nothing to do with the signature window.
+
+*Implementer note.* A signal carries nothing rendered, so the stream does not
+have to be held by the application that renders. Something else could hold
+it later, as long as it can seal events: it would need the session keys, or a
+ticket the application issues for them.
 
 ## 9. Fragment format
 
@@ -1180,6 +1291,15 @@ path that matches nothing runs nothing and is logged, or throws with
    Settled: the handshake is an ephemeral P-256 ECDH exchange, in the spirit
    of RFC 8291, and the secret never crosses the wire (§6.1). An active
    attacker that terminates TLS is still TLS's to stop (§7.1).
+7. The push stream holds a server worker per device for its lifetime
+   (§8.1). One stream per device keeps that to one worker, but a server
+   with many devices on server regions at once still needs a worker each.
+   Whether pushes should move to something that does not hold a PHP worker
+   (a separate SSE service fed by the push counters, say) is open.
+8. Bursts after a wide push. A push to a channel many devices joined sends
+   each of them a signal at about the same time, and each fetches the region
+   at once. Whether clients should spread those fetches out (a random delay
+   of a second or two, say) is open. Nothing does it today.
 
 ## 14. Notes for implementers
 

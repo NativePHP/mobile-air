@@ -24,10 +24,24 @@ use Native\Mobile\Edge\Asgard\RegionRequest;
  * fragment the server answers with through the same
  * `ServerRegion::deliver($request, $tree)`. An ActionRequest is a
  * RegionRequest, so the answer path is the same one.
+ *
+ * watch() is the push stream (§8.1). It gets the whole set of
+ * subscriptions the device wants, every time the set changes: an empty
+ * list means close the stream. Each is
+ * `['id', 'component', 'regions', 'state', 'versions']`. A source that
+ * streams opens one stream for the set. It hands each signal to
+ * `ServerRegion::signal()` and each shared region's fragment to
+ * `ServerRegion::push()`, with the subscription's address and state. A
+ * source that does not stream ignores it.
  */
 interface FragmentSource
 {
     public function request(RegionRequest $request): void;
 
     public function action(ActionRequest $request): void;
+
+    /**
+     * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>  $subscriptions
+     */
+    public function watch(array $subscriptions, string $platform): void;
 }
