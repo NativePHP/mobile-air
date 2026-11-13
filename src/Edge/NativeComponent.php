@@ -15,6 +15,7 @@ use Native\Mobile\AsyncTask;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\Locked;
+use Native\Mobile\Attributes\Memo;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
@@ -4327,6 +4328,19 @@ abstract class NativeComponent
      */
     protected array $nativeChildEventBindings = [];
 
+    /** #[Memo]: the fingerprint of this child's state at its last render. */
+    private ?string $nativeMemoFingerprint = null;
+
+    /**
+     * #[Memo]: the top-level elements this child built at its last render.
+     *
+     * @var list<Element>|null
+     */
+    private ?array $nativeMemoRoots = null;
+
+    /** @var array<class-string, bool> Which component classes carry #[Memo] */
+    private static array $nativeMemoClasses = [];
+
     /**
      * Start a render frame's child bookkeeping: occurrence counters restart
      * so unkeyed identities stay positional, and the seen-set is cleared
@@ -4430,7 +4444,82 @@ abstract class NativeComponent
             $child->mountComponent();
         }
 
-        $child->renderAsChild();
+        $this->renderChild($child, $isNew);
+    }
+
+    /**
+     * Render a mounted child in place, or for a #[Memo] child whose props and
+     * state are what they were at its last render, put back the elements it
+     * built then. Skipping the render skips its Blade view, its element
+     * building and its nested children; the elements re-attached are the same
+     * instances, so toArray() emits the same nodes, ids and callbacks.
+     */
+    private function renderChild(NativeComponent $child, bool $isNew): void
+    {
+        if (! $child->rendersMemoized() || NativeElementCollector::isStreaming()) {
+            $child->renderAsChild();
+
+            return;
+        }
+
+        if (! $isNew
+            && $child->nativeMemoRoots !== null
+            && $child->nativeMemoFingerprint !== null
+            && $child->nativeMemoFingerprint === $child->memoFingerprint()) {
+            foreach ($child->nativeMemoRoots as $root) {
+                NativeElementCollector::attachElement($root);
+            }
+
+            return;
+        }
+
+        $roots = NativeElementCollector::captureRoots(fn () => $child->renderAsChild());
+
+        foreach ($roots as $root) {
+            NativeElementCollector::attachElement($root);
+        }
+
+        // Taken after the render, so state the render itself settles counts
+        // as the baseline for the next frame.
+        $child->nativeMemoRoots = $roots;
+        $child->nativeMemoFingerprint = $child->memoFingerprint();
+    }
+
+    /** Whether this component's class opts in to #[Memo]. */
+    private function rendersMemoized(): bool
+    {
+        return self::$nativeMemoClasses[static::class] ??= (new \ReflectionClass($this))->getAttributes(Memo::class) !== [];
+    }
+
+    /**
+     * What this component renders from: its public properties (its props and
+     * its own state), its @event bindings, the same for every nested child, and
+     * the force-full-frame epoch (a region reset or hot reload drops every memo).
+     * Null when that state can't be serialised (a closure, a resource), which
+     * means render every frame.
+     */
+    private function memoFingerprint(): ?string
+    {
+        $children = [];
+        foreach ($this->nativeChildComponents as $identity => $child) {
+            $childFingerprint = $child->memoFingerprint();
+            if ($childFingerprint === null) {
+                return null;
+            }
+            $children[$identity] = $childFingerprint;
+        }
+
+        try {
+            return hash('xxh128', serialize([
+                static::class,
+                $this->getPublicProperties(),
+                $this->nativeChildEventBindings,
+                $children,
+                nativephp_force_full_frame_epoch(),
+            ]));
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
