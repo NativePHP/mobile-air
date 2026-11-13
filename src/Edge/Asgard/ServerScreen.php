@@ -2,7 +2,6 @@
 
 namespace Native\Mobile\Edge\Asgard;
 
-use Closure;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
 use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
@@ -27,13 +26,10 @@ use Native\Mobile\Events\Asgard\ServerScreenFailed;
  * its own and no #[NativeAction] methods, so a client target in a server
  * screen never runs anything.
  *
- * Until the first answer lands, it shows a placeholder skeleton and a
- * plain nav bar, with a back button when it is not the root. The bar's
- * title is the route's title template with the route parameters filled
- * in, or titlePlaceholder() when the route has none. It never borrows the
- * title of another screen. The chrome in each answer then replaces it.
- * When that chrome has a nav bar with no title of its own, the template
- * fills in again; the placeholder never comes back once the body landed.
+ * Until the first answer lands, it shows a placeholder skeleton and the
+ * chrome this screen had last time it was shown in this process, or a
+ * plain nav bar with a back button. The chrome in each answer then
+ * replaces it.
  *
  * It does not wait for ever. When no body has arrived within
  * screenTimeout() of the first frame, or the request for it fails outright
@@ -45,8 +41,7 @@ use Native\Mobile\Events\Asgard\ServerScreenFailed;
  * the body on screen.
  *
  * An app can use its own subclass for every server route, to change the
- * skeleton, the timeout or the placeholder title, by naming it in
- * `nativephp.asgard.screen`.
+ * skeleton or the timeout, by naming it in `nativephp.asgard.screen`.
  */
 class ServerScreen extends NativeComponent implements Contracts\AddressedComponent
 {
@@ -61,19 +56,15 @@ class ServerScreen extends NativeComponent implements Contracts\AddressedCompone
 
     public const ADDRESS_PATTERN = '/^[a-z0-9_]+(\.[a-z0-9_]+)*$/D';
 
-    /** The longest route title template, and the longest title shown from one, in characters. */
-    public const TITLE_MAX = 100;
-
-    /** A `{name}` placeholder in a route title template. */
-    public const TITLE_PLACEHOLDER = '/\{([A-Za-z_][A-Za-z0-9_]*)\}/';
-
-    /** Set by titlePlaceholderUsing(), for every server screen class. */
-    private static ?Closure $titlePlaceholderUsing = null;
+    /**
+     * The last chrome each screen address showed, so a screen opened again
+     * starts in its own chrome rather than the plain default.
+     *
+     * @var array<string, array>
+     */
+    protected static array $lastChrome = [];
 
     private string $asgardScreen = '';
-
-    /** The route's title template, as the server listed it. */
-    private ?string $asgardTitle = null;
 
     private ?array $asgardChrome = null;
 
@@ -173,88 +164,15 @@ class ServerScreen extends NativeComponent implements Contracts\AddressedCompone
         ServerRegion::forget($this);
     }
 
-    /**
-     * Point this screen at a server screen address, with the route's title
-     * template if it has one. Called by the router.
-     */
-    public function showScreen(string $address, ?string $title = null): void
+    /** Point this screen at a server screen address. Called by the router. */
+    public function showScreen(string $address): void
     {
         if (preg_match(self::ADDRESS_PATTERN, $address) !== 1) {
             throw new \InvalidArgumentException("[{$address}] is not an Asgard screen address.");
         }
 
         $this->asgardScreen = $address;
-        $this->asgardTitle = $title !== null && self::validTitle($title) ? $title : null;
-    }
-
-    /**
-     * Whether a route's title template can be shown: a string of valid
-     * UTF-8, not blank, at most TITLE_MAX characters, and free of control
-     * characters. It is shown as plain text, never markup.
-     */
-    public static function validTitle(mixed $title): bool
-    {
-        return is_string($title)
-            && mb_check_encoding($title, 'UTF-8')
-            && trim($title) !== ''
-            && mb_strlen($title) <= self::TITLE_MAX
-            && preg_match('/\p{Cc}/u', $title) === 0;
-    }
-
-    /**
-     * The route's title template with its `{name}` placeholders filled from
-     * the route parameters, or null when the route has no template.
-     *
-     * A placeholder with no parameter of that name, such as an optional
-     * parameter left out, is removed. Only route parameters are filled in,
-     * never the query string. Control characters in a value become spaces,
-     * and the result is cut to TITLE_MAX characters. A title that comes out
-     * blank counts as none.
-     */
-    public function routeTitle(): ?string
-    {
-        if ($this->asgardTitle === null) {
-            return null;
-        }
-
-        $params = $this->nativeParams;
-
-        $title = preg_replace_callback(self::TITLE_PLACEHOLDER, static function (array $match) use ($params): string {
-            $value = $params[$match[1]] ?? null;
-
-            return is_string($value) || is_int($value) || is_float($value) ? mb_scrub((string) $value, 'UTF-8') : '';
-        }, $this->asgardTitle);
-
-        $title = trim(mb_substr((string) preg_replace('/\p{Cc}+/u', ' ', (string) $title), 0, self::TITLE_MAX));
-
-        return $title === '' ? null : $title;
-    }
-
-    /**
-     * Set the title every server screen without a route title shows until
-     * its body lands. The callback gets the screen's URI and returns the
-     * title. Null goes back to the default.
-     *
-     *     ServerScreen::titlePlaceholderUsing(fn (string $uri) => __('Loading…'));
-     */
-    public static function titlePlaceholderUsing(?Closure $callback): void
-    {
-        self::$titlePlaceholderUsing = $callback;
-    }
-
-    /**
-     * The title a screen without a route title shows until its body lands:
-     * the titlePlaceholderUsing() callback's, or `__('Loading…')`, so an
-     * app's translation files cover it. Override it on a subclass to set it
-     * per app.
-     */
-    public function titlePlaceholder(): string
-    {
-        if (self::$titlePlaceholderUsing !== null) {
-            return (string) (self::$titlePlaceholderUsing)($this->nativeRouter?->currentUri() ?? '');
-        }
-
-        return function_exists('__') ? (string) __('Loading…') : 'Loading…';
+        $this->asgardChrome = static::$lastChrome[$address] ?? null;
     }
 
     public function asgardAddress(): string
@@ -288,54 +206,26 @@ class ServerScreen extends NativeComponent implements Contracts\AddressedCompone
             return false;
         }
 
-        $this->asgardChrome = $parsed;
+        $this->asgardChrome = static::$lastChrome[$this->asgardScreen] = $parsed;
 
         return true;
     }
 
-    /**
-     * The chrome in use.
-     *
-     * Before any chrome has arrived it is a plain nav bar, with a back
-     * button when this is not the root. Its title is the route title, or
-     * titlePlaceholder() while the body has not landed.
-     *
-     * Once the server's chrome has arrived it is used as sent, with one
-     * addition: a nav bar with no title, title view or logo of its own
-     * shows the route title. Chrome with no nav bar gets none. The
-     * placeholder is only ever a stand-in for a body still on its way, so
-     * no later chrome brings it back.
-     */
+    /** The chrome in use: the server's, or the default while there is none. */
     public function serverChrome(): array
     {
-        $title = $this->routeTitle();
-
         if ($this->asgardChrome !== null) {
-            $chrome = $this->asgardChrome;
-            $bar = $chrome['nav_bar'] ?? null;
-
-            if ($title !== null && is_array($bar) && ! isset($bar['title']) && ! isset($bar['title_view']) && ! isset($bar['logo'])) {
-                $chrome['nav_bar']['title'] = $title;
-            }
-
-            return $chrome;
+            return $this->asgardChrome;
         }
 
-        $bar = $this->nativeRouter?->isRootScreen() === false ? ['back' => true] : [];
-        $title ??= ServerRegion::hasFragment(self::REGION, $this) ? null : $this->titlePlaceholder();
-
-        if ($title !== null && $title !== '') {
-            $bar['title'] = $title;
-        }
-
-        return $bar === [] ? [] : ['nav_bar' => $bar];
+        return $this->nativeRouter?->isRootScreen() === false ? ['nav_bar' => ['back' => true]] : [];
     }
 
-    /** Forget any failure not yet fired, and the titlePlaceholderUsing() callback. For tests. */
+    /** Forget every remembered chrome, and any failure not yet fired. For tests. */
     public static function flushChrome(): void
     {
+        static::$lastChrome = [];
         static::$failed = [];
-        self::$titlePlaceholderUsing = null;
     }
 
     public function render(): Element
