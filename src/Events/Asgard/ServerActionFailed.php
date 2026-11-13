@@ -27,7 +27,7 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
  *
  *  - `timeout`: no answer within the action timeout
  *    (`nativephp.asgard.action_timeout`, or the component's
- *    serverActionTimeout()).
+ *    serverActionTimeout() if it uses UsesServer).
  *  - `network`: the request never reached the server, or nothing came back.
  *  - `server`: the server answered with an error. `status` is its HTTP
  *    status, when there is one.

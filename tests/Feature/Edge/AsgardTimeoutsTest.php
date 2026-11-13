@@ -180,7 +180,7 @@ it('stops the timer once the body lands, and keeps the body when a refresh fails
 
     $promo->wait(60)->assertNoNavigation();
 
-    $promo->instance()->refreshServerRegions();
+    ServerRegion::refresh($promo->instance());
     $promo->wait();
     $source->fail('screen', ServerRegion::SERVER, 500);
 
@@ -646,7 +646,7 @@ it('never fires ServerRegionFailed for a server screen body', function () {
     [, $promo] = promoOverHome();
     $source = Native::fakeFragmentSource();
     $source->respond('screen', TIMEOUT_BODY);
-    $promo->instance()->refreshServerRegions();
+    ServerRegion::refresh($promo->instance());
     $promo->wait();
 
     expect(ServerRegion::nextDeadline([$promo->instance()]))->toBeNull();

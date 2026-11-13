@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Str;
 use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
 use Native\Mobile\Edge\Exceptions\FragmentActionNotAllowedException;
@@ -58,7 +59,7 @@ class ComponentMethodInvoker extends BoundMethod
     /**
      * Throw unless the method is one a template or the device may name:
      * public, not static, not a lifecycle hook, not declared on
-     * NativeComponent itself, and not render().
+     * NativeComponent itself, not one of UsesServer's, and not render().
      */
     public static function assertCallable(NativeComponent $component, string $method): void
     {
@@ -218,9 +219,32 @@ class ComponentMethodInvoker extends BoundMethod
         if (! $reflection->isPublic()
             || $reflection->isStatic()
             || $method === 'render'
-            || $reflection->getDeclaringClass()->getName() === NativeComponent::class) {
+            || $reflection->getDeclaringClass()->getName() === NativeComponent::class
+            || static::isUsesServerMethod($reflection)) {
             throw new ComponentMethodNotFoundException($method, $component);
         }
+    }
+
+    /**
+     * Whether the method is one of UsesServer's. The trait copies its
+     * methods onto the app's class, so the NativeComponent check above
+     * does not see them. They are refused by name, whatever case the
+     * caller spelled it in, so an override on the app's class is refused
+     * too. A method the trait brought in under an alias is refused by the
+     * file it comes from.
+     */
+    protected static function isUsesServerMethod(ReflectionMethod $reflection): bool
+    {
+        static $names = null, $file = null;
+
+        if ($names === null) {
+            $trait = new ReflectionClass(UsesServer::class);
+            $file = $trait->getFileName();
+            $names = array_map(fn (ReflectionMethod $m) => strtolower($m->getName()), $trait->getMethods());
+        }
+
+        return in_array(strtolower($reflection->getName()), $names, true)
+            || $reflection->getFileName() === $file;
     }
 
     protected static function getMethodDependencies($container, $callback, array $parameters = [])

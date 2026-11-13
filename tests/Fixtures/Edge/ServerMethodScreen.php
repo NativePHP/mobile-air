@@ -5,6 +5,7 @@ namespace Tests\Fixtures\Edge;
 use Closure;
 use Illuminate\View\View;
 use Native\Mobile\Attributes\Server;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\Asgard\ServerResponse;
 use Native\Mobile\Edge\NativeComponent;
 
@@ -19,6 +20,8 @@ use Native\Mobile\Edge\NativeComponent;
  */
 class ServerMethodScreen extends NativeComponent
 {
+    use UsesServer;
+
     public bool $loading = false;
 
     public string $range = '7d';

@@ -69,6 +69,38 @@ that has to be acted on, rather than a closure that can be dropped on the
 floor. Until then, `callServerMethod()` is the only supported programmatic
 entry point.
 
+### 1.2 The component opts in with `UsesServer`
+
+A component that declares `#[Server]` methods must use the `UsesServer`
+trait:
+
+```php
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
+
+class Home extends NativeComponent
+{
+    use UsesServer;
+
+    #[Server]
+    public function refreshChart(string $range): Closure { /* ... */ }
+}
+```
+
+The trait gives the component `callServerMethod()`, and the timeout override
+in §7. It is required because without it the only way to call the method from
+code is the direct call of §1.1, which sends nothing.
+
+A tap reaches `ServerMethods::call()` straight from `__invokeInteraction()`,
+not through `callServerMethod()`, so the check lives in `call()`. When a
+`#[Server]` method is called on a component without the trait, it throws a
+`LogicException` that says to add `use UsesServer;`, before the body runs.
+That only happens with `app.debug` on. Without it the mistake is logged as a
+warning and the call goes out as normal, so a shipped app keeps working.
+
+The trait's methods land on the app's own class, so the interaction guard
+refuses them by name. A template or a fragment cannot tap
+`callServerMethod`, `refreshServerRegions` or any other UsesServer method.
+
 ## 2. What crosses the wire
 
 The method name, its arguments, and a snapshot of the component's public state
@@ -253,8 +285,10 @@ Network unreachable is a failure like any other. A `#[Server]` method called
 offline runs its client body, fails fast, and runs its closure. Nothing queues
 in v1.
 
-A call waits at most its component's `serverActionTimeout()` for an answer:
+A call waits at most its action timeout for an answer:
 `nativephp.asgard.action_timeout`, 15 seconds by default, or 0 for no limit.
+A component can override `serverActionTimeout()`, which `UsesServer` gives
+it, to set its own.
 After that its closure runs with a failed response (`code` is `timeout`), and
 an answer that lands later is dropped. The timer is acted on by the runloop of
 the screen the component is on, which wakes for it with no input needed.

@@ -404,12 +404,13 @@ it('renders a screen whose region never resolves', function () {
 it('paints a fragment on the next frame of a live screen', function () {
     $screen = Native::test(ServerRegionScreen::class)->assertSee('Loading sales…');
 
-    // Fragments belong to the component that renders the region.
-    $screen->instance()->receiveFragment('sales-summary', [
+    // Fragments belong to the component that renders the region. This
+    // screen does not use UsesServer, so it goes through ServerRegion.
+    ServerRegion::applyFragment('sales-summary', [
         'type' => 'text',
         'key' => 'total',
         'props' => ['text' => 'Revenue: £12,400'],
-    ]);
+    ], $screen->instance());
 
     $screen->tap('refresh')
         ->assertSee('Revenue: £12,400')

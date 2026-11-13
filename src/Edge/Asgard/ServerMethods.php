@@ -2,7 +2,9 @@
 
 namespace Native\Mobile\Edge\Asgard;
 
+use Illuminate\Support\Facades\Log;
 use Native\Mobile\Attributes\Server;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
 use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\NativeComponent;
@@ -45,7 +47,7 @@ use Native\Mobile\Events\Asgard\ServerActionFailed;
  *
  * ## Failures and the timeout
  *
- * A call waits at most its component's serverActionTimeout() for an
+ * A call waits at most ServerRegion::actionTimeout() of its component for an
  * answer. A call that times out, fails to send, or comes back failed runs
  * its closure with a failed ServerResponse, as before, and also fires
  * ServerActionFailed on the screen, so a screen can handle every failed
@@ -92,6 +94,9 @@ class ServerMethods
     /** `Class::method` => whether it carries #[Server]. */
     protected static array $attributeCache = [];
 
+    /** Class => whether it uses UsesServer. */
+    protected static array $traitCache = [];
+
     /**
      * How many send() calls are running. An answer that arrives while one
      * is running may be for the request it is starting, whose id is not in
@@ -120,6 +125,8 @@ class ServerMethods
                 .'cannot be called as one. The attribute is the allowlist (ASGARD-SERVER-METHODS.md §8).'
             );
         }
+
+        static::ensureUsesServer($component, $method);
 
         if (! (new \ReflectionMethod($component, $method))->isPublic()) {
             throw new \RuntimeException(
@@ -192,7 +199,7 @@ class ServerMethods
             return null;
         }
 
-        $seconds = $component->serverActionTimeout();
+        $seconds = ServerRegion::actionTimeout($component);
 
         static::$pending[$id] = [
             'component' => \WeakReference::create($component),
@@ -350,6 +357,40 @@ class ServerMethods
 
         return static::$attributeCache[$key] = (new \ReflectionMethod($component, $method))
             ->getAttributes(Server::class) !== [];
+    }
+
+    /** Whether the component's class uses the UsesServer trait. */
+    public static function usesServer(object $component): bool
+    {
+        return static::$traitCache[$component::class]
+            ??= in_array(UsesServer::class, class_uses_recursive($component), true);
+    }
+
+    /**
+     * A component with `#[Server]` methods must use UsesServer
+     * (ASGARD-SERVER-METHODS.md §1). The trait gives it callServerMethod(),
+     * which is the only right way to call one from code. Without it a
+     * developer calls the method directly and gets a closure nothing will
+     * ever resolve.
+     *
+     * With `app.debug` on this throws before the body runs. Without it the
+     * mistake is logged and the call goes out as normal, so a shipped app
+     * keeps working.
+     */
+    protected static function ensureUsesServer(NativeComponent $component, string $method): void
+    {
+        if (static::usesServer($component)) {
+            return;
+        }
+
+        $message = 'Asgard: ['.$component::class.'] has the #[Server] method ['.$method.'] but does not use '
+            .'the UsesServer trait. Add `use UsesServer;` ('.UsesServer::class.') to the class.';
+
+        if (config('app.debug')) {
+            throw new \LogicException($message);
+        }
+
+        Log::warning($message);
     }
 
     /** Whether any call in flight has a deadline. */

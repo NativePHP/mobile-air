@@ -4,6 +4,7 @@ namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
 use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\NativeComponent;
 
@@ -15,6 +16,8 @@ use Native\Mobile\Edge\NativeComponent;
  */
 class FragmentActionScreen extends NativeComponent
 {
+    use UsesServer;
+
     public string $range = '7d';
 
     public bool $withChild = false;

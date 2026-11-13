@@ -25,13 +25,14 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
  * an error message. It is false when an earlier fragment stays on screen.
  *
  * The region is not asked for again on its own. Call
- * refreshServerRegions() on the component that owns it to try again.
+ * refreshServerRegions() on the component that owns it to try again
+ * (the component needs `use UsesServer;`).
  *
  * `reason` is one of:
  *
  *  - `timeout`: no answer within the region timeout
  *    (`nativephp.asgard.region_timeout`, or the component's
- *    serverRegionTimeout()).
+ *    serverRegionTimeout() if it uses UsesServer).
  *  - `network`: the request never reached the server, or nothing came back.
  *  - `server`: the server answered with an error. `status` is its HTTP
  *    status, when there is one.

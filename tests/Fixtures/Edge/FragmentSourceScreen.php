@@ -3,6 +3,7 @@
 namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\NativeComponent;
 
 /**
@@ -12,6 +13,8 @@ use Native\Mobile\Edge\NativeComponent;
  */
 class FragmentSourceScreen extends NativeComponent
 {
+    use UsesServer;
+
     public string $range = '7d';
 
     public int $taps = 0;

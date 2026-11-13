@@ -88,8 +88,8 @@ use Native\Mobile\System;
  *
  * ## Timeouts and failures
  *
- * A server action waits at most its component's serverActionTimeout() for
- * an answer, a region request at most its serverRegionTimeout(), and a
+ * A server action waits at most actionTimeout() of its component for
+ * an answer, a region request at most regionTimeout(), and a
  * server screen at most its screenTimeout() for its first body. A source reports a hard failure (no network, a server error,
  * an answer that fails verification) through failed(), and deliver()
  * reports a fragment it cannot render the same way. Either one is acted on
@@ -793,6 +793,32 @@ class ServerRegion
     }
 
     /**
+     * Seconds a server action or `#[Server]` call from this component
+     * waits for its answer. A component that has serverActionTimeout(),
+     * from UsesServer or its own, decides. Any other reads
+     * `nativephp.asgard.action_timeout`, 15 by default.
+     */
+    public static function actionTimeout(NativeComponent $owner): float
+    {
+        return method_exists($owner, 'serverActionTimeout')
+            ? (float) $owner->serverActionTimeout()
+            : (float) config('nativephp.asgard.action_timeout', 15);
+    }
+
+    /**
+     * Seconds a request for one of this component's regions waits for its
+     * answer. A component that has serverRegionTimeout(), from UsesServer
+     * or its own, decides. Any other reads
+     * `nativephp.asgard.region_timeout`, 15 by default.
+     */
+    public static function regionTimeout(NativeComponent $owner): float
+    {
+        return method_exists($owner, 'serverRegionTimeout')
+            ? (float) $owner->serverRegionTimeout()
+            : (float) config('nativephp.asgard.region_timeout', 15);
+    }
+
+    /**
      * The clock timers run on, in milliseconds. It is Carbon's, so a test
      * can move it with `$this->travel()` or Carbon::setTestNow().
      */
@@ -1425,7 +1451,7 @@ class ServerRegion
      * A source that throws fails the action with reason `network`, as for a
      * source that reports the failure itself (failed()).
      *
-     * It waits at most the component's serverActionTimeout() for its
+     * It waits at most actionTimeout() of the component for its
      * answer. After that it fails with reason `timeout`.
      */
     public static function action(NativeComponent $owner, string $region, string $call, array $args): ActionRequest
@@ -1441,7 +1467,7 @@ class ServerRegion
             componentClass: $owner::class,
         );
 
-        $seconds = $owner->serverActionTimeout();
+        $seconds = static::actionTimeout($owner);
 
         static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
 
@@ -1589,9 +1615,9 @@ class ServerRegion
      * Ask for regions of a component, and remember each one. A single
      * region goes out as a RegionRequest. Several go out as one RegionBatch
      * per 16 regions, sharing one copy of the state, and each region in it
-     * is still tracked on its own. Each waits at most the component's
-     * serverRegionTimeout() for its answer. A server screen's body waits
-     * on the screen's own timer instead.
+     * is still tracked on its own. Each waits at most regionTimeout()
+     * of the component for its answer. A server screen's body waits on
+     * the screen's own timer instead.
      *
      * @param  list<string>  $regions
      */
@@ -1610,7 +1636,7 @@ class ServerRegion
                 componentClass: $owner::class,
             );
 
-            $seconds = static::isScreenBody($owner, $region) ? 0 : $owner->serverRegionTimeout();
+            $seconds = static::isScreenBody($owner, $region) ? 0 : static::regionTimeout($owner);
 
             static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
 

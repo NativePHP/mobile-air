@@ -77,6 +77,24 @@ A region that never resolves keeps its placeholder. A screen with no network
 is a screen with skeletons where the server regions would be, and everything
 else working. That is the intended degraded state, not an error case.
 
+A component needs nothing extra to render regions. They fetch, paint, stream
+and fail the same way in any component. The helpers a component calls from
+its own code (`refreshServerRegions()`, `receiveFragment()`,
+`callServerMethod()` and the two timeout overrides) come from a trait the
+component opts into:
+
+```php
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
+
+class Home extends NativeComponent
+{
+    use UsesServer;
+}
+```
+
+None of them can be named from a template or a fragment. The interaction guard
+refuses every UsesServer method, as it refuses NativeComponent's own.
+
 The app still hears about it, so it can swap a skeleton for a message. A
 region request that times out or fails fires `ServerRegionFailed` on the
 screen (§3.1), and the view can paint something else in the placeholder:
@@ -98,15 +116,16 @@ After a frame in which a region painted its placeholder, the component that
 rendered it asks the bound `FragmentSource` for a fragment, once per
 component instance. Regions belong to the component whose view declares
 them, so a region in a child component is requested and delivered as that
-child. `NativeComponent::refreshServerRegions()` asks again after the next
+child. `refreshServerRegions()` (from `UsesServer`) asks again after the next
 frame, with the fragment on screen kept until the new one lands. Fragments
 are held per component instance, so two screens with a region of the same
 name never share one.
 
 The source is fire and forget. It answers later with
-`ServerRegion::deliver($request, $tree)`, or with
-`$this->receiveFragment($request, $tree)` from an AsyncTask `->finished()`
-callback. An answer to a request that a newer one superseded, or for a
+`ServerRegion::deliver($request, $tree)`, which also works from an AsyncTask
+`->finished()` callback. A component that uses `UsesServer` can do the same
+with `$this->receiveFragment($request, $tree)`, but a source cannot know the
+screen it runs on has that, so it should call `ServerRegion::deliver()`. An answer to a request that a newer one superseded, or for a
 component that has gone, is dropped. The default `NullFragmentSource` asks
 nobody.
 
@@ -161,8 +180,9 @@ all (§8.1).
 #### Timeouts and failures
 
 Every region request waits at most its region timeout for the answer: 15
-seconds by default, from `nativephp.asgard.region_timeout`, or the owning
-component's `serverRegionTimeout()`. 0 means no limit. That covers the first
+seconds by default, from `nativephp.asgard.region_timeout`. A component that
+uses `UsesServer` can override `serverRegionTimeout()` to set its own. One
+without the trait uses the config value. 0 means no limit. That covers the first
 fetch, `refreshServerRegions()`, and a fetch a push stream signal or a
 refresh hint started (§8.1, §10.2). A region in a batch has its timer too.
 A hard failure reported through `ServerRegion::failed()` counts at
@@ -194,7 +214,7 @@ public function retryStats(): void
 A failed region is not asked for again on its own. Later frames leave it
 alone, so a server that is down is not asked on every frame. To try again,
 call `refreshServerRegions()` on the component that owns the region, from the
-handler or a retry button. The retry gets a timer of its own.
+handler or a retry button. That component needs `use UsesServer;`. The retry gets a timer of its own.
 
 An answer that lands after the failure is dropped. A request that a newer one
 superseded fires nothing. A covered screen's timers wait until it is on top
@@ -1204,8 +1224,9 @@ and all of them allow it (§7.4).
 #### Timeouts and failures
 
 The client waits at most its action timeout for the answer: 15 seconds by
-default, from `nativephp.asgard.action_timeout`, or the sending component's
-`serverActionTimeout()`. 0 means no limit. The same applies to a chrome
+default, from `nativephp.asgard.action_timeout`. A component that uses
+`UsesServer` can override `serverActionTimeout()` to set its own. One without
+the trait uses the config value. 0 means no limit. The same applies to a chrome
 action (§12.2) and to a `#[Server]` method call. The transport's own HTTP
 timeout is set longer, so this is the one that fires and a slow server reads
 as `timeout` rather than `network`.
@@ -1296,7 +1317,8 @@ same fragment never share callback ids.
 ### 10.5 `#[Server]` method calls
 
 A `#[Server]` method (ASGARD-SERVER-METHODS.md) is a method call rather than
-a tap in a fragment. It goes to its own endpoint, `{prefix}/call`, in the same
+a tap in a fragment. The component that declares one must use `UsesServer`
+(ASGARD-SERVER-METHODS.md §1.2). It goes to its own endpoint, `{prefix}/call`, in the same
 two forms as render (§8), signed and encrypted like everything else and with a
 nonce (§7.3):
 
@@ -1628,7 +1650,8 @@ path that matches nothing runs nothing and is logged, or throws with
    an action should be able to say it needs longer (an upload, say) is open.
    Regions have one too (§3.1), and the same question applies.
 10. Whether a region that failed should retry by itself, with a backoff. Today
-    it waits for `refreshServerRegions()`, so the app decides when.
+    it waits for `refreshServerRegions()` (from `UsesServer`), so the app
+    decides when.
 
 ## 14. Notes for implementers
 

@@ -10,12 +10,14 @@ use Native\Mobile\Edge\Asgard\RegionRequest;
  * Where a region's fragment comes from (docs/ASGARD-PROTOCOL.md §3, §8).
  *
  * The client asks once a region has painted its placeholder, and again
- * when a component calls refreshServerRegions(). request() is fire and
- * forget: it must return quickly, because it runs on the UI thread at
- * the end of a frame. An implementation does its work elsewhere (an
- * AsyncTask, typically) and delivers later with
- * `ServerRegion::deliver($request, $tree)`, or from an AsyncTask
- * `->finished()` callback with `$this->receiveFragment($request, $tree)`.
+ * when a component calls refreshServerRegions() (from UsesServer).
+ * request() is fire and forget: it must return quickly, because it runs
+ * on the UI thread at the end of a frame. An implementation does its
+ * work elsewhere (an AsyncTask, typically) and delivers later with
+ * `ServerRegion::deliver($request, $tree)`, from an AsyncTask
+ * `->finished()` callback or anywhere else on the UI thread. Do not call
+ * `$this->receiveFragment()` there: it comes from the UsesServer trait,
+ * and the screen the callback is bound to may not use it.
  *
  * A request that fails without an answer the client can use is reported
  * with `ServerRegion::failed($request, $reason, $status)`, where the

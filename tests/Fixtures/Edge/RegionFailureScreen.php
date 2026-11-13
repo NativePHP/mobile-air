@@ -4,6 +4,7 @@ namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
 use Native\Mobile\Attributes\On;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Asgard\ServerRegionFailed;
 
@@ -13,6 +14,8 @@ use Native\Mobile\Events\Asgard\ServerRegionFailed;
  */
 class RegionFailureScreen extends NativeComponent
 {
+    use UsesServer;
+
     public bool $withChild = false;
 
     /** Seconds; null uses the config. */
@@ -26,7 +29,7 @@ class RegionFailureScreen extends NativeComponent
 
     public function serverRegionTimeout(): float
     {
-        return $this->timeout ?? parent::serverRegionTimeout();
+        return $this->timeout ?? (float) config('nativephp.asgard.region_timeout', 15);
     }
 
     #[On(ServerRegionFailed::class)]
