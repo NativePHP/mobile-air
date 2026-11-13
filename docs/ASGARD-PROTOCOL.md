@@ -942,6 +942,11 @@ A fragment describes a subtree inside a region. It is not a screen.
   hydration allowlist in §5.1, and for the same reason: the payload is
   genuinely server-authored and the client must not let it reach into
   machinery that isn't presentational.
+- **No local media.** A prop that loads a URL (`src` on any element,
+  `leadingAvatar` and `leadingImage` on `list_item`) must be an absolute
+  `https:` URL. See §9.6.
+- **No php-mode web view.** A `webview` with `php` set loads the app's own
+  routes. That is the app's to open, not a server's.
 
 ### 9.4 Fragments the client cannot render
 
@@ -1034,6 +1039,38 @@ errors. A fragment has no client props to sync and re-renders by push.
 **Isolation.** A server must compile region views apart from its web views
 (separate compiler and cache), so bare tags like `<button>` in ordinary web
 pages are never rewritten.
+
+### 9.6 Media URLs
+
+In an app's own view, `src="img/x.png"` is an asset the app shipped in
+`public/`, and `src="/var/..."` is a file on the device. From a server
+neither means what its author meant, and a server should not be able to
+point at the app's files at all.
+
+So in a fragment, and in chrome (`nav_bar.logo.src`, an action's `image`),
+every media URL is absolute:
+
+- The client accepts `https:` URLs with a host, or an empty string for no
+  image. With `app.debug` on it also accepts `http:`, for a server on a
+  developer's machine. Anything else (relative paths, `/` paths, `//host`,
+  `file:`, `content:`, `data:`, `javascript:`) fails §9.4 and the whole
+  fragment is rejected. The check is on the prop name: `src` on any type,
+  so a plugin element that loads one is covered, plus `leadingAvatar` and
+  `leadingImage`.
+- The server turns what its author wrote into that form before it sends
+  it. The reference server resolves `img/x.png`, `./img/x.png` and
+  `/img/x.png` against its own URL (`asset()`, or `asgard.media_url`),
+  gives `//host/x` the request's scheme, passes `http:` and `https:`
+  through, and refuses every other scheme. It refuses `data:` too: support
+  for it differs between platforms, and a fragment is re-sent on every
+  push, so an inline image costs every redraw instead of being cached once.
+
+App-authored views are not affected. They resolve `src` as they always have.
+
+**Media is public.** The device loads these URLs itself, with no Asgard
+session and none of the user's auth. Anything private needs a URL that
+carries its own permission: a signed route
+(`URL::temporarySignedRoute()`) or a storage disk's `temporaryUrl()`.
 
 ## 10. Events
 
@@ -1448,10 +1485,10 @@ so a chrome tap dispatches exactly like a tap in the body.
 | `NavBar::backgroundColor()` / `textColor()` / `font()` / `elevation()` | `nav_bar.background_color` / `text_color` / `font` / `elevation` (0 to 64) |
 | `NavBar::displayMode()` | `nav_bar.display_mode`: `large`, `inline`, `automatic` |
 | `NavBar::scrollBehavior()` | `nav_bar.scroll_behavior`: `collapse`, `pinned`, `enterAlways` |
-| `NavBar::logo()` | `nav_bar.logo`: `{"src", "height"?}` |
+| `NavBar::logo()` | `nav_bar.logo`: `{"src", "height"?}`, `src` a URL (§9.6) |
 | `NavBar::titleView()` | `nav_bar.title_view`: a fragment |
 | `NavBar::searchBar()` | `nav_bar.search`: `{"placeholder"?, "debounce_ms"?, "on_query"?}`. `on_query` is a call slot; the query is appended to its args |
-| `NavBar::action()`, `NavAction` | `nav_bar.actions[]`: `{"id", "label"?, "a11y_label"?, "icon"?, "ios_icon"?, "android_icon"?, "image"? (https), "destructive"?, "disabled"?, "on_press"?}` |
+| `NavBar::action()`, `NavAction` | `nav_bar.actions[]`: `{"id", "label"?, "a11y_label"?, "icon"?, "ios_icon"?, "android_icon"?, "image"? (a URL, §9.6), "destructive"?, "disabled"?, "on_press"?}` |
 | `NavAction::items()`, `NavAction::divider()` | `actions[].items[]`, one level deep; `{"id", "divider": true}` |
 | `$hidesNavBar`, `NavBarOptions::hidden()` | `nav_bar.hidden` |
 | `NativeLayout::tabBar()` returning a bar, or null | `tab_bar` present, or absent |

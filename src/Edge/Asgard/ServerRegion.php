@@ -2042,6 +2042,10 @@ class ServerRegion
                 return "'{$type}' is not an element type this build has";
             }
 
+            if (($problem = MediaUrl::nodeProblem($type, $node['props'] ?? null)) !== null) {
+                return $problem;
+            }
+
             $children = $node['children'] ?? [];
 
             if (! is_array($children)) {

@@ -103,7 +103,7 @@ final class ServerChrome
             $clean[$key] = match (true) {
                 $key === 'id' => $value,
                 in_array($key, ['label', 'a11y_label', 'icon', 'ios_icon', 'android_icon'], true) => self::string($value, $at),
-                $key === 'image' => preg_match('#^https://\S+$#D', self::string($value, $at)) === 1 ? $value : self::fail("{$at} must be an https:// URL"),
+                $key === 'image' => self::media($value, $at),
                 in_array($key, ['destructive', 'disabled'], true) => self::bool($value, $at),
                 $key === 'on_press' => self::slot($value, $at, 'on_press'),
                 $key === 'items' && $topLevel => self::list($value, $at, 32, fn ($item, $p) => self::action($item, $p, false)),
@@ -173,7 +173,19 @@ final class ServerChrome
             self::fail("{$path}.height must be a number up to 200");
         }
 
-        return ['src' => self::string($logo['src'] ?? null, "{$path}.src"), 'height' => (float) $height];
+        return ['src' => self::media($logo['src'] ?? null, "{$path}.src"), 'height' => (float) $height];
+    }
+
+    /** A URL the device loads: absolute https (or http under app.debug), never an app asset path. */
+    private static function media(mixed $value, string $path): string
+    {
+        $value = self::string($value, $path);
+
+        if ($value === '' || ($problem = MediaUrl::problem($value)) !== null) {
+            self::fail("{$path} ".($problem ?? 'must not be empty'));
+        }
+
+        return $value;
     }
 
     private static function search(mixed $search, string $path, bool $query): array
