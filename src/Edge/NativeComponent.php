@@ -3097,6 +3097,18 @@ abstract class NativeComponent
     }
 
     /**
+     * Seconds a request for one of this component's `@server` regions
+     * waits for its answer. After that it fails, and ServerRegionFailed
+     * fires on the screen with reason `timeout`. From
+     * `nativephp.asgard.region_timeout`, 15 by default. Override it to set
+     * it for one component. 0 or less waits for ever.
+     */
+    public function serverRegionTimeout(): float
+    {
+        return (float) config('nativephp.asgard.region_timeout', 15);
+    }
+
+    /**
      * Paint a fragment that a FragmentSource fetched. Made to be called
      * from an AsyncTask `->finished()` callback, which runs on the UI
      * thread bound to the screen:

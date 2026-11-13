@@ -575,6 +575,11 @@ return [
     | its answer. After that ServerActionFailed fires on its screen. A
     | component can override serverActionTimeout(). 0 turns it off.
     |
+    | region_timeout: seconds an @server region waits for its fragment, on
+    | the first fetch and on every refresh. After that ServerRegionFailed
+    | fires on its screen. A component can override serverRegionTimeout().
+    | 0 turns it off, but a hard failure still fires the event at once.
+    |
     | screen: the class every server route opens. Set it to your own
     | subclass of Native\Mobile\Edge\Asgard\ServerScreen to change its
     | skeleton or timeout. null means the package's own.
@@ -583,6 +588,7 @@ return [
     'asgard' => [
         'screen_timeout' => (float) env('NATIVEPHP_ASGARD_SCREEN_TIMEOUT', 15),
         'action_timeout' => (float) env('NATIVEPHP_ASGARD_ACTION_TIMEOUT', 15),
+        'region_timeout' => (float) env('NATIVEPHP_ASGARD_REGION_TIMEOUT', 15),
         'screen' => null,
     ],
 

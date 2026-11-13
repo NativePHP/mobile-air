@@ -9,6 +9,7 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Asgard\ServerActionFailed;
+use Native\Mobile\Events\Asgard\ServerRegionFailed;
 use Native\Mobile\System;
 
 /**
@@ -80,15 +81,16 @@ use Native\Mobile\System;
  * ## Timeouts and failures
  *
  * A server action waits at most its component's serverActionTimeout() for
- * an answer, and a server screen waits at most its screenTimeout() for its
- * first body. A source reports a hard failure (no network, a server error,
+ * an answer, a region request at most its serverRegionTimeout(), and a
+ * server screen at most its screenTimeout() for its first body. A source reports a hard failure (no network, a server error,
  * an answer that fails verification) through failed(), and deliver()
  * reports a fragment it cannot render the same way. Either one is acted on
  * at the next turn of the runloop of the screen the component is on:
  * expire() runs there, and nextDeadline() tells the loop when to wake for
- * the next one. A server screen gives up and leaves; an action fires
- * ServerActionFailed on its screen. An answer that lands after either is
- * dropped.
+ * the next one. A server screen gives up and leaves. An action fires
+ * ServerActionFailed on its screen, and a region request fires
+ * ServerRegionFailed. An answer that lands after any of them is dropped.
+ * A region that failed is not asked for again until refresh() names it.
  *
  * ## What is deliberately NOT here
  *
@@ -203,8 +205,8 @@ class ServerRegion
 
     /**
      * Requests in flight: `id => ['owner' => WeakReference, 'region' => name,
-     * 'deadline' => ?ms, 'request' => RegionRequest]`. Only an action has a
-     * deadline.
+     * 'deadline' => ?ms, 'request' => RegionRequest]`. A server screen's
+     * body has no deadline here: its screen has one of its own (awaitBody()).
      */
     protected static array $pending = [];
 
@@ -266,9 +268,9 @@ class ServerRegion
     protected static ?\WeakMap $awaiting = null;
 
     /**
-     * Failed actions waiting for their component's next turn.
+     * Failed actions and regions waiting for their component's next turn.
      *
-     * @var list<array{owner: \WeakReference<NativeComponent>, event: ServerActionFailed}>
+     * @var list<array{owner: \WeakReference<NativeComponent>, event: ServerActionFailed|ServerRegionFailed}>
      */
     protected static array $failures = [];
 
@@ -436,9 +438,9 @@ class ServerRegion
      * puts its region on the push stream, for the state it was asked with.
      *
      * A fragment that cannot be rendered is a failure with reason `invalid`
-     * (see failed()). For a server screen still waiting for its body, or an
-     * action, that is all that happens. For any other region it keeps what
-     * it had, and with `app.debug` on it throws, as applyFragment() does.
+     * (see failed()). For a server screen's body, or an action, that is all
+     * that happens. Any other region also throws with `app.debug` on, as
+     * applyFragment() does.
      */
     public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null): bool
     {
@@ -480,8 +482,13 @@ class ServerRegion
 
         if (! $applied) {
             $handled = static::fail($owner, $entry['region'], $request, self::INVALID, null, $rejected?->getMessage() ?? 'the fragment cannot be rendered');
+            $quiet = $handled && ($request instanceof ActionRequest || static::isScreenBody($owner, $entry['region']));
 
-            if ($rejected !== null && ! $handled) {
+            // In debug a region's fragment the client cannot render is a
+            // mismatch worth hearing about, as applyFragment() says, even
+            // though ServerRegionFailed fires too. A server screen still
+            // waiting for its body, and an action, fail quietly instead.
+            if ($rejected !== null && ! $quiet) {
                 throw $rejected;
             }
 
@@ -507,9 +514,11 @@ class ServerRegion
      *    (ServerScreen::screenTimeout() has the details).
      *  - An action fires ServerActionFailed on the screen it was sent
      *    from.
-     *  - Any other region keeps what it had: its placeholder, or the last
-     *    fragment it painted. That is the offline state of §3, not an
-     *    error.
+     *  - Any other region keeps what it had, its placeholder or the last
+     *    fragment it painted, and ServerRegionFailed fires on the screen
+     *    it is on. It is not asked for again until refresh() names it.
+     *  - A server screen's body that already landed keeps it, and nothing
+     *    fires.
      *
      * A failure for a request that is not in flight, or that a newer one
      * for the same region has superseded, is ignored. Returns whether it
@@ -624,8 +633,9 @@ class ServerRegion
 
     /**
      * Act on every timer and failure of these components that is due:
-     * a server screen whose body did not come gives up, and an action that
-     * timed out or failed fires ServerActionFailed. The runloop of the
+     * a server screen whose body did not come gives up, an action that
+     * timed out or failed fires ServerActionFailed, and a region request
+     * that did fires ServerRegionFailed. The runloop of the
      * screen is the live one, so the screen hears it on its next turn.
      * Called by the runloop at the top of each turn, with its screen's
      * components. Returns whether anything was acted on, which the loop
@@ -683,18 +693,27 @@ class ServerRegion
 
             unset(static::$pending[$id]);
 
-            // A superseded action's answer would have been dropped anyway.
+            // A superseded request's answer would have been dropped anyway.
             if (((static::requested()[$owner] ?? [])[$entry['region']] ?? null) !== $id) {
                 continue;
             }
 
             $request = $entry['request'];
-            NativeRouter::debugLog("Asgard: action [{$request->call}] for region [{$request->region}] timed out.");
+            $message = 'no answer within '.round(($entry['deadline'] - $entry['sent']) / 1000, 3).' seconds';
 
-            $due[] = new ServerActionFailed(
-                $request->call, $request->component, $request->region, self::TIMEOUT, null, $request->id,
-                'no answer within '.round(($entry['deadline'] - $entry['sent']) / 1000, 3).' seconds',
-            );
+            if ($request instanceof ActionRequest) {
+                NativeRouter::debugLog("Asgard: action [{$request->call}] for region [{$request->region}] timed out.");
+
+                $due[] = new ServerActionFailed(
+                    $request->call, $request->component, $request->region, self::TIMEOUT, null, $request->id, $message,
+                );
+
+                continue;
+            }
+
+            NativeRouter::debugLog("Asgard: request for region [{$request->region}] timed out.");
+
+            $due[] = static::regionFailure($owner, $entry['region'], $request, self::TIMEOUT, null, $message);
         }
 
         foreach (static::$failures as $i => $failure) {
@@ -1009,15 +1028,17 @@ class ServerRegion
      * `NativeComponent` once a frame has rendered, on both render paths.
      *
      * A region that painted its placeholder is requested once per
-     * component instance, so later frames do not ask again. A region
-     * refreshServerRegions() named is requested even though it holds a
-     * fragment, which stays on screen until the new one lands. A region
-     * rendered outside any component has nothing to address and is
-     * never requested.
+     * component instance, so later frames do not ask again. That holds
+     * after its request failed too, so a region that cannot be fetched
+     * does not ask on every frame. A region refreshServerRegions() named
+     * is requested even though it holds a fragment, which stays on screen
+     * until the new one lands. That is also how a failed region tries
+     * again. A region rendered outside any component has nothing to
+     * address and is never requested.
      *
-     * A source that throws is logged and otherwise ignored: a fetch that
-     * could not start is a region that keeps its placeholder, not a
-     * broken screen.
+     * A source that throws fails the request with reason `network`: the
+     * region keeps its placeholder and ServerRegionFailed fires, but the
+     * screen is not broken.
      *
      * Then the push stream set is synced (sync()).
      */
@@ -1314,7 +1335,11 @@ class ServerRegion
         return $name.'#'.($seen + 1);
     }
 
-    /** Send one request for a region of a component, and remember it. */
+    /**
+     * Send one request for a region of a component, and remember it. It
+     * waits at most the component's serverRegionTimeout() for its answer.
+     * A server screen's body waits on the screen's own timer instead.
+     */
     protected static function request(NativeComponent $owner, string $region): void
     {
         $request = new RegionRequest(
@@ -1326,7 +1351,9 @@ class ServerRegion
             componentClass: $owner::class,
         );
 
-        static::track($owner, $region, $request);
+        $seconds = static::isScreenBody($owner, $region) ? 0 : $owner->serverRegionTimeout();
+
+        static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
 
         $states = static::requestedStates()[$owner] ?? [];
         $states[$region] = $request->state;
@@ -1358,9 +1385,10 @@ class ServerRegion
     }
 
     /**
-     * Act on a failed request that was the region's latest. Returns whether
-     * it was a server screen's body or an action, which are acted on at the
-     * owner's next turn (see expire()). Anything else just keeps what it had.
+     * Act on a failed request that was the region's latest. A server
+     * screen's first body, an action or an ordinary region is acted on at
+     * the owner's next turn (see expire()), and true is returned. A server
+     * screen's body that already landed keeps it, and false is returned.
      */
     protected static function fail(NativeComponent $owner, string $region, RegionRequest $request, string $reason, ?int $status, ?string $message): bool
     {
@@ -1389,7 +1417,33 @@ class ServerRegion
             return true;
         }
 
-        return false;
+        if (static::isScreenBody($owner, $region)) {
+            return false;
+        }
+
+        static::$failures[] = [
+            'owner' => \WeakReference::create($owner),
+            'event' => static::regionFailure($owner, $region, $request, $reason, $status, $message),
+        ];
+
+        static::$repaint = true;
+
+        return true;
+    }
+
+    /** Whether a region is a server screen's own body, which has a failure path of its own. */
+    protected static function isScreenBody(NativeComponent $owner, string $region): bool
+    {
+        return $owner instanceof ServerScreen && $region === ServerScreen::REGION;
+    }
+
+    protected static function regionFailure(NativeComponent $owner, string $region, RegionRequest $request, string $reason, ?int $status, ?string $message): ServerRegionFailed
+    {
+        return new ServerRegionFailed(
+            $region, $request->component, $reason, $status, $request->id,
+            placeholder: ! static::hasFragment($region, $owner),
+            message: $message,
+        );
     }
 
     /** @return \WeakMap<ServerScreen, array{at: ?float, failure: ?array}> */

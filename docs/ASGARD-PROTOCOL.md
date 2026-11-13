@@ -77,6 +77,21 @@ A region that never resolves keeps its placeholder. A screen with no network
 is a screen with skeletons where the server regions would be, and everything
 else working. That is the intended degraded state, not an error case.
 
+The app still hears about it, so it can swap a skeleton for a message. A
+region request that times out or fails fires `ServerRegionFailed` on the
+screen (§3.1), and the view can paint something else in the placeholder:
+
+```blade
+@server('stats')
+    @if ($statsFailed)
+        <native:text>Couldn't load stats.</native:text>
+        <native:button @tap="retryStats">Retry</native:button>
+    @else
+        <x-skeleton-card />
+    @endif
+@endserver
+```
+
 ### 3.1 When the client asks
 
 After a frame in which a region painted its placeholder, the component that
@@ -94,6 +109,49 @@ The source is fire and forget. It answers later with
 callback. An answer to a request that a newer one superseded, or for a
 component that has gone, is dropped. The default `NullFragmentSource` asks
 nobody.
+
+#### Timeouts and failures
+
+Every region request waits at most its region timeout for the answer: 15
+seconds by default, from `nativephp.asgard.region_timeout`, or the owning
+component's `serverRegionTimeout()`. 0 means no limit. That covers the first
+fetch, `refreshServerRegions()`, and a fetch a push stream signal started
+(§8.1). A hard failure reported through `ServerRegion::failed()` counts at
+once, with the reasons of §10.2.
+
+A failed region keeps what it had and fires
+`Native\Mobile\Events\Asgard\ServerRegionFailed` on the screen it is on: the
+owner, or the screen a child component that owns it is on. Its public
+properties are `region`, `component` (the address), `reason`, `status` (the
+HTTP status, or null), `requestId`, `message` and `placeholder`.
+`placeholder` is true when no fragment ever landed, so the placeholder is
+still up, and false when an earlier fragment stays on screen. The screen
+hears it with `#[On]`, filters included, and draws a frame after:
+
+```php
+#[On(ServerRegionFailed::class, when: ['region' => 'stats'])]
+public function statsFailed(bool $placeholder): void
+{
+    $this->statsFailed = $placeholder;
+}
+
+public function retryStats(): void
+{
+    $this->statsFailed = false;
+    $this->refreshServerRegions('stats');
+}
+```
+
+A failed region is not asked for again on its own. Later frames leave it
+alone, so a server that is down is not asked on every frame. To try again,
+call `refreshServerRegions()` on the component that owns the region, from the
+handler or a retry button. The retry gets a timer of its own.
+
+An answer that lands after the failure is dropped. A request that a newer one
+superseded fires nothing. A covered screen's timers wait until it is on top
+again, as in §10.2. A server screen's own body (§12.1) has its own timer and
+`ServerScreenFailed`, and never fires `ServerRegionFailed`. Regions cannot
+sit inside a fragment (§9.3), so there are no others to leave out.
 
 ## 4. Addressing components
 
@@ -1411,8 +1469,9 @@ path that matches nothing runs nothing and is logged, or throws with
    of a second or two, say) is open. Nothing does it today.
 9. Timeouts are fixed per component or screen class, not per action. Whether
    an action should be able to say it needs longer (an upload, say) is open.
-   A plain region request has no timeout: it keeps its placeholder, as §3
-   says.
+   Regions have one too (§3.1), and the same question applies.
+10. Whether a region that failed should retry by itself, with a backoff. Today
+    it waits for `refreshServerRegions()`, so the app decides when.
 
 ## 14. Notes for implementers
 

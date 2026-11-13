@@ -5,13 +5,17 @@ use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\Asgard\ServerMethods;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\Asgard\ServerScreen;
+use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Asgard\ServerActionFailed;
+use Native\Mobile\Events\Asgard\ServerRegionFailed;
 use Native\Mobile\Events\Asgard\ServerScreenFailed;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
 use Tests\Fixtures\Edge\ActionFailureScreen;
+use Tests\Fixtures\Edge\FragmentSourceChild;
+use Tests\Fixtures\Edge\RegionFailureScreen;
 use Tests\Fixtures\Edge\ScreenFailureLanding;
 use Tests\Fixtures\Edge\ServerMethodFailureScreen;
 
@@ -20,7 +24,9 @@ use Tests\Fixtures\Edge\ServerMethodFailureScreen;
  * methods (docs/ASGARD-PROTOCOL.md §10.2, §12.1). A server screen whose
  * body does not come gives up and leaves, and ServerScreenFailed fires on
  * the screen it lands on. A server action or #[Server] call that fails
- * fires ServerActionFailed on its own screen. Both are heard by #[On].
+ * fires ServerActionFailed on its own screen, and an @server region whose
+ * fragment does not come fires ServerRegionFailed there. All are heard by
+ * #[On].
  */
 beforeEach(function () {
     app('view')->addLocation(__DIR__.'/../../Fixtures/views');
@@ -28,7 +34,7 @@ beforeEach(function () {
     ServerRegion::flush();
     ServerMethods::flush();
     ServerScreen::flushChrome();
-    config(['app.debug' => false, 'nativephp.asgard.screen_timeout' => 15, 'nativephp.asgard.action_timeout' => 15]);
+    config(['app.debug' => false, 'nativephp.asgard.screen_timeout' => 15, 'nativephp.asgard.action_timeout' => 15, 'nativephp.asgard.region_timeout' => 15]);
     Carbon::setTestNow(Carbon::now());
     Native::fakeFragmentSource();
 
@@ -367,6 +373,282 @@ it('reports nothing for a superseded action', function () {
 
     expect(array_column($screen->get('failures'), 'action'))->toBe(['shuffle'])
         ->and($screen->get('likeFailures'))->toBe([]);
+});
+
+// ── Server regions ──────────────────────────────────
+
+const STATS_FRAGMENT = ['type' => 'text', 'key' => 'total', 'props' => ['text' => 'Total £120']];
+
+function regionScreen(?float $timeout = null): TestableComponent
+{
+    ComponentRegistry::components(['fragment-source-child' => FragmentSourceChild::class]);
+
+    $screen = Native::test(RegionFailureScreen::class);
+
+    if ($timeout !== null) {
+        // The first fetch went out with the config's timer. Ask again with this one.
+        $screen->set('timeout', $timeout);
+        $screen->instance()->refreshServerRegions();
+        $screen->set('timeout', $timeout);
+    }
+
+    return $screen;
+}
+
+it('fires ServerRegionFailed when a region gets no fragment in time, with the placeholder still up', function () {
+    $heard = [];
+    Event::listen(ServerRegionFailed::class, function ($e) use (&$heard) {
+        $heard[] = $e;
+    });
+
+    $screen = regionScreen();
+    $source = Native::fakeFragmentSource();
+    $stats = $source->lastRequest('stats');
+    $source->respond('feed', ['type' => 'text', 'props' => ['text' => 'Feed']]);
+
+    $screen->wait(14.9);
+    expect($screen->get('failures'))->toBe([]);
+
+    $before = $screen->renderCount();
+    $screen->wait(0.2);
+
+    expect($screen->get('failures'))->toBe([[
+        'region' => 'stats',
+        'component' => $stats->component,
+        'reason' => 'timeout',
+        'status' => null,
+        'requestId' => $stats->id,
+        'placeholder' => true,
+    ]])->and($screen->get('statsFailures'))->toBe([true]);
+
+    expect($screen->renderCount())->toBeGreaterThan($before);
+    expect($heard)->toHaveCount(1)
+        ->and($heard[0]->message)->toContain('no answer within 15');
+
+    // Late: dropped, and the placeholder stays.
+    expect($source->respond($stats, STATS_FRAGMENT))->toBeFalse();
+    $screen->wait()->assertSee('Loading stats…')->assertDontSee('Total £120');
+});
+
+it('wakes the runloop for a region timer', function () {
+    $screen = regionScreen();
+
+    expect(loopTimeout($screen->instance()))->toBe(15000);
+
+    Native::fakeFragmentSource()->respond('stats', STATS_FRAGMENT);
+    Native::fakeFragmentSource()->respond('feed', STATS_FRAGMENT);
+    $screen->wait();
+
+    // Both answered: nothing left to wake for.
+    expect(loopTimeout($screen->instance()))->toBe(-1);
+});
+
+it('keeps the fragment when a refresh fails, and says so', function () {
+    $screen = regionScreen();
+    $source = Native::fakeFragmentSource();
+
+    $source->respond('stats', STATS_FRAGMENT);
+    $source->respond('feed', ['type' => 'text', 'props' => ['text' => 'Feed']]);
+    $screen->wait()->assertSee('Total £120');
+
+    $screen->tap('Retry');
+    $source->assertRequested('stats', 2);
+
+    expect($source->fail('stats', ServerRegion::SERVER, 500, 'boom'))->toBeTrue();
+
+    $screen->wait()->assertSee('Total £120')->assertDontSee('Loading stats…');
+
+    expect($screen->get('failures'))->toHaveCount(1)
+        ->and($screen->get('failures')[0]['reason'])->toBe('server')
+        ->and($screen->get('failures')[0]['status'])->toBe(500)
+        ->and($screen->get('failures')[0]['placeholder'])->toBeFalse()
+        ->and($screen->get('statsFailures'))->toBe([false]);
+});
+
+it('fires at once on a hard failure, and the when filter picks the listener', function () {
+    $screen = regionScreen();
+
+    expect(Native::fakeFragmentSource()->fail('feed', ServerRegion::NETWORK))->toBeTrue();
+
+    $screen->wait();
+
+    expect($screen->get('failures'))->toHaveCount(1)
+        ->and($screen->get('failures')[0]['region'])->toBe('feed')
+        ->and($screen->get('failures')[0]['reason'])->toBe('network')
+        ->and($screen->get('failures')[0]['placeholder'])->toBeTrue()
+        ->and($screen->get('statsFailures'))->toBe([]);
+
+    Native::fakeFragmentSource()->fail('stats', ServerRegion::SERVER, 503);
+    $screen->wait();
+
+    expect($screen->get('statsFailures'))->toBe([true])
+        ->and(array_column($screen->get('failures'), 'region'))->toBe(['feed', 'stats']);
+});
+
+it('fails a region whose fragment cannot be rendered', function () {
+    $screen = regionScreen();
+
+    expect(Native::fakeFragmentSource()->respond('stats', ['type' => 'no_such_element']))->toBeFalse();
+
+    $screen->wait()->assertSee('Loading stats…');
+
+    expect($screen->get('failures')[0]['reason'])->toBe('invalid');
+});
+
+it('still throws for a region fragment that cannot be rendered while debugging, and fires the event', function () {
+    $screen = regionScreen();
+    config(['app.debug' => true]);
+
+    expect(fn () => Native::fakeFragmentSource()->respond('stats', ['type' => 'no_such_element']))
+        ->toThrow(RuntimeException::class, "region 'stats' cannot be rendered");
+
+    $screen->wait();
+
+    expect($screen->get('statsFailures'))->toBe([true]);
+});
+
+it('fails a region whose source throws, as a network failure', function () {
+    app()->instance(\Native\Mobile\Edge\Asgard\Contracts\FragmentSource::class, new class extends \Native\Mobile\Edge\Asgard\NullFragmentSource
+    {
+        public function request(\Native\Mobile\Edge\Asgard\RegionRequest $request): void
+        {
+            throw new RuntimeException('offline');
+        }
+    });
+
+    $screen = regionScreen()->wait();
+
+    expect(array_column($screen->get('failures'), 'reason'))->toBe(['network', 'network']);
+});
+
+it('fires on the screen for a region in a child component', function () {
+    $screen = regionScreen();
+    $source = Native::fakeFragmentSource();
+    $source->respond('stats', STATS_FRAGMENT);
+    $source->respond('feed', STATS_FRAGMENT);
+
+    $screen->set('withChild', true);
+    $child = $source->lastRequest('sales-summary');
+
+    expect($child->componentClass)->toBe(FragmentSourceChild::class);
+
+    $screen->wait(16);
+
+    expect($screen->get('failures'))->toBe([[
+        'region' => 'sales-summary',
+        'component' => $child->component,
+        'reason' => 'timeout',
+        'status' => null,
+        'requestId' => $child->id,
+        'placeholder' => true,
+    ]]);
+});
+
+it('takes the region timeout from the component, and 0 turns it off', function () {
+    $screen = regionScreen(timeout: 2);
+
+    $screen->wait(1.9);
+    expect($screen->get('failures'))->toBe([]);
+
+    $screen->wait(0.2);
+    expect(array_column($screen->get('failures'), 'region'))->toBe(['stats', 'feed']);
+
+    config(['nativephp.asgard.region_timeout' => 0]);
+    $off = regionScreen();
+
+    $off->wait(3600);
+    expect($off->get('failures'))->toBe([]);
+
+    // A hard failure still fires.
+    Native::fakeFragmentSource()->fail('stats');
+    $off->wait();
+    expect($off->get('statsFailures'))->toBe([true]);
+});
+
+it('reports nothing for a superseded region request', function () {
+    $screen = regionScreen();
+    $source = Native::fakeFragmentSource();
+    $first = $source->lastRequest('stats');
+
+    $screen->tap('Retry');
+    $second = $source->lastRequest('stats');
+
+    expect($second->id)->not->toBe($first->id)
+        ->and($source->fail($first, ServerRegion::SERVER, 500))->toBeFalse();
+
+    $source->respond($second, STATS_FRAGMENT);
+    $source->respond('feed', STATS_FRAGMENT);
+
+    $screen->wait(16)->assertSee('Total £120');
+
+    expect($screen->get('failures'))->toBe([]);
+});
+
+it('does not ask again on its own after a failure, but a refresh retries it', function () {
+    $screen = regionScreen();
+    $source = Native::fakeFragmentSource();
+    $source->respond('feed', STATS_FRAGMENT);
+
+    $screen->wait(16);
+    expect($screen->get('statsFailures'))->toBe([true]);
+
+    // Frames after the failure leave it alone, so a dead server is not asked on every one.
+    $screen->set('withChild', false)->wait()->wait();
+    $source->assertRequested('stats', 1);
+
+    $screen->tap('Retry');
+    $source->assertRequested('stats', 2);
+
+    expect($source->respond('stats', STATS_FRAGMENT))->toBeTrue();
+
+    $screen->wait()->assertSee('Total £120')->assertDontSee('Loading stats…');
+
+    // The retry has a timer of its own, which the answer stopped.
+    $screen->wait(30);
+    expect($screen->get('statsFailures'))->toBe([true]);
+});
+
+it('acts on a region timer of a covered screen only once it is on top again', function () {
+    $covered = regionScreen()->instance();
+    $top = Native::test(ScreenFailureLanding::class)->instance();
+
+    Carbon::setTestNow(Carbon::now()->addSeconds(30));
+
+    expect(ServerRegion::nextDeadline([$top]))->toBeNull()
+        ->and(ServerRegion::expire([$top]))->toBeFalse()
+        ->and(ServerRegion::nextDeadline([$covered]))->not->toBeNull()
+        ->and(ServerRegion::expire([$covered]))->toBeTrue();
+});
+
+it('never fires ServerRegionFailed for a server screen body', function () {
+    $heard = [];
+    Event::listen(ServerRegionFailed::class, function ($e) use (&$heard) {
+        $heard[] = $e;
+    });
+
+    // Timed out before the body came: the screen gives up, nothing else.
+    [, $promo] = promoOverHome();
+    $promo->wait(16)->assertWentBack();
+    $promo->goBack();
+
+    // Failed at once.
+    [, $promo] = promoOverHome();
+    Native::fakeFragmentSource()->fail('screen', ServerRegion::SERVER, 500);
+    $promo->wait()->assertWentBack();
+
+    // A refresh that fails after the body landed keeps the body.
+    [, $promo] = promoOverHome();
+    $source = Native::fakeFragmentSource();
+    $source->respond('screen', TIMEOUT_BODY);
+    $promo->instance()->refreshServerRegions();
+    $promo->wait();
+
+    expect(ServerRegion::nextDeadline([$promo->instance()]))->toBeNull();
+
+    $source->fail('screen', ServerRegion::SERVER, 500);
+    $promo->wait(60)->assertNoNavigation()->assertSee('Promo 42');
+
+    expect($heard)->toBe([]);
 });
 
 // ── #[Server] methods ───────────────────────────────
