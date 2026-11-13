@@ -54,7 +54,7 @@ class ServerScreen extends NativeComponent implements Contracts\AddressedCompone
     /** Route patterns the server may list: literal and {param} segments, {param?} last. */
     public const URI_PATTERN = '#^/$|^(/([A-Za-z0-9._~-]+|\{[A-Za-z_][A-Za-z0-9_]*\}))*(/([A-Za-z0-9._~-]+|\{[A-Za-z_][A-Za-z0-9_]*\??\}))$#D';
 
-    public const ADDRESS_PATTERN = '/^[a-z0-9_]+(\.[a-z0-9_]+)*$/D';
+    public const ADDRESS_PATTERN = ComponentAddress::PATTERN;
 
     /**
      * The last chrome each screen address showed, so a screen opened again

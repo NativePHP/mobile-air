@@ -233,6 +233,22 @@ App\Native\Components\SalesSummary   →   app.native.components.sales_summary
 
 Backslashes become dots; each segment is snake-cased.
 
+A component can name its address instead, with a class attribute:
+
+```php
+#[ServerAddress('home')]
+class Home extends NativeComponent
+```
+
+Its requests, `#[Server]` calls and uploads then go to `home`, and only
+pushes for `home` reach it. An address is dot notation with lower-case
+snake_case segments, the same shape in both cases. Naming it keeps the
+client's class name out of the protocol, so moving or renaming the class
+changes nothing on the server. The attribute is not inherited: a subclass
+is addressed by its own class unless it names an address too. A named
+address shares one map with server screens (§12.1), so it must not be the
+name of one.
+
 **The server MUST NOT convert this identifier back into a class name.** The
 identifier arrives from a client and is therefore attacker-controlled. Turning
 it into a class name and instantiating it is arbitrary object instantiation.
@@ -241,9 +257,8 @@ Instead the server resolves it through a map the developer writes. The
 reference server takes it from `config('asgard.components')`
 (`address => class`) and from `Asgard::component($address, $class)` calls at
 boot. Server screens join the same map when they are registered (§12.1).
-Nothing is discovered by scanning, and nothing outside the map resolves. The
-convention is that the address is the client component's class in dot
-notation, so the two halves of one component share a name, but the map is
+Nothing is discovered by scanning, and nothing outside the map resolves. Whether the
+address is the client's class in dot notation or one it named, the map is
 what decides. A non-PHP server keeps the same kind of table.
 
 An unknown identifier is a 404. It is never a lookup failure that leaks whether
