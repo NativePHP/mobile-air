@@ -320,3 +320,30 @@ it('keeps a completion that lands while the transition is being signalled', func
 
     FakeBridge::disable();
 });
+
+it('scopes an anyScreen() task to no screen, so whichever screen is on top runs its callback', function () {
+    config(['app.key' => 'base64:'.base64_encode(Encrypter::generateKey('AES-256-CBC'))]);
+    FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
+    $origin = new AsyncScreenDouble;
+    setActiveComponent($origin);
+
+    $pending = AsyncTask::dispatch(static fn () => 'routes')
+        ->anyScreen()
+        ->finished(static function ($result) {
+            $GLOBALS['anyScreenResult'] = $result;
+        });
+    $pending->start();
+    $id = $pending->getId();
+
+    expect(AsyncTaskRegistry::scope($id))->toBe(['origin' => null, 'shared' => null]);
+
+    // The user has moved on; the completion still runs.
+    $current = new AsyncScreenDouble;
+    setActiveComponent($current);
+    $current->fireEvent(finishedEvent($id, 'routes'));
+
+    expect($GLOBALS['anyScreenResult'] ?? null)->toBe('routes');
+
+    unset($GLOBALS['anyScreenResult']);
+    FakeBridge::disable();
+});

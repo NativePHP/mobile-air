@@ -68,7 +68,7 @@ class CallbackRegistry
         } else {
             $id = $this->deriveId($expression);
             $this->expressionMap[$expression] = $id;
-            $this->map[$id] = self::parse($expression);
+            $this->map[$id] = $this->parseExpression($expression);
         }
 
         if ($kind !== null) {
@@ -113,6 +113,16 @@ class CallbackRegistry
         }
 
         return $id;
+    }
+
+    /**
+     * What a registered expression resolves to. A screen's registry reads
+     * `method('arg', ...)`; a fragment's registry overrides this to read
+     * its own encoding (Asgard\FragmentCallbacks).
+     */
+    protected function parseExpression(string $expression): array
+    {
+        return self::parse($expression);
     }
 
     public function resolve(int $id): ?array

@@ -26,6 +26,10 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Enums\ActionSource;
+use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
+use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
+use Native\Mobile\Edge\Exceptions\FragmentActionNotAllowedException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
@@ -250,6 +254,14 @@ abstract class NativeComponent
         // state the next (recovered) frame still wants.
         $this->beginChildComponentFrame();
 
+        // Same idea for Asgard regions: the record of which regions are
+        // on screen belongs to one frame. Set here rather than off the
+        // collector's reset() because a screen can render without the
+        // collector at all (a programmatic Element tree), and such a
+        // screen must read as having no regions, not as still having the
+        // previous screen's.
+        Asgard\ServerRegion::beginFrame();
+
         $result = $this->render();
 
         $element = $result instanceof View
@@ -257,6 +269,10 @@ abstract class NativeComponent
             : $result;
 
         $this->endChildComponentFrame();
+
+        // Regions that painted a placeholder this frame ask for their
+        // fragment now, once per component (ASGARD-PROTOCOL.md §3).
+        Asgard\ServerRegion::requestMissing();
 
         return $element;
     }
@@ -596,9 +612,7 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
-            ? new ($this->nativeLayout)()
-            : null;
+        $layout = $this->chromeLayout();
 
         // ── Inline chrome (screen blade) ──
         // Non-custom bars are hoisted out of the content tree so they
@@ -726,6 +740,18 @@ abstract class NativeComponent
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * The layout whose chrome wraps this screen: the route's layout class,
+     * or null for none. Asgard's ServerScreen answers with one built from
+     * the chrome the server sent instead.
+     */
+    protected function chromeLayout(): ?NativeLayout
+    {
+        return ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
+            : null;
     }
 
     /**
@@ -1566,6 +1592,7 @@ abstract class NativeComponent
         try {
             $t0 = microtime(true);
             $this->beginChildComponentFrame();
+            Asgard\ServerRegion::beginFrame();
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
             $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
@@ -1573,6 +1600,9 @@ abstract class NativeComponent
 
             nphp_frame_end();
             $t2 = microtime(true);
+
+            // Same as renderToElement(): ask for what this frame is missing.
+            Asgard\ServerRegion::requestMissing();
 
             NativeRouter::debugLog(sprintf(
                 'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
@@ -1762,6 +1792,31 @@ abstract class NativeComponent
             return -1;
         }
 
+        // An Asgard fragment landed since the last frame without an event
+        // to wake the loop (a FragmentSource that answered at once, from a
+        // cache say). Take the next turn now so it paints.
+        if (Asgard\ServerRegion::repaintPending()) {
+            return 0;
+        }
+
+        $polls = $this->nextPollTimeout($definitions);
+
+        // An Asgard timer wakes the loop at its deadline, with no input
+        // needed, so a server screen or action that waits too long fails
+        // on time. It is on another clock than the polls (Carbon's, which
+        // tests can move), so it is worked out on its own.
+        $server = $this->serverDeadlineWait();
+
+        if ($server === null) {
+            return $polls;
+        }
+
+        return $polls === -1 ? $server : min($polls, $server);
+    }
+
+    /** The #[Poll] and native:poll part of nextEventTimeout(). */
+    private function nextPollTimeout(array $definitions): int
+    {
         $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
@@ -1793,6 +1848,60 @@ abstract class NativeComponent
     }
 
     /**
+     * Milliseconds until the next Asgard timer or failure of this screen
+     * or its children is due, or null when there is none. A covered
+     * screen's are left for when it runs again.
+     */
+    private function serverDeadlineWait(): ?int
+    {
+        if (! Asgard\ServerRegion::hasDeadlines() && ! Asgard\ServerMethods::hasDeadlines()) {
+            return null;
+        }
+
+        $tree = iterator_to_array($this->componentTree(), false);
+        $deadlines = array_filter(
+            [Asgard\ServerRegion::nextDeadline($tree), Asgard\ServerMethods::nextDeadline($tree)],
+            fn (?float $at) => $at !== null,
+        );
+
+        if ($deadlines === []) {
+            return null;
+        }
+
+        return max(0, (int) ceil(min($deadlines) - Asgard\ServerRegion::now()));
+    }
+
+    /**
+     * Act on the Asgard timers and failures of this screen and its children
+     * that are due (ServerRegion::expire(), ServerMethods::expire()). Run
+     * at the top of each turn of the loop. A closure of a `#[Server]`
+     * method that throws shows the error screen, as any interaction does.
+     * Returns whether anything was acted on.
+     */
+    private function expireServerDeadlines(): bool
+    {
+        if (! Asgard\ServerRegion::hasDeadlines() && ! Asgard\ServerMethods::hasDeadlines()) {
+            return false;
+        }
+
+        $acted = false;
+
+        $this->runGuardedInteraction('expireServerDeadlines()', function () use (&$acted) {
+            $tree = iterator_to_array($this->componentTree(), false);
+            $acted = Asgard\ServerRegion::expire($tree);
+
+            // A server screen that gave up has left, and its calls with it.
+            if ($this->nativeRunning) {
+                $acted = Asgard\ServerMethods::expire($tree) || $acted;
+            }
+
+            $this->flushDispatchedEvents();
+        });
+
+        return $acted;
+    }
+
+    /**
      * Fire any polls whose interval has elapsed, then reschedule them.
      * Called on an idle tick (wait_event returned null) before the loop
      * re-renders. Blade native:poll timers carry no callback — they just
@@ -1814,7 +1923,7 @@ abstract class NativeComponent
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
 
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+                    $this->runAction($def['method'], [], ActionSource::Poll);
                 }
             }
         }
@@ -2062,6 +2171,19 @@ abstract class NativeComponent
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri);
                 $this->stop();
             }
+
+            return;
+        }
+
+        // An Asgard `#[Server]` response (docs/ASGARD-SERVER-METHODS.md
+        // §3). The request was performed natively while this loop blocked,
+        // so its answer comes back on the one channel the loop is already
+        // waiting on. Route it to the pending-request table and stop: it
+        // is framework plumbing, not an event a component listens for, and
+        // the re-render at the top of the loop paints whatever the delta
+        // and the closure changed.
+        if ($eventName === Asgard\ServerMethods::RESPONSE_EVENT) {
+            Asgard\ServerMethods::deliver(is_array($payload) ? $payload : []);
 
             return;
         }
@@ -2412,12 +2534,12 @@ abstract class NativeComponent
                 }
             }
 
-            ComponentMethodInvoker::invoke($this, $method, $parameters);
+            $this->runAction($method, $parameters, ActionSource::NativeEvent);
 
             return;
         }
 
-        ComponentMethodInvoker::invoke($this, $method, [$payload]);
+        $this->runAction($method, [$payload], ActionSource::NativeEvent);
     }
 
     private function coerceNativePayloadValue(\ReflectionParameter $parameter, mixed $value): mixed
@@ -2931,6 +3053,18 @@ abstract class NativeComponent
         if (self::active() === $this) {
             self::$nativeActiveComponent = null;
         }
+
+        // Drop in-flight #[Server] requests owned by this component. The
+        // pending table holds this instance and the closure bound to it, so
+        // leaving entries behind keeps a dead screen alive; a response that
+        // arrives after this is discarded (ASGARD-SERVER-METHODS.md §4).
+        Asgard\ServerMethods::forget($this);
+
+        // Same for region requests: an answer that lands after this is
+        // dropped, and this component's fragments go with it. Both run for
+        // every component, UsesServer or not, since any view can hold an
+        // @server region.
+        Asgard\ServerRegion::forget($this);
     }
 
     public function onResume(): void
@@ -3063,6 +3197,17 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Asgard timers and failures that are due: a server screen that
+            // gives up leaves, and a failed server action fires its event,
+            // which this screen hears on the next turn.
+            if ($this->expireServerDeadlines()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -3300,6 +3445,17 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Asgard timers and failures that are due: a server screen that
+            // gives up leaves, and a failed server action fires its event,
+            // which this screen hears on the next turn.
+            if ($this->expireServerDeadlines()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -4650,10 +4806,10 @@ abstract class NativeComponent
         if ($parent !== null && isset($source->nativeChildEventBindings[$event->name()])) {
             $binding = CallbackRegistry::parse($source->nativeChildEventBindings[$event->name()]);
 
-            $this->invokeComponentEventAction(
-                $parent,
+            $parent->runAction(
                 $binding['method'],
                 [...$binding['args'], ...$event->params()],
+                ActionSource::ParentBinding,
             );
         }
 
@@ -4696,10 +4852,10 @@ abstract class NativeComponent
             $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
 
             if (method_exists($parent, $binding['method'])) {
-                $this->invokeComponentEventAction(
-                    $parent,
+                $parent->runAction(
                     $binding['method'],
                     [...$binding['args'], ...$args],
+                    ActionSource::ParentBinding,
                 );
             }
         }
@@ -4723,22 +4879,94 @@ abstract class NativeComponent
             }
 
             // An #[On] listener names itself through the attribute, so it is
-            // never remote input. Skip the callable guard that protects
-            // template- and device-supplied method names: a listener may be
-            // protected, and may legitimately be named updatedFoo().
-            $this->invokeComponentEventAction($this, $method, $args, guarded: false);
+            // never remote input. ActionSource::ComponentEvent is unguarded
+            // for that reason: a listener may be protected, and may
+            // legitimately be named updatedFoo().
+            $this->runAction($method, $args, ActionSource::ComponentEvent);
         }
     }
 
-    private function invokeComponentEventAction(
-        NativeComponent $component,
-        string $method,
-        array $parameters,
-        bool $guarded = true,
-    ): mixed {
-        return $guarded
-            ? ComponentMethodInvoker::invoke($component, $method, $parameters)
-            : ComponentMethodInvoker::invokeLifecycle($component, $method, $parameters);
+    // ── Action invocation ───────────────────────────
+
+    /**
+     * The one way the framework invokes a developer's action method. Every
+     * framework-initiated call goes through here: a tap and the other UI
+     * interactions, a #[Poll] tick, a native event, a component event, a
+     * parent's `@event` tag binding, a search query, a virtual window range,
+     * a text selection, a drag end.
+     *
+     * Do not call `$this->$method(...)` directly from a new path. Adding a
+     * path means adding an {@see ActionSource} case, deciding its
+     * {@see ActionSource::guarded()} answer, and calling this.
+     *
+     * It applies the callable guard and then hands over to the overridable
+     * {@see callAction()}. The guard runs here, before the hook, so that an
+     * override cannot drop it: whatever callAction() does, a name that a
+     * template or the device chose has already been held to
+     * {@see ComponentMethodInvoker::assertCallable()}. A name the developer
+     * chose by writing an attribute (#[Poll], a component #[On]) skips the
+     * guard, so those methods may be protected.
+     *
+     * Private on purpose, so nothing can override it. It is called on other
+     * instances too (`emit()` runs it on the parent), which private allows
+     * because it is declared on this class.
+     *
+     * Callers check `method_exists()` first; that check stays with them,
+     * because `emit()` runs it against the parent instance.
+     *
+     * Three nearby invocations are deliberately NOT routed through here:
+     *
+     *  - `fireNativeCallback()`'s `call_user_func()`. That invokes a bound
+     *    closure or an invokable class, not a named method, so there is no
+     *    name to resolve and no method attributes to read.
+     *  - `#[Computed]` getters, via `__get()`. Pure memoized reads evaluated
+     *    while rendering. Not actions.
+     *  - `updated{Property}` hooks, via `__invokeStateHook()`. A side effect
+     *    of a property write rather than an interaction in its own right.
+     *
+     * Framework-owned callbacks that templates register (`__navigate`,
+     * `__syncProperty` and the navigation helpers) are dispatched by
+     * {@see __invokeInteraction()} before reaching here, as they are not
+     * developer actions.
+     */
+    private function runAction(string $method, array $args, ActionSource $source): mixed
+    {
+        if ($source->guarded()) {
+            ComponentMethodInvoker::assertCallable($this, $method);
+        }
+
+        if ($source->fromFragment()) {
+            ComponentMethodInvoker::assertFragmentCallable($this, $method, $args);
+        }
+
+        return $this->callAction($method, $args, $source);
+    }
+
+    /**
+     * Run a developer's action method. Override it to wrap every
+     * framework-initiated call at once (a tap, a poll, an event); the
+     * {@see ActionSource} tells you which kind of call it is.
+     *
+     * By the time this runs the method name has already passed the callable
+     * guard where its source needs one, so an override that never calls
+     * parent cannot widen what remote input reaches. Call parent to keep
+     * container injection and implicit model / enum binding of the arguments.
+     *
+     * @param  string  $method  Method to call. It exists, and is callable for this source.
+     * @param  array  $args  Arguments, resolved with container injection and
+     *                       implicit model / enum binding. Not for
+     *                       {@see ActionSource::FragmentClient}: a server
+     *                       chose those, so they are passed as they are.
+     * @param  ActionSource  $source  What triggered the call.
+     * @return mixed The return value. {@see ActionSource::SearchQuery} depends on it.
+     */
+    protected function callAction(string $method, array $args, ActionSource $source): mixed
+    {
+        if ($source === ActionSource::FragmentClient) {
+            return (new \ReflectionMethod($this, $method))->invokeArgs($this, array_values($args));
+        }
+
+        return ComponentMethodInvoker::invokeLifecycle($this, $method, $args);
     }
 
     // ── Event dispatch ──────────────────────────────
@@ -4753,6 +4981,26 @@ abstract class NativeComponent
         // child as $this, and `native:model` syncs the child's property.
         // Ids no component owns are dropped, exactly as before.
         $owner = $this->findCallbackOwner($callbackId);
+
+        // A tap on a server-rendered fragment resolves in that region's
+        // own registry (docs/ASGARD-PROTOCOL.md §9.2, §10). A fragment's
+        // ids are derived from expressions a server wrote, so one could be
+        // made to equal a screen callback's id, or another region's. An id
+        // more than one scope claims is dropped rather than guessed at.
+        $fragmentCallbacks = $this->findFragmentCallbacks($callbackId);
+
+        if ($fragmentCallbacks !== []) {
+            if ($owner !== null || count($fragmentCallbacks) > 1) {
+                NativeRouter::debugLog("Asgard: callback id [{$callbackId}] is claimed by more than one scope — dropped.");
+
+                return;
+            }
+
+            [$component, $region, $callback] = $fragmentCallbacks[0];
+            $component->dispatchFragmentCallback($region, $callback, $event);
+
+            return;
+        }
 
         if ($owner === null) {
             return;
@@ -4777,16 +5025,7 @@ abstract class NativeComponent
             return;
         }
 
-        $type = $event['type'] ?? -1;
-
-        $eventArgs = match ($type) {
-            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
-            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
-            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
-            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
-            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
-            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
-        };
+        $eventArgs = $this->uiEventArgs($event);
 
         // Dispatch path forks based on callback kind. Default kind
         // (null) is fire-and-forget — return value is discarded.
@@ -4796,7 +5035,7 @@ abstract class NativeComponent
         $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
-            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -4813,7 +5052,7 @@ abstract class NativeComponent
             $parts = explode(',', $payload, 2);
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
-            $this->invokeUiInteraction($method, [...$args, $from, $to]);
+            $this->invokeUiInteraction($method, [...$args, $from, $to], ActionSource::VirtualWindow);
 
             return;
         }
@@ -4825,7 +5064,7 @@ abstract class NativeComponent
             $parts = explode(',', $event['text'] ?? '', 2);
             $x = (float) ($parts[0] ?? 0);
             $y = (float) ($parts[1] ?? 0);
-            $this->$method(...[...$args, $x, $y]);
+            $this->invokeUiInteraction($method, [...$args, $x, $y], ActionSource::DragEnd);
 
             return;
         }
@@ -4857,17 +5096,139 @@ abstract class NativeComponent
                 $start = $end = mb_strlen($text, 'UTF-8');
             }
 
-            $this->invokeUiInteraction($method, [...$args, $text, $start, $end]);
+            $this->invokeUiInteraction($method, [...$args, $text, $start, $end], ActionSource::TextSelection);
 
             return;
         }
 
-        $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+        $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::Interaction);
     }
 
-    private function invokeUiInteraction(string $method, array $parameters): mixed
+    /** The value a UI event carries, as the arguments appended to a callback's own. */
+    private function uiEventArgs(array $event): array
     {
-        $result = $this->__invokeInteraction($method, $parameters);
+        return match ($event['type'] ?? -1) {
+            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
+            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
+            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
+            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
+            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
+            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
+        };
+    }
+
+    /**
+     * Every fragment registry in this component's tree that resolves the
+     * id, as `[component, region, callback]`. More than one is a clash.
+     *
+     * @return list<array{0: NativeComponent, 1: string, 2: array}>
+     */
+    private function findFragmentCallbacks(int $callbackId): array
+    {
+        if ($callbackId === 0) {
+            return [];
+        }
+
+        $matches = [];
+
+        foreach ($this->componentTree() as $component) {
+            foreach (Asgard\ServerRegion::registriesOf($component) as $region => $registry) {
+                if (($callback = $registry->resolve($callbackId)) !== null) {
+                    $matches[] = [$component, $region, $callback];
+                }
+            }
+        }
+
+        return $matches;
+    }
+
+    /**
+     * Run a tap on one of this component's fragment callbacks (§10).
+     *
+     * A `server` target sends an ActionRequest with the state as it is
+     * now, and nothing runs here, whatever methods this component has. A
+     * `client` target runs a `#[NativeAction]` method of this component
+     * through runAction(). A method the fragment may not call runs
+     * nothing and is logged, or throws with `app.debug` on. Either way a
+     * client callback never falls back to the server.
+     */
+    private function dispatchFragmentCallback(string $region, array $callback, array $event): void
+    {
+        $target = $callback['target'] ?? null;
+        $method = $callback['method'];
+        $args = [...$callback['args'], ...$this->uiEventArgs($event)];
+
+        if ($target === Asgard\FragmentCallbacks::TARGET_SERVER) {
+            Asgard\ServerRegion::action($this, $region, $method, $args);
+
+            return;
+        }
+
+        if ($target === Asgard\FragmentCallbacks::TARGET_NAVIGATE) {
+            $this->followFragmentNavigation($region, $method, $callback['args']);
+
+            return;
+        }
+
+        if ($target !== Asgard\FragmentCallbacks::TARGET_CLIENT) {
+            return;
+        }
+
+        try {
+            ComponentMethodInvoker::assertFragmentCallable($this, $method, $args);
+        } catch (ComponentMethodNotFoundException|DirectlyCallingLifecycleHooksNotAllowedException|FragmentActionNotAllowedException $e) {
+            if (config('app.debug')) {
+                throw $e;
+            }
+
+            NativeRouter::debugLog("Asgard: fragment in region [{$region}] asked for [{$method}], refused: ".$e->getMessage());
+
+            return;
+        }
+
+        $this->invokeUiInteraction($method, $args, ActionSource::FragmentClient);
+    }
+
+    /**
+     * Move the app for a navigation slot in a fragment or a server screen's
+     * chrome (§12, "Navigation"). Any route the app knows may be the
+     * target, its own or a server screen's, and nothing else: a URI that
+     * matches no route runs nothing and is logged, or throws with
+     * `app.debug` on. It never falls through to the web the way an
+     * unmatched navigate() would.
+     *
+     * @param  array{0: ?string, 1: ?string}  $args  [uri, transition]
+     */
+    private function followFragmentNavigation(string $region, string $mode, array $args): void
+    {
+        [$uri, $transition] = $args;
+
+        if ($mode !== 'back' && ! NativeRouter::isNativeRoute((string) $uri)) {
+            $message = "Asgard: region [{$region}] asked to navigate to [{$uri}], which is not a route this app knows.";
+
+            if (config('app.debug')) {
+                throw new \RuntimeException($message);
+            }
+
+            NativeRouter::debugLog($message.' Nothing happened.');
+
+            return;
+        }
+
+        match ($mode) {
+            'back' => $this->back(),
+            'replace' => $this->replace((string) $uri),
+            default => $this->navigate((string) $uri),
+        };
+
+        if ($transition !== null) {
+            $this->transition(Transition::from($transition));
+        }
+    }
+
+    private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed
+    {
+        $result = $this->__invokeInteraction($method, $parameters, $source);
         $this->flushDispatchedEvents();
 
         return $result;
@@ -4877,8 +5238,17 @@ abstract class NativeComponent
      * @internal The single interaction entry point shared by the device
      *           runloop and the test harness, so both accept the same methods.
      */
-    public function __invokeInteraction(string $method, array $parameters): mixed
-    {
+    public function __invokeInteraction(
+        string $method,
+        array $parameters,
+        ActionSource $source = ActionSource::Interaction,
+    ): mixed {
+        // A fragment's client callback goes straight to the chokepoint: a
+        // server chose the name, so none of the shortcuts below apply.
+        if ($source->fromFragment()) {
+            return $this->runAction($method, $parameters, $source);
+        }
+
         $internalCallbacks = [
             '__navigate',
             '__overlayBack',
@@ -4902,6 +5272,16 @@ abstract class NativeComponent
             return $this->{$method}(...$parameters);
         }
 
-        return ComponentMethodInvoker::invoke($this, $method, $parameters);
+        // A `#[Server]` method does not run to completion here. Its body
+        // runs, the state that body leaves behind is snapshotted and sent,
+        // and the closure it returned is held until the server answers
+        // (ASGARD-SERVER-METHODS.md §2). The body still goes through
+        // ComponentMethodInvoker inside call(), so the attribute narrows
+        // what is callable and never widens it.
+        if (Asgard\ServerMethods::isServerMethod($this, $method)) {
+            return Asgard\ServerMethods::call($this, $method, $parameters);
+        }
+
+        return $this->runAction($method, $parameters, $source);
     }
 }

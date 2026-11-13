@@ -447,6 +447,18 @@ class NavBar
         return $attrs;
     }
 
+    /**
+     * Add an action that is already an element, after the builder actions.
+     * For callers that wire the element's callbacks themselves, as Asgard's
+     * server chrome does.
+     */
+    public function actionElement(TopBarAction $action): self
+    {
+        $this->prebuiltActionElements[] = $action;
+
+        return $this;
+    }
+
     /** @return NavAction[] */
     public function getActions(): array
     {

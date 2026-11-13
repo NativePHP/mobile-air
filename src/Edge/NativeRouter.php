@@ -172,6 +172,17 @@ class NativeRouter
     protected static array $routes = [];
 
     /**
+     * Routes to server screens (docs/ASGARD-PROTOCOL.md §12, "Routes"), keyed
+     * by URI pattern. Each opens a generic Asgard\ServerScreen for the named
+     * screen. Filled at runtime from the server's route list, so it changes
+     * while the app runs. Matched only after every app route: a server route
+     * can add a screen, never replace one of the app's.
+     *
+     * @var array<string, array{class: string, layout: null, route: IlluminateRoute, screen: string}>
+     */
+    protected static array $serverRoutes = [];
+
+    /**
      * Layout class active during a Route::nativeGroup(layout: ..., ...) closure.
      * Applied to any Route::native() registered while the group is open.
      */
@@ -321,6 +332,75 @@ class NativeRouter
     }
 
     /**
+     * Replace the server's routes with a new list, as the server sent it:
+     * `[['uri' => '/promos/{id}', 'screen' => 'promos.show'], ...]`.
+     *
+     * The list is checked again here, whatever checked it before: a URI
+     * must be a route pattern of literal and `{param}` segments, and a
+     * screen a dot-notation address. Entries that are not, and entries
+     * whose pattern an app route already has, are dropped and logged.
+     * Returns how many routes were kept.
+     *
+     * @param  list<array{uri: string, screen: string}>  $routes
+     */
+    public static function registerServerRoutes(array $routes): int
+    {
+        $kept = [];
+
+        foreach ($routes as $entry) {
+            $uri = is_array($entry) ? ($entry['uri'] ?? null) : null;
+            $screen = is_array($entry) ? ($entry['screen'] ?? null) : null;
+
+            if (! is_string($uri) || strlen($uri) > 255 || preg_match(Asgard\ServerScreen::URI_PATTERN, $uri) !== 1
+                || ! is_string($screen) || strlen($screen) > 255 || preg_match(Asgard\ServerScreen::ADDRESS_PATTERN, $screen) !== 1) {
+                static::debugLog('server routes: dropped a malformed entry '.json_encode($entry));
+
+                continue;
+            }
+
+            if (isset(static::$routes[$uri])) {
+                static::debugLog("server routes: dropped {$uri}, the app has a route there");
+
+                continue;
+            }
+
+            $route = new IlluminateRoute(['GET'], ltrim($uri, '/'), fn () => null);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+
+            $kept[$uri] = [
+                'class' => Asgard\ServerScreen::screenClass(),
+                'layout' => null,
+                'route' => $route,
+                'screen' => $screen,
+            ];
+        }
+
+        static::$serverRoutes = $kept;
+
+        return count($kept);
+    }
+
+    /**
+     * The server routes in use, keyed by URI pattern, each with the screen
+     * address it opens.
+     *
+     * @return array<string, string>
+     */
+    public static function serverRoutes(): array
+    {
+        return array_map(fn (array $entry) => $entry['screen'], static::$serverRoutes);
+    }
+
+    public static function clearServerRoutes(): void
+    {
+        static::$serverRoutes = [];
+    }
+
+    /**
      * Every registered native route, keyed by URI pattern — each value a
      * ['class' => ..., 'layout' => ...] pair. Powers app-wide test sweeps
      * (smoke tests, accessibility audits) that should cover new screens
@@ -406,6 +486,7 @@ class NativeRouter
             'params' => $route->parametersWithoutNulls(),
             'query' => static::queryOf($uri),
             'route' => $route,
+            'screen' => $entry['screen'] ?? null,
         ];
     }
 
@@ -420,18 +501,26 @@ class NativeRouter
         // from parsing it here, where too many parameters would throw.
         $request = Request::create(static::pathOf($uri), 'GET');
 
-        $literalRoutes = [];
-        $parameterizedRoutes = [];
+        // App routes first, all of them, then the server's: a server route
+        // never shadows an app route, even a parameterized one.
+        $ordered = [];
 
-        foreach (static::$routes as $entry) {
-            if ($entry['route']->parameterNames() === []) {
-                $literalRoutes[] = $entry;
-            } else {
-                $parameterizedRoutes[] = $entry;
+        foreach ([static::$routes, static::$serverRoutes] as $table) {
+            $literalRoutes = [];
+            $parameterizedRoutes = [];
+
+            foreach ($table as $entry) {
+                if ($entry['route']->parameterNames() === []) {
+                    $literalRoutes[] = $entry;
+                } else {
+                    $parameterizedRoutes[] = $entry;
+                }
             }
+
+            array_push($ordered, ...$literalRoutes, ...$parameterizedRoutes);
         }
 
-        foreach ([...$literalRoutes, ...$parameterizedRoutes] as $entry) {
+        foreach ($ordered as $entry) {
             $registeredRoute = $entry['route'];
 
             if (function_exists('app') && app()->bound('router')) {
@@ -455,6 +544,19 @@ class NativeRouter
         }
 
         return null;
+    }
+
+    /**
+     * The server screen address a URI opens, or null when it matches an app
+     * route or no route at all. Nothing is bound, so it is safe to ask.
+     */
+    public static function serverScreenFor(string $uri): ?string
+    {
+        try {
+            return static::matchRoute($uri)['entry']['screen'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     public static function isNativeRoute(string $uri): bool
@@ -533,6 +635,7 @@ class NativeRouter
     public static function clearRoutes(): void
     {
         static::$routes = [];
+        static::$serverRoutes = [];
         static::$currentGroupLayout = null;
     }
 
@@ -617,6 +720,7 @@ class NativeRouter
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
                     query: $resolved['query'],
+                    screen: $resolved['screen'],
                 );
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
@@ -661,11 +765,16 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params, query: static::queryOf($uri));
+
+            // A server route launches the generic ServerScreen, which needs
+            // the address of the screen it shows. Only the route knows it.
+            $resolved = $uri !== '' ? static::resolve($uri) : null;
+            $screen = ($resolved['class'] ?? null) === $class ? ($resolved['screen'] ?? null) : null;
+
+            $component = $this->createComponent($class, $params, query: static::queryOf($uri), screen: $screen);
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
-            $resolved = $uri !== '' ? static::resolve($uri) : null;
             if ($resolved !== null && ! empty($resolved['layout'])) {
                 $component->setLayout($resolved['layout']);
             }
@@ -766,6 +875,12 @@ class NativeRouter
                 $component->renderErrorScreen($e);
             }
 
+            // A server screen that gave up on its body left for this one.
+            // Fired now, with this screen the live one, so it hears it.
+            foreach (Asgard\ServerScreen::takeFailures() as $failure) {
+                $this->announce($failure);
+            }
+
             $reenterCurrentScreen = false;
 
             static::debugLog('loop: entering runLoop() on '.get_class($component));
@@ -832,6 +947,7 @@ class NativeRouter
                         $resolved['params'],
                         $intent->data,
                         $resolved['query'],
+                        $resolved['screen'],
                     );
                     if (! empty($resolved['layout'])) {
                         $next->setLayout($resolved['layout']);
@@ -899,6 +1015,7 @@ class NativeRouter
                             $resolved['params'],
                             $intent->data,
                             $resolved['query'],
+                            $resolved['screen'],
                         );
                         if (! empty($resolved['layout'])) {
                             $next->setLayout($resolved['layout']);
@@ -954,6 +1071,10 @@ class NativeRouter
     protected function unmountComponent(NativeComponent $component): void
     {
         $component->unmount();
+
+        // Its server regions leave the push stream now, in one change with
+        // its children's, rather than waiting for a frame that may not come.
+        Asgard\ServerRegion::sync();
         $this->announce(new ScreenUnmounted(get_class($component), $this->currentUri()));
     }
 
@@ -1006,9 +1127,18 @@ class NativeRouter
         }
     }
 
-    protected function createComponent(string $class, array $params = [], array $data = [], array $query = []): NativeComponent
+    /**
+     * `$screen` is set for a server route: the address of the server screen
+     * the generic Asgard\ServerScreen is to show.
+     */
+    protected function createComponent(string $class, array $params = [], array $data = [], array $query = [], ?string $screen = null): NativeComponent
     {
         $component = new $class;
+
+        if ($screen !== null && $component instanceof Asgard\ServerScreen) {
+            $component->showScreen($screen);
+        }
+
         $component->setRouter($this);
         $component->setParams($params);
         $component->setData($data);

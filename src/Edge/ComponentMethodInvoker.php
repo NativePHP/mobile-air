@@ -7,8 +7,11 @@ use Illuminate\Contracts\Routing\UrlRoutable as ImplicitlyBindable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Str;
+use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
+use Native\Mobile\Edge\Exceptions\FragmentActionNotAllowedException;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionNamedType;
@@ -53,6 +56,133 @@ class ComponentMethodInvoker extends BoundMethod
             ->invokeArgs($component, $dependencies);
     }
 
+    /**
+     * Throw unless the method is one a template or the device may name:
+     * public, not static, not a lifecycle hook, not declared on
+     * NativeComponent itself, not one of UsesServer's, and not render().
+     */
+    public static function assertCallable(NativeComponent $component, string $method): void
+    {
+        static::ensureCallable($component, $method);
+    }
+
+    /**
+     * Throw unless a server-rendered fragment may run this method with
+     * these arguments (docs/ASGARD-PROTOCOL.md §10): everything
+     * assertCallable() asks, plus a `#[NativeAction]` attribute on the
+     * method, and parameters that take the arguments as they are.
+     *
+     * The arguments are JSON values passed positionally, with no
+     * container injection and no model or enum binding, so a parameter
+     * typed with a class or interface (or `callable`, or `object`) is
+     * refused, as is one taken by reference. Each argument must already
+     * be of its parameter's type: nothing is coerced.
+     */
+    public static function assertFragmentCallable(NativeComponent $component, string $method, array $args): void
+    {
+        static::ensureCallable($component, $method);
+
+        $reflection = new ReflectionMethod($component, $method);
+
+        if ($reflection->getAttributes(NativeAction::class) === []) {
+            throw new FragmentActionNotAllowedException($component, $method, 'it is not marked #[NativeAction]');
+        }
+
+        $args = array_values($args);
+        $parameters = $reflection->getParameters();
+
+        foreach ($parameters as $parameter) {
+            if ($parameter->isPassedByReference()) {
+                throw new FragmentActionNotAllowedException($component, $method, "\${$parameter->getName()} is taken by reference");
+            }
+
+            if (! static::jsonParameterType($parameter->getType())) {
+                throw new FragmentActionNotAllowedException($component, $method, "\${$parameter->getName()} is not typed with JSON types only");
+            }
+        }
+
+        if (count($args) < $reflection->getNumberOfRequiredParameters()) {
+            throw new FragmentActionNotAllowedException($component, $method, 'too few arguments');
+        }
+
+        foreach ($args as $i => $arg) {
+            $parameter = $parameters[$i] ?? null;
+
+            if ($parameter === null) {
+                $last = end($parameters);
+
+                if ($last === false || ! $last->isVariadic()) {
+                    break;
+                }
+
+                $parameter = $last;
+            }
+
+            if (! static::acceptsJsonValue($parameter->getType(), $arg)) {
+                throw new FragmentActionNotAllowedException(
+                    $component,
+                    $method,
+                    'argument '.($i + 1)." does not match \${$parameter->getName()}'s type",
+                );
+            }
+        }
+    }
+
+    /** Untyped, or built only from types a JSON value can be. */
+    protected static function jsonParameterType(?\ReflectionType $type): bool
+    {
+        if ($type === null) {
+            return true;
+        }
+
+        if ($type instanceof \ReflectionUnionType) {
+            foreach ($type->getTypes() as $member) {
+                if (! static::jsonParameterType($member)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return $type instanceof ReflectionNamedType
+            && $type->isBuiltin()
+            && in_array($type->getName(), ['mixed', 'null', 'bool', 'true', 'false', 'int', 'float', 'string', 'array', 'iterable'], true);
+    }
+
+    protected static function acceptsJsonValue(?\ReflectionType $type, mixed $value): bool
+    {
+        if ($type === null) {
+            return true;
+        }
+
+        if ($value === null && $type->allowsNull()) {
+            return true;
+        }
+
+        $members = $type instanceof \ReflectionUnionType ? $type->getTypes() : [$type];
+
+        foreach ($members as $member) {
+            $matches = match ($member->getName()) {
+                'mixed' => true,
+                'bool' => is_bool($value),
+                'true' => $value === true,
+                'false' => $value === false,
+                'int' => is_int($value),
+                'float' => is_float($value) || is_int($value),
+                'string' => is_string($value),
+                'array', 'iterable' => is_array($value),
+                default => false,
+            };
+
+            if ($matches) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     protected static function ensureCallable(NativeComponent $component, string $method): void
     {
         $protectedMethods = [
@@ -89,9 +219,32 @@ class ComponentMethodInvoker extends BoundMethod
         if (! $reflection->isPublic()
             || $reflection->isStatic()
             || $method === 'render'
-            || $reflection->getDeclaringClass()->getName() === NativeComponent::class) {
+            || $reflection->getDeclaringClass()->getName() === NativeComponent::class
+            || static::isUsesServerMethod($reflection)) {
             throw new ComponentMethodNotFoundException($method, $component);
         }
+    }
+
+    /**
+     * Whether the method is one of UsesServer's. The trait copies its
+     * methods onto the app's class, so the NativeComponent check above
+     * does not see them. They are refused by name, whatever case the
+     * caller spelled it in, so an override on the app's class is refused
+     * too. A method the trait brought in under an alias is refused by the
+     * file it comes from.
+     */
+    protected static function isUsesServerMethod(ReflectionMethod $reflection): bool
+    {
+        static $names = null, $file = null;
+
+        if ($names === null) {
+            $trait = new ReflectionClass(UsesServer::class);
+            $file = $trait->getFileName();
+            $names = array_map(fn (ReflectionMethod $m) => strtolower($m->getName()), $trait->getMethods());
+        }
+
+        return in_array(strtolower($reflection->getName()), $names, true)
+            || $reflection->getFileName() === $file;
     }
 
     protected static function getMethodDependencies($container, $callback, array $parameters = [])

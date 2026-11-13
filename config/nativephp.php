@@ -560,6 +560,52 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Asgard
+    |--------------------------------------------------------------------------
+    |
+    | Server-rendered regions, screens and actions (docs/ASGARD-PROTOCOL.md).
+    |
+    | screen_timeout: seconds a server screen waits for its body. When none
+    | has arrived by then, the app goes back to the screen below, or to `/`
+    | when there is none, and fires ServerScreenFailed. A ServerScreen
+    | subclass can override screenTimeout(). 0 turns the timer off, but a
+    | hard failure (no network, a server error) still gives up at once.
+    |
+    | action_timeout: seconds a server action or #[Server] method waits for
+    | its answer. After that ServerActionFailed fires on its screen. A
+    | component can override serverActionTimeout(). 0 turns it off.
+    |
+    | upload_timeout: seconds an uploadToServer() call waits for its
+    | answer. Longer than action_timeout, since a large file on a mobile
+    | network is slow to send. A component can override
+    | serverUploadTimeout(). 0 turns it off.
+    |
+    | upload_max: the largest file uploadToServer() sends, in bytes. A
+    | bigger one is not sent, and ServerActionFailed fires with reason
+    | `too_large`. The server has its own limit too. The whole file is held
+    | in memory while it is sealed, so keep it modest.
+    |
+    | region_timeout: seconds an @server region waits for its fragment, on
+    | the first fetch and on every refresh. After that ServerRegionFailed
+    | fires on its screen. A component can override serverRegionTimeout().
+    | 0 turns it off, but a hard failure still fires the event at once.
+    |
+    | screen: the class every server route opens. Set it to your own
+    | subclass of Native\Mobile\Edge\Asgard\ServerScreen to change its
+    | skeleton or timeout. null means the package's own.
+    |
+    */
+    'asgard' => [
+        'screen_timeout' => (float) env('NATIVEPHP_ASGARD_SCREEN_TIMEOUT', 15),
+        'action_timeout' => (float) env('NATIVEPHP_ASGARD_ACTION_TIMEOUT', 15),
+        'region_timeout' => (float) env('NATIVEPHP_ASGARD_REGION_TIMEOUT', 15),
+        'upload_timeout' => (float) env('NATIVEPHP_ASGARD_UPLOAD_TIMEOUT', 120),
+        'upload_max' => (int) env('NATIVEPHP_ASGARD_UPLOAD_MAX', 20 * 1024 * 1024),
+        'screen' => null,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Device Orientation Support
     |--------------------------------------------------------------------------
     |
