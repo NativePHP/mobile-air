@@ -107,4 +107,47 @@ trait UsesServer
     {
         return ServerMethods::call($this, $method, $args);
     }
+
+    /**
+     * Send the file at `$path` to the server's `#[Upload]` method of this
+     * name, with any args after it (protocol §10.6):
+     *
+     *     $this->uploadToServer('savePhoto', $this->photo);
+     *
+     * There is no method of that name here, no client body and no
+     * closure. The request carries this component's state as it is now.
+     * The answer is handled like a `#[Server]` call's: the props the
+     * server changed are applied under compare-and-set, and any regions
+     * and hints its refresh() asked for are painted and fetched.
+     *
+     * The path must be a readable regular file, not a directory and not a
+     * symlink. It is read on a background lane, never on the UI thread.
+     *
+     * Returns the request id, or null when nothing is in flight. Any
+     * failure fires ServerActionFailed on the screen, with `action` set to
+     * the method's name and `reason` one of:
+     *
+     *  - `unreadable`: no readable regular file at the path. Nothing was sent.
+     *  - `too_large`: over `nativephp.asgard.upload_max`, 20 MB by
+     *    default. Nothing was sent.
+     *  - `timeout`: no answer within serverUploadTimeout().
+     *  - `network`: it could not be sent, or nothing came back.
+     *  - `server`: the server refused it. `status` is 413 for a file over
+     *    its limit, 415 for a type it does not take.
+     */
+    public function uploadToServer(string $method, string $path, mixed ...$args): ?string
+    {
+        return ServerMethods::upload($this, $method, $path, $args);
+    }
+
+    /**
+     * Seconds an upload from this component waits for its answer. From
+     * `nativephp.asgard.upload_timeout`, 120 by default, since a large
+     * file on a mobile network takes a while. Override it to set it for
+     * one component. 0 or less waits for ever.
+     */
+    public function serverUploadTimeout(): float
+    {
+        return (float) config('nativephp.asgard.upload_timeout', 120);
+    }
 }

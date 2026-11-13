@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Log;
 use Native\Mobile\Attributes\Server;
 use Native\Mobile\Edge\Asgard\Concerns\UsesServer;
 use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
+use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
 use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
@@ -26,6 +27,10 @@ use Native\Mobile\Events\Asgard\ServerActionFailed;
  *     routes here too.
  *  3. **Reconcile** (§5). Apply the server's delta prop by prop, but only
  *     where the client's value has not moved since the request left.
+ *
+ * Uploads (protocol §10.6) take the same path from the transport on:
+ * upload() checks the file and sends an UploadRequest with no body and
+ * no closure, and its answer is delivered like a call's.
  *
  * ## Why the pending table is static
  *
@@ -71,6 +76,12 @@ class ServerMethods
      * the server's value applies.
      */
     private const ABSENT = "\0absent";
+
+    /** An upload whose file is missing, not a regular file, or unreadable. */
+    public const UNREADABLE = 'unreadable';
+
+    /** An upload whose file is over `nativephp.asgard.upload_max`. */
+    public const TOO_LARGE = 'too_large';
 
     /**
      * In-flight requests, keyed by the id the transport returned:
@@ -153,34 +164,133 @@ class ServerMethods
         }
 
         $state = static::snapshot($component);
-
-        // Taken as the call goes out, so regions its answer carries can be
-        // ordered against region requests (ServerRegion::paintInline()).
-        $stamp = ServerRegion::stamp();
-        $regionState = ServerRegion::stateOf($component);
+        $address = ComponentAddress::for($component);
 
         $request = new ServerRequest(
-            component: ComponentAddress::for($component),
+            component: $address,
             method: $method,
             args: $args,
             state: $state,
             platform: ServerRegion::platform(),
         );
 
+        return static::begin(
+            $component, $method, $closure, $address, $state,
+            ServerRegion::actionTimeout($component),
+            fn () => static::transport()->send($request),
+        );
+    }
+
+    /**
+     * Send a file to an `#[Upload]` method on the server (protocol §10.6).
+     *
+     * There is no body on the device and no closure. The request carries
+     * the component's state as it is now, and the answer is handled
+     * exactly like a call's: the delta under compare-and-set, then any
+     * regions and hints. A failure fires ServerActionFailed with `action`
+     * set to the method's name.
+     *
+     * Two failures happen here, before anything is sent, and fire the
+     * event at once: `unreadable` when the path is not a readable regular
+     * file, and `too_large` when it is over `nativephp.asgard.upload_max`.
+     *
+     * Returns the request id, or null when nothing is in flight.
+     */
+    public static function upload(NativeComponent $component, string $method, string $path, array $args = []): ?string
+    {
+        if (! preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,99}$/D', $method)) {
+            throw new \InvalidArgumentException('['.$method.'] is not a method name, so it cannot be uploaded to.');
+        }
+
+        $address = ComponentAddress::for($component);
+        $file = static::readableFile($path);
+
+        if (is_string($file)) {
+            NativeRouter::debugLog('Asgard: upload to '.$address.'::'.$method.'() not sent. '.$file);
+            static::fireFailed($method, $address, self::UNREADABLE, null, '', $file);
+
+            return null;
+        }
+
+        [$real, $size] = $file;
+        $max = static::uploadMax();
+
+        if ($max > 0 && $size > $max) {
+            $message = 'The file is '.$size.' bytes and the most this app sends is '.$max.'.';
+            NativeRouter::debugLog('Asgard: upload to '.$address.'::'.$method.'() not sent. '.$message);
+            static::fireFailed($method, $address, self::TOO_LARGE, null, '', $message);
+
+            return null;
+        }
+
+        $state = static::snapshot($component);
+
+        $request = new UploadRequest(
+            component: $address,
+            method: $method,
+            args: array_values($args),
+            state: $state,
+            platform: ServerRegion::platform(),
+            path: $real,
+            filename: basename($real),
+            mime: UploadRequest::guessMime($real),
+            size: $size,
+        );
+
+        return static::begin(
+            $component, $method, null, $address, $state,
+            static::uploadTimeout($component),
+            fn () => static::uploadTransport()->upload($request),
+        );
+    }
+
+    /**
+     * Seconds an upload from this component waits for its answer. A
+     * component that has serverUploadTimeout(), from UsesServer or its
+     * own, decides. Any other reads `nativephp.asgard.upload_timeout`,
+     * 120 by default.
+     */
+    public static function uploadTimeout(NativeComponent $owner): float
+    {
+        return method_exists($owner, 'serverUploadTimeout')
+            ? (float) $owner->serverUploadTimeout()
+            : (float) config('nativephp.asgard.upload_timeout', 120);
+    }
+
+    /** The largest file uploadToServer() sends, in bytes. 0 or less is no limit. */
+    public static function uploadMax(): int
+    {
+        return (int) config('nativephp.asgard.upload_max', 20 * 1024 * 1024);
+    }
+
+    /**
+     * Hand the request to the transport and put it in the pending table.
+     * Shared by calls and uploads. `$send` starts the request and returns
+     * its id.
+     *
+     * @param  \Closure(): string  $send
+     */
+    protected static function begin(NativeComponent $component, string $method, ?\Closure $closure, string $address, array $state, float $seconds, \Closure $send): ?string
+    {
+        // Taken as the call goes out, so regions its answer carries can be
+        // ordered against region requests (ServerRegion::paintInline()).
+        $stamp = ServerRegion::stamp();
+        $regionState = ServerRegion::stateOf($component);
+
         static::$sending++;
 
         try {
-            $id = static::transport()->send($request);
+            $id = $send();
         } catch (\Throwable $e) {
             static::sent();
 
             // §7: network unreachable is a failure like any other. The
             // client body has already run; run the closure so the screen
             // leaves its loading state, and queue nothing.
-            NativeRouter::debugLog('Asgard: send failed for '.$request->component.'::'.$method.'() — '.$e->getMessage());
+            NativeRouter::debugLog('Asgard: send failed for '.$address.'::'.$method.'() — '.$e->getMessage());
 
             static::runClosure($component, $closure, ServerResponse::failure('', $e->getMessage()));
-            static::fireFailed($method, $request->component, ServerRegion::NETWORK, null, '', $e->getMessage());
+            static::fireFailed($method, $address, ServerRegion::NETWORK, null, '', $e->getMessage());
 
             return null;
         }
@@ -194,19 +304,17 @@ class ServerMethods
             NativeRouter::debugLog('Asgard: transport returned an empty request id for '.$method.'() — treating as a failure.');
 
             static::runClosure($component, $closure, ServerResponse::failure('', 'The transport returned no request id.'));
-            static::fireFailed($method, $request->component, ServerRegion::NETWORK, null, '', 'The transport returned no request id.');
+            static::fireFailed($method, $address, ServerRegion::NETWORK, null, '', 'The transport returned no request id.');
 
             return null;
         }
-
-        $seconds = ServerRegion::actionTimeout($component);
 
         static::$pending[$id] = [
             'component' => \WeakReference::create($component),
             'closure' => $closure,
             'method' => $method,
             'sent' => static::fingerprints($state),
-            'address' => $request->component,
+            'address' => $address,
             'deadline' => $seconds > 0 ? ServerRegion::now() + $seconds * 1000 : null,
             'timeout' => $seconds,
             'stamp' => $stamp,
@@ -539,6 +647,55 @@ class ServerMethods
         return app()->bound(ServerTransport::class)
             ? app(ServerTransport::class)
             : new NullServerTransport;
+    }
+
+    protected static function uploadTransport(): UploadTransport
+    {
+        return app()->bound(UploadTransport::class)
+            ? app(UploadTransport::class)
+            : new NullUploadTransport;
+    }
+
+    /**
+     * The real path and size of a file the app can read, or why not.
+     *
+     * Only a plain local path: no stream wrapper (`php://`, `phar://`, a
+     * URL) and no NUL byte. It must be a regular file, not a directory, and
+     * not a symlink, so a link the app was handed cannot point the upload
+     * somewhere else. The path is resolved once here and the lane reads
+     * that resolved path.
+     *
+     * @return array{0: string, 1: int}|string
+     */
+    protected static function readableFile(string $path): array|string
+    {
+        if ($path === '' || str_contains($path, "\0") || str_contains($path, '://')) {
+            return 'The path is not a local file path.';
+        }
+
+        clearstatcache(true, $path);
+
+        if (is_link($path)) {
+            return 'The path is a symlink.';
+        }
+
+        $real = realpath($path);
+
+        if ($real === false || ! is_file($real)) {
+            return 'There is no file at the path.';
+        }
+
+        if (! is_readable($real)) {
+            return 'The file cannot be read.';
+        }
+
+        $size = filesize($real);
+
+        if ($size === false) {
+            return 'The file cannot be read.';
+        }
+
+        return [$real, $size];
     }
 
     /**

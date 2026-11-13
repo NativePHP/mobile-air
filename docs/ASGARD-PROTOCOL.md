@@ -499,7 +499,7 @@ parameter, a missing one, an `alg` other than `hmac-sha256`, a `tag` other
 than `asgard/1`, and a `keyid` that is not the `Asgard-Session-Id`.
 
 A server action (a request with an `action` member, §10.2) is not a safe
-request, and neither is a `#[Server]` call (§10.5), so its signature also
+request, and neither is a `#[Server]` call (§10.5) or an upload (§10.6), so its signature also
 carries a `nonce` parameter: 16 to 64 base64url characters, which the client
 fills with 16 random bytes. The server remembers nonces per session until
 their `expires`, plus the clock skew allowance, and refuses a repeat with 403.
@@ -1368,6 +1368,88 @@ types is `422 invalid_request`.
 
 Failures and timeouts are as in §10.2, with `region` null on the event.
 
+### 10.6 Uploads
+
+A component that uses `UsesServer` can send a file to the server:
+
+```php
+$this->uploadToServer('savePhoto', $this->photo);
+$this->uploadToServer('savePhoto', $this->photo, 'A caption');
+```
+
+The server half is an `#[Upload]` method whose first parameter takes an
+`Illuminate\Http\UploadedFile`. The rest are args, checked as an action's
+are. `#[Upload]` is its own allowlist, apart from `#[Action]` and `#[Server]`.
+There is no method of that name on the device, no client body and no closure.
+The request carries the component's state as it is when the upload starts.
+
+It goes to `{prefix}/upload`, in the same two forms as render (§8), signed
+and encrypted like everything else and with a nonce (§7.3). The decrypted
+body is a frame rather than JSON:
+
+```
+uint32, big-endian   N, the length of the header, at most 1 MiB
+N bytes              the header, a JSON object
+the rest             the file, exactly `size` bytes
+```
+
+```json
+{"protocol": 1, "component": "app.native.screens.home", "method": "savePhoto",
+ "args": [], "state": {...}, "platform": "ios",
+ "filename": "IMG_0001.jpg", "mime": "image/jpeg", "size": 2483113}
+```
+
+A frame rather than JSON with the file in base64, because base64 makes every
+upload a third bigger and has to be decoded in memory on the server too. The
+header is JSON, so the rules for args and state are a call's. `Content-Type`
+on the wire stays `application/json`, as the signature in §7.3 covers it and
+the body is opaque until it is decrypted. Requests are never compressed
+(§7.4), and files are usually compressed already.
+
+`filename` and `mime` are what the device says, and the server trusts
+neither. It sniffs the type from the bytes and checks it against the
+attribute's `mimes`, writes the bytes to a temp file it names itself, and
+keeps the filename, cleaned, only as the UploadedFile's original name. The
+temp file is deleted when the method returns.
+
+The answer is a call's (§10.5): `{"protocol": 1, "delta": {...}}`, plus
+`fragments` and `refresh` when the method called `refresh()`. The device
+handles it exactly as it does a call's: the delta under compare-and-set,
+then the regions, then the hints.
+
+Errors are a call's, plus:
+
+| Status | Body | When |
+|---|---|---|
+| 413 | `{"error":"too_large"}` | Over the method's `maxSize` or the server's `asgard.uploads.max_size`. When the server can tell from the size alone, it refuses before decrypting, and that 413 is plain and unsigned. |
+| 415 | `{"error":"unsupported_type"}` | The sniffed type is not in `mimes`. |
+| 404 | `{"error":"unknown_method"}` | Not an `#[Upload]` method, or the args do not fit. |
+| 422 | `{"error":"invalid_request"}` | A bad frame, a `size` that is not the bytes sent, or an empty file. |
+
+Failures fire `ServerActionFailed` with `action` set to the method name and
+`region` null, as for a call. Two reasons are only for uploads, and both mean
+nothing was sent:
+
+- `unreadable`: the path is not a readable regular file. A directory, a
+  symlink, a stream wrapper (`php://`, `phar://`, a URL) and a path with a NUL
+  byte are all refused.
+- `too_large`: the file is over `nativephp.asgard.upload_max`, 20 MB by
+  default.
+
+A file the server finds too big or the wrong type is `server`, with status 413
+or 415.
+
+An upload waits `nativephp.asgard.upload_timeout` for its answer, 120 seconds
+by default, rather than the action timeout, since 20 MB on a mobile network
+can take a while. A component can override `serverUploadTimeout()`. midgard's
+HTTP timeout for uploads (`midgard.asgard.upload_timeout`, 150 seconds) is
+longer again, so the device's timer fires first.
+
+The transport reads the file on its own lane and holds all of it in memory to
+seal it, since §7.4 encrypts the body as one piece. That is why the device
+has a cap. Streaming the file through native code, record by record, is
+future work.
+
 ## 11. Versioning
 
 `protocol` in the handshake is an integer. A server that does not speak the
@@ -1647,7 +1729,8 @@ path that matches nothing runs nothing and is logged, or throws with
    at once. Whether clients should spread those fetches out (a random delay
    of a second or two, say) is open. Nothing does it today.
 9. Timeouts are fixed per component or screen class, not per action. Whether
-   an action should be able to say it needs longer (an upload, say) is open.
+   an action should be able to say it needs longer is open. Uploads have
+   their own (§10.6).
    Regions have one too (§3.1), and the same question applies.
 10. Whether a region that failed should retry by itself, with a backoff. Today
     it waits for `refreshServerRegions()` (from `UsesServer`), so the app

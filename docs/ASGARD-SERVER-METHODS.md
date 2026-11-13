@@ -348,7 +348,41 @@ treated as untrusted input, hydration against exact class allowlists.
   correctly, not a fault, and raising on it would train people to route around
   the protection.
 
-## 10. Adjacent, pre-existing
+## 10. Uploads
+
+`uploadToServer()`, from `UsesServer`, sends a file to an `#[Upload]` method
+on the server (protocol §10.6):
+
+```php
+#[On(PhotoTaken::class)]
+public function photoTaken(string $path): void
+{
+    $this->photo = $path;
+    $this->uploadToServer('savePhoto', $path);
+}
+```
+
+It shares this path from the transport on. `ServerMethods::upload()` checks
+the file, snapshots the state, hands an `UploadRequest` to the
+`UploadTransport` (midgard's `HttpUploadTransport`) and puts the request in
+the same pending table as a call, with no closure. The answer goes through
+`deliver()` like any other, so §4 and §5 apply unchanged. The timer is
+`serverUploadTimeout()`, 120 seconds by default, rather than the action
+timeout.
+
+The file is named by its path. The transport reads it on its lane, so the
+bytes never pass through the UI thread or a serialized closure. The path must
+be a readable regular file and not a symlink. A missing file fires
+`ServerActionFailed` with reason `unreadable`, and one over
+`nativephp.asgard.upload_max` (20 MB) with reason `too_large`. Nothing is
+sent in either case.
+
+`UploadTransport` is its own contract rather than a second method on
+`ServerTransport`, so a transport or test that only makes calls keeps
+working. `FakeServerTransport` implements both and records uploads apart,
+in `uploads()`.
+
+## 11. Adjacent, pre-existing
 
 `NativeComponent::getPublicProperties()` throws on an uninitialised typed
 public property, so a component with one cannot render at all today,

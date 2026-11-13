@@ -3,8 +3,10 @@
 namespace Native\Mobile\Testing;
 
 use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
+use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
 use Native\Mobile\Edge\Asgard\ServerMethods;
 use Native\Mobile\Edge\Asgard\ServerRequest;
+use Native\Mobile\Edge\Asgard\UploadRequest;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -28,6 +30,10 @@ use PHPUnit\Framework\Assert;
  * that overtakes an older one, a response for a screen the user has
  * already left, one that never comes at all.
  *
+ * It takes uploads too (`uploadToServer()`), recorded apart from calls in
+ * `uploads()`. Both share one id sequence, so `resolve()` and `fail()`
+ * answer whichever was sent last.
+ *
  * Two ways to answer, both valid:
  *
  *  - `resolve()` / `fail()` hand the frame straight to
@@ -36,10 +42,16 @@ use PHPUnit\Framework\Assert;
  *    it through `TestableComponent::emitNative()` instead — the real
  *    route, event channel and re-render included.
  */
-class FakeServerTransport implements ServerTransport
+class FakeServerTransport implements ServerTransport, UploadTransport
 {
     /** Requests sent, oldest first, keyed by the id handed back. */
     protected array $sent = [];
+
+    /** @var array<string, UploadRequest> Uploads sent, oldest first. */
+    protected array $uploads = [];
+
+    /** The id handed back last, call or upload. */
+    protected ?string $last = null;
 
     protected int $sequence = 0;
 
@@ -67,6 +79,7 @@ class FakeServerTransport implements ServerTransport
 
         $transport = new static;
         app()->instance(ServerTransport::class, $transport);
+        app()->instance(UploadTransport::class, $transport);
 
         return $transport;
     }
@@ -94,7 +107,20 @@ class FakeServerTransport implements ServerTransport
 
         $this->sent[$id] = $request;
 
-        return $id;
+        return $this->last = $id;
+    }
+
+    public function upload(UploadRequest $request): string
+    {
+        if ($this->sendFailure !== null) {
+            throw new \RuntimeException($this->sendFailure);
+        }
+
+        $id = 'asgard-'.(++$this->sequence);
+
+        $this->uploads[$id] = $request;
+
+        return $this->last = $id;
     }
 
     /** Make every subsequent send() fail, as an offline device does. */
@@ -142,9 +168,37 @@ class FakeServerTransport implements ServerTransport
         return null;
     }
 
+    /** The id of the last request sent, call or upload. */
     public function lastId(): ?string
     {
-        return $this->sent === [] ? null : array_key_last($this->sent);
+        return $this->last;
+    }
+
+    /** @return array<string, UploadRequest> */
+    public function uploads(): array
+    {
+        return $this->uploads;
+    }
+
+    public function lastUpload(): ?UploadRequest
+    {
+        return $this->uploads === [] ? null : $this->uploads[array_key_last($this->uploads)];
+    }
+
+    public function assertUploaded(string $method, ?callable $filter = null): static
+    {
+        foreach ($this->uploads as $request) {
+            if ($request->method === $method && ($filter === null || $filter($request))) {
+                Assert::assertTrue(true);
+
+                return $this;
+            }
+        }
+
+        Assert::fail(
+            "No upload to [{$method}] was sent. Sent: ".
+            (implode(', ', array_map(fn (UploadRequest $r) => $r->method, $this->uploads)) ?: '(none)')
+        );
     }
 
     public function assertSent(string $method, ?callable $filter = null): static

@@ -44,8 +44,10 @@ use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
+use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
 use Native\Mobile\Edge\Asgard\NullFragmentSource;
 use Native\Mobile\Edge\Asgard\NullServerTransport;
+use Native\Mobile\Edge\Asgard\NullUploadTransport;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
@@ -241,6 +243,7 @@ class NativeServiceProvider extends PackageServiceProvider
         // providers register in an order neither side controls. A plain
         // bind here would silently replace midgard's when it ran first.
         $this->app->bindIf(ServerTransport::class, NullServerTransport::class);
+        $this->app->bindIf(UploadTransport::class, NullUploadTransport::class);
 
         // Where `@server` regions get their fragments. The default asks
         // nobody, so every region keeps its placeholder until a client

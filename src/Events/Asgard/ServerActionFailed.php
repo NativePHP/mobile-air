@@ -9,8 +9,8 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
  * A server action did not get an answer the client could use
  * (docs/ASGARD-PROTOCOL.md §10.2, docs/ASGARD-SERVER-METHODS.md §7).
  *
- * It covers a tap inside a fragment or on server chrome, and a `#[Server]`
- * method call. It fires on the screen the action was sent from (the
+ * It covers a tap inside a fragment or on server chrome, a `#[Server]`
+ * method call, and an upload from uploadToServer(). It fires on the screen the action was sent from (the
  * screen itself, or the screen a child component that sent it is on), so
  * the screen hears it like any other event, and so do listeners anywhere
  * in the app:
@@ -33,6 +33,14 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
  *    status, when there is one.
  *  - `invalid`: an answer came back, but it failed verification or its
  *    fragment cannot be rendered.
+ *  - `unreadable`: an upload's path is not a readable regular file.
+ *    Nothing was sent.
+ *  - `too_large`: an upload's file is over `nativephp.asgard.upload_max`.
+ *    Nothing was sent. A file the server finds too big is `server` with
+ *    status 413.
+ *
+ * An upload's timeout is `nativephp.asgard.upload_timeout`, or the
+ * component's serverUploadTimeout().
  *
  * An answer that arrives after this fired is dropped.
  */
@@ -41,7 +49,7 @@ class ServerActionFailed implements BroadcastsGlobally
     use Dispatchable;
 
     public function __construct(
-        /** The action's `call`, or the `#[Server]` method's name. */
+        /** The action's `call`, or the `#[Server]` or `#[Upload]` method's name. */
         public string $action,
         /** The address of the component that sent it (§4). */
         public string $component,
