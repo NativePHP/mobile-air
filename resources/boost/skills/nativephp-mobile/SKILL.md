@@ -372,6 +372,10 @@ Normal). iOS is 1:1 (`nominal`/`fair`/`serious`/`critical`). `Device::getInfo()`
 includes `processorCount`, `activeProcessorCount`, `systemUptime`, and `memTotal` (device RAM in bytes,
 alongside existing `memUsed`). `Device::getTimezone()` gives the phone's IANA timezone (`Europe/Lisbon`), or
 `null` off-device; Laravel's `app.timezone` (UTC by default) is not the phone's.
+`AppBackgrounded` and `AppForegrounded($secondsAway)` (both `BroadcastsGlobally`) fire when the app leaves and
+returns; `onResume()` does not, it runs only when a pop reveals a screen. `$secondsAway` keeps counting while the
+device sleeps, so use it for lock and refresh timeouts. A cold launch fires neither. On Android, opening the
+system camera or an in-app browser backgrounds the app too (they run in other processes); on iOS it does not.
 
 **Plugins** (separate Composer packages): browser, camera, microphone, network, share (free); biometrics,
 geolocation, scanner, secure-storage (paid); firebase (push notifications, proprietary); vibe
