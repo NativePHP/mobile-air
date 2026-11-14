@@ -227,6 +227,8 @@ class ComponentMethodInvoker extends BoundMethod
             || $reflection->isStatic()
             || $method === 'render'
             || $reflection->getDeclaringClass()->getName() === NativeComponent::class
+            // Router plumbing a screen may override; never a template's to call.
+            || strcasecmp($method, 'setRouteContext') === 0
             || static::isReservedTraitMethod($component, $reflection)) {
             throw new ComponentMethodNotFoundException($method, $component);
         }

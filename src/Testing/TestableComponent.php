@@ -13,6 +13,9 @@ use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
+use Native\Mobile\Events\Screen\ScreenMounted;
+use Native\Mobile\Events\Screen\ScreenResumed;
+use Native\Mobile\Events\Screen\ScreenUnmounted;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
@@ -119,6 +122,9 @@ class TestableComponent
     /** Platform for ios:/android: Tailwind variants (null = neither). */
     protected ?string $platform;
 
+    /** The URI this screen was opened at, when it was opened by one (visit() or follow()). */
+    protected ?string $uri = null;
+
     /** The screen this one was pushed from (flow stack), if any. */
     protected ?TestableComponent $parent = null;
 
@@ -176,13 +182,14 @@ class TestableComponent
         // regression can hide from an otherwise thorough suite.
         $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial);
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['context'] ?? null);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, mixed $routeContext = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
+        $this->uri = $uri;
 
         // dd() in a component throws instead of killing the test process;
         // guard() converts it into a readable failure below.
@@ -205,6 +212,9 @@ class TestableComponent
         }
 
         $this->component = $component;
+        // A route table entry's context, handed over before mount() as
+        // the router does.
+        $component->setRouteContext($routeContext);
         $component->setParams($params);
         $component->setData($data);
         // From the URI, as the router does: visit('/search?q=x') and a followed
@@ -263,6 +273,7 @@ class TestableComponent
             $component->publishPlaceholder();
 
             $component->mountComponent();
+            $this->announce(new ScreenMounted(get_class($component), $this->uri));
             $component->flushDispatchedEvents();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
@@ -750,11 +761,12 @@ class TestableComponent
         // re-fire it (NativeRouter::loop does exactly this).
         $this->component->resetNavigationIntent();
 
-        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri);
+        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, routeContext: $resolved['context'] ?? null);
 
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.
             $this->component->unmount();
+            $this->announce(new ScreenUnmounted(get_class($this->component), $this->uri));
             $next->parent = $this->parent;
             $this->suspended = true;
         } else {
@@ -798,6 +810,7 @@ class TestableComponent
         );
 
         $this->component->unmount();
+        $this->announce(new ScreenUnmounted(get_class($this->component), $this->uri));
         $this->suspended = true;
 
         $this->parent->resumeFromFlow();
@@ -832,6 +845,7 @@ class TestableComponent
 
         $this->guard(function () {
             $this->component->onResume();
+            $this->announce(new ScreenResumed(get_class($this->component), $this->uri));
             $this->component->flushDispatchedEvents();
             $this->takeTurns(render: true);
         });

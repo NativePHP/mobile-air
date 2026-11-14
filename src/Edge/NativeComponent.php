@@ -4085,6 +4085,17 @@ abstract class NativeComponent
 
     // ── Injection (called by NativeRouter) ──────────
 
+    /**
+     * The context of the route table entry that opened this screen (see
+     * NativeRouter::setRouteTable()), or null for an app route. Called
+     * before mount(). Does nothing by default: a screen class that serves
+     * a route table overrides it to learn which of its routes it is.
+     */
+    public function setRouteContext(mixed $context): void
+    {
+        //
+    }
+
     public function setRouter(NativeRouter $router): void
     {
         $this->nativeRouter = $router;
