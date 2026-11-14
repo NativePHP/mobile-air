@@ -50,6 +50,7 @@ struct NativeRootStackRenderer: View {
             // root, fall back to `currentUri`.
             let rootUri = coordinator.rootUri ?? currentUri
             destination(uri: rootUri, isRoot: true)
+                .background(StackRootEdgeSwipeBack())
                 .navigationDestination(for: String.self) { uri in
                     StackLevelView(level: coordinator.level(for: uri)) {
                         destination(uri: uri, isRoot: false)
@@ -397,6 +398,74 @@ struct NativeRootStackRenderer: View {
             }
             .disabled(disabled)
             .modifier(TopBarActionA11yLabelModifier(action: action))
+        }
+    }
+}
+
+/// Edge swipe back from the root of a stack session that PHP entered from
+/// another chrome.
+///
+/// Pushing a stack-layout screen from a tabs layout swaps the chrome and
+/// starts a new `NavigationStack` whose root is that screen, so the system
+/// edge swipe has nothing to pop. PHP's router still has the tabs level
+/// beneath, and the root's back chevron goes back to it. This adds a
+/// leading-edge pan to the navigation controller that does the same: when
+/// the swipe is committed (past a third of the width, or flicked), it sends
+/// the system back event and PHP pops to the previous chrome. The screen
+/// doesn't follow the finger, because there is no view of the previous
+/// chrome underneath to reveal.
+///
+/// The pan only begins while `NavigationCoordinator.canGoBackFromRoot`, so
+/// pushed levels keep the system's interactive edge swipe, and the root of
+/// an app's first stack (nothing beneath it in PHP) is unchanged.
+struct StackRootEdgeSwipeBack: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView { Probe() }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    private final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            var responder: UIResponder? = self
+            while let current = responder, !(current is UINavigationController) {
+                responder = current.next
+            }
+            guard let navigationController = responder as? UINavigationController,
+                  let view = navigationController.view,
+                  !(view.gestureRecognizers ?? []).contains(where: { $0 is RootEdgePan })
+            else { return }
+            view.addGestureRecognizer(RootEdgePan(navigationController: navigationController))
+        }
+    }
+
+    private final class RootEdgePan: UIScreenEdgePanGestureRecognizer, UIGestureRecognizerDelegate {
+        private weak var navigationController: UINavigationController?
+
+        init(navigationController: UINavigationController) {
+            self.navigationController = navigationController
+            super.init(target: nil, action: nil)
+            edges = navigationController.view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                ? .right : .left
+            delegate = self
+            addTarget(self, action: #selector(handle))
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let navigationController else { return false }
+
+            return NavigationCoordinator.shared.canGoBackFromRoot
+                && navigationController.viewControllers.count <= 1
+                && navigationController.transitionCoordinator == nil
+        }
+
+        @objc private func handle() {
+            guard state == .ended, let view else { return }
+            let direction: CGFloat = edges == .right ? -1 : 1
+            let distance = translation(in: view).x * direction
+            let speed = velocity(in: view).x * direction
+            if distance > view.bounds.width / 3 || (speed > 500 && distance > 0) {
+                NativeElementBridge.sendSystemBackEvent()
+            }
         }
     }
 }
