@@ -53,6 +53,16 @@ class ComponentMethodInvoker extends BoundMethod
             ->invokeArgs($component, $dependencies);
     }
 
+    /**
+     * Throw unless the method is one a template or the device may name:
+     * public, not static, not a lifecycle hook, not declared on
+     * NativeComponent itself, and not render().
+     */
+    public static function assertCallable(NativeComponent $component, string $method): void
+    {
+        static::ensureCallable($component, $method);
+    }
+
     protected static function ensureCallable(NativeComponent $component, string $method): void
     {
         $protectedMethods = [

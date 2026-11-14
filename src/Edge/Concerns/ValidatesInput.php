@@ -8,6 +8,7 @@ use Illuminate\Support\ViewErrorBag;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\FieldErrors;
 
 /**
@@ -141,10 +142,13 @@ trait ValidatesInput
      * @internal Wraps the interaction entry point shared by the device
      *           runloop and the test harness.
      */
-    public function __invokeInteraction(string $method, array $parameters): mixed
-    {
+    public function __invokeInteraction(
+        string $method,
+        array $parameters,
+        ActionSource $source = ActionSource::Interaction,
+    ): mixed {
         try {
-            return parent::__invokeInteraction($method, $parameters);
+            return parent::__invokeInteraction($method, $parameters, $source);
         } catch (ValidationException $exception) {
             // validate() and validateOnly() have already updated the bag;
             // a hand-thrown ValidationException::withMessages() has not.
