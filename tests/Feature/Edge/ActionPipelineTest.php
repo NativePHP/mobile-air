@@ -50,7 +50,7 @@ function fireKinded(TestableComponent $screen, string $expression, string $kind,
 
 /**
  * Make a call whose method name and arguments came from outside the app,
- * the way a package that renders server-driven UI would.
+ * for example by a server.
  */
 function callRemote(TestableComponent $screen, string $method, array $args = []): void
 {
