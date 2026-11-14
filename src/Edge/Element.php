@@ -768,6 +768,23 @@ abstract class Element
     }
 
     /**
+     * The type name this element is sent to the device as.
+     *
+     * Almost always the same as getType(). It differs for an element that
+     * exists only on the PHP side and should reach the renderers as one
+     * they already know, such as a package's own container that paints
+     * as a plain `column`. getType() stays the PHP identity, so hoisting,
+     * validation and anything else that asks "what is this?" still sees
+     * the real type. Every path that hands a type name to
+     * native (toArray() for the flat buffer and Jump, and the streaming
+     * collector) reads this instead.
+     */
+    public function wireType(): string
+    {
+        return $this->type;
+    }
+
+    /**
      * @return Element[]
      */
     public function getChildren(): array
@@ -978,7 +995,7 @@ abstract class Element
 
             return [
                 'id' => $last['id'],
-                'type' => $this->type,
+                'type' => $this->wireType(),
                 'flags' => 1, // NPHP_NODE_FLAG_REUSE
                 '_hash' => $last['hash'],
             ];
@@ -1113,7 +1130,7 @@ abstract class Element
         if ($prior !== null && $prior === $contentHash) {
             return [
                 'id' => $id,
-                'type' => $this->type, // kept for native-side debug logging
+                'type' => $this->wireType(), // kept for native-side debug logging
                 'flags' => 1,          // NPHP_NODE_FLAG_REUSE
                 '_hash' => $contentHash,
             ];
@@ -1125,7 +1142,7 @@ abstract class Element
 
         $node = [
             'id' => $id,
-            'type' => $this->type,
+            'type' => $this->wireType(),
             '_hash' => $contentHash,
         ];
 

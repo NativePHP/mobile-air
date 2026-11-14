@@ -161,9 +161,33 @@ class NativeElementCollector
         return static::$streaming;
     }
 
-    public static function setCallbacks(CallbackRegistry $callbacks): void
+    /**
+     * Bind the registry callbacks register into. Nullable so a caller that
+     * swaps it for the length of a subtree (a package rendering part of a
+     * view against its own registry) can put back exactly what it found,
+     * including "nothing bound yet".
+     */
+    public static function setCallbacks(?CallbackRegistry $callbacks): void
     {
         static::$callbacks = $callbacks;
+    }
+
+    /** The registry currently bound, so a caller can save and restore it. */
+    public static function callbacks(): ?CallbackRegistry
+    {
+        return static::$callbacks;
+    }
+
+    /**
+     * The container element the last open() pushed, so a caller can keep
+     * working on the node it just emitted. Null while streaming (nodes go
+     * straight to C, there is no Element) and null between elements.
+     */
+    public static function openElement(): ?Element
+    {
+        $top = end(static::$stack);
+
+        return $top instanceof Element ? $top : null;
     }
 
     // ── Child-component scopes ───────────────────────
@@ -176,6 +200,12 @@ class NativeElementCollector
     public static function setOwner(?NativeComponent $owner): void
     {
         static::$owner = $owner;
+    }
+
+    /** The component whose render is emitting, if any. */
+    public static function owner(): ?NativeComponent
+    {
+        return static::$owner;
     }
 
     public static function inComponentScope(): bool
@@ -444,7 +474,7 @@ class NativeElementCollector
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
             nphp_node_open(
-                $type,
+                $element->wireType(),
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
                 ! empty($props) ? $props : null,
@@ -539,7 +569,7 @@ class NativeElementCollector
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
             nphp_node_leaf(
-                $type,
+                $element->wireType(),
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
                 ! empty($props) ? $props : null,

@@ -20,6 +20,7 @@ use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Browser;
+use Native\Mobile\Edge\Contracts\RunloopExtension;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -74,6 +75,14 @@ abstract class NativeComponent
     const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
+
+    /**
+     * Packages hooked into every screen's runloop, in the order they were
+     * registered. See {@see extend()}.
+     *
+     * @var list<RunloopExtension>
+     */
+    private static array $nativeExtensions = [];
 
     /**
      * The component currently driving the runloop (rendering or handling an
@@ -253,6 +262,13 @@ abstract class NativeComponent
         // state the next (recovered) frame still wants.
         $this->beginChildComponentFrame();
 
+        // Called here rather than off the collector's reset() because a
+        // screen can render without the collector at all (a programmatic
+        // Element tree).
+        foreach (self::$nativeExtensions as $extension) {
+            $extension->beginFrame();
+        }
+
         $result = $this->render();
 
         $element = $result instanceof View
@@ -260,6 +276,10 @@ abstract class NativeComponent
             : $result;
 
         $this->endChildComponentFrame();
+
+        foreach (self::$nativeExtensions as $extension) {
+            $extension->endFrame($this);
+        }
 
         return $element;
     }
@@ -599,9 +619,7 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
-            ? new ($this->nativeLayout)()
-            : null;
+        $layout = $this->chromeLayout();
 
         // ── Inline chrome (screen blade) ──
         // Non-custom bars are hoisted out of the content tree so they
@@ -729,6 +747,18 @@ abstract class NativeComponent
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * The layout whose chrome wraps this screen: the route's layout class,
+     * or null for none. A screen that builds its chrome some other way
+     * (from data it loaded, say) overrides this.
+     */
+    protected function chromeLayout(): ?NativeLayout
+    {
+        return ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
+            : null;
     }
 
     /**
@@ -1576,6 +1606,11 @@ abstract class NativeComponent
         try {
             $t0 = microtime(true);
             $this->beginChildComponentFrame();
+
+            foreach (self::$nativeExtensions as $extension) {
+                $extension->beginFrame();
+            }
+
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
             $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
@@ -1583,6 +1618,11 @@ abstract class NativeComponent
 
             nphp_frame_end();
             $t2 = microtime(true);
+
+            // Same as renderToElement().
+            foreach (self::$nativeExtensions as $extension) {
+                $extension->endFrame($this);
+            }
 
             NativeRouter::debugLog(sprintf(
                 'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
@@ -1793,6 +1833,19 @@ abstract class NativeComponent
             return -1;
         }
 
+        $polls = $this->nextPollTimeout($definitions);
+        $wake = $this->nextExtensionWake();
+
+        if ($wake === null) {
+            return $polls;
+        }
+
+        return $polls === -1 ? $wake : min($polls, $wake);
+    }
+
+    /** The #[Poll] and native:poll part of nextEventTimeout(). */
+    private function nextPollTimeout(array $definitions): int
+    {
         $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
@@ -1821,6 +1874,62 @@ abstract class NativeComponent
         }
 
         return max(1, (int) ceil($soonest - $now));
+    }
+
+    /**
+     * The soonest turn a runloop extension asked for, in milliseconds, or
+     * null when none is waiting on anything. 0 means repaint now.
+     */
+    private function nextExtensionWake(): ?int
+    {
+        if (self::$nativeExtensions === []) {
+            return null;
+        }
+
+        $tree = iterator_to_array($this->componentTree(), false);
+        $soonest = null;
+
+        foreach (self::$nativeExtensions as $extension) {
+            $wake = $extension->nextWake($tree);
+
+            if ($wake !== null) {
+                $soonest = $soonest === null ? $wake : min($soonest, $wake);
+            }
+        }
+
+        return $soonest === null ? null : max(0, $soonest);
+    }
+
+    /**
+     * Give each runloop extension its turn (RunloopExtension::tick()), at
+     * the top of each turn of the loop. What one throws shows the error
+     * screen, as any interaction does, and an extension that ends the loop
+     * (by navigating, say) stops the rest from ticking. Returns whether
+     * any of them asked for a new frame.
+     */
+    private function tickExtensions(): bool
+    {
+        if (self::$nativeExtensions === []) {
+            return false;
+        }
+
+        $repaint = false;
+
+        $this->runGuardedInteraction('RunloopExtension::tick()', function () use (&$repaint) {
+            $tree = iterator_to_array($this->componentTree(), false);
+
+            foreach (self::$nativeExtensions as $extension) {
+                if (! $this->nativeRunning) {
+                    break;
+                }
+
+                $repaint = $extension->tick($tree) || $repaint;
+            }
+
+            $this->flushDispatchedEvents();
+        });
+
+        return $repaint;
     }
 
     /**
@@ -2095,6 +2204,16 @@ abstract class NativeComponent
             }
 
             return;
+        }
+
+        // A runloop extension may claim the event as its own plumbing (an
+        // answer to a request it made while the loop blocked, say). A
+        // claimed event reaches no listener, and the re-render at the top
+        // of the loop paints whatever the extension changed.
+        foreach (self::$nativeExtensions as $extension) {
+            if ($extension->handleNativeEvent($eventName, $payload)) {
+                return;
+            }
         }
 
         // An event marked BroadcastsGlobally that another lane has fired. This
@@ -2737,6 +2856,30 @@ abstract class NativeComponent
     }
 
     /**
+     * Hook a package into every screen's runloop. See RunloopExtension for
+     * what each hook is called for. Usually called from a service
+     * provider's boot(). Registering the same instance twice does nothing.
+     */
+    public static function extend(RunloopExtension $extension): void
+    {
+        if (! in_array($extension, self::$nativeExtensions, true)) {
+            self::$nativeExtensions[] = $extension;
+        }
+    }
+
+    /** @return list<RunloopExtension> The registered runloop extensions, in order. */
+    public static function extensions(): array
+    {
+        return self::$nativeExtensions;
+    }
+
+    /** @internal Forget every runloop extension. For tests. */
+    public static function forgetExtensions(): void
+    {
+        self::$nativeExtensions = [];
+    }
+
+    /**
      * The component currently driving the runloop, or null when none is active
      * (or the last active one has since been freed). Used by
      * {@see PendingAsyncTask} to scope async completion callbacks to the screen
@@ -2962,6 +3105,16 @@ abstract class NativeComponent
         if (self::active() === $this) {
             self::$nativeActiveComponent = null;
         }
+
+        // Extensions drop whatever they hold for this component. Children
+        // were unmounted above, so theirs went first.
+        foreach (self::$nativeExtensions as $extension) {
+            try {
+                $extension->componentUnmounted($this);
+            } catch (\Throwable $e) {
+                NativeRouter::debugLog('RunloopExtension::componentUnmounted() failed: '.$e->getMessage());
+            }
+        }
     }
 
     public function onResume(): void
@@ -3094,6 +3247,16 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -3331,6 +3494,16 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -3911,6 +4084,17 @@ abstract class NativeComponent
     }
 
     // ── Injection (called by NativeRouter) ──────────
+
+    /**
+     * The context of the route table entry that opened this screen (see
+     * NativeRouter::setRouteTable()), or null for an app route. Called
+     * before mount(). Does nothing by default: a screen class that serves
+     * a route table overrides it to learn which of its routes it is.
+     */
+    public function setRouteContext(mixed $context): void
+    {
+        //
+    }
 
     public function setRouter(NativeRouter $router): void
     {
@@ -5060,7 +5244,18 @@ abstract class NativeComponent
             ComponentMethodInvoker::assertRemoteCallable($this, $method, $args);
         }
 
-        return $this->callAction($method, $args, $source);
+        // Runloop extensions wrap the call only now, once the guards above
+        // have passed, so a refused call never reaches one. The first
+        // registered is the outermost. $next takes no arguments, so no
+        // extension can swap in a method or arguments the guards did not see.
+        $next = fn () => $this->callAction($method, $args, $source);
+
+        foreach (array_reverse(self::$nativeExtensions) as $extension) {
+            $inner = $next;
+            $next = fn () => $extension->aroundAction($this, $method, $args, $source, $inner);
+        }
+
+        return $next();
     }
 
     /**
@@ -5103,6 +5298,28 @@ abstract class NativeComponent
         // Ids no component owns are dropped, exactly as before.
         $owner = $this->findCallbackOwner($callbackId);
 
+        // A runloop extension may have registered callbacks of its own
+        // on a component. Ids are derived from expressions, and an
+        // extension's could come from outside the app, so one could be made
+        // to equal a callback the screen owns, or one another extension
+        // registered. An id more than one scope claims is dropped rather
+        // than guessed at.
+        $claims = $this->extensionCallbackClaims($callbackId);
+
+        if ($claims !== []) {
+            if ($owner !== null || count($claims) > 1) {
+                NativeRouter::debugLog("callback id [{$callbackId}] is claimed by more than one scope, dropped.");
+
+                return;
+            }
+
+            [$component, $handler] = $claims[0];
+            $handler(...$this->uiEventArgs($event));
+            $component->flushDispatchedEvents();
+
+            return;
+        }
+
         if ($owner === null) {
             return;
         }
@@ -5128,16 +5345,7 @@ abstract class NativeComponent
             return;
         }
 
-        $type = $event['type'] ?? -1;
-
-        $eventArgs = match ($type) {
-            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
-            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
-            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
-            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
-            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
-            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
-        };
+        $eventArgs = $this->uiEventArgs($event);
 
         // Dispatch path forks based on callback kind. Default kind
         // (null) is fire-and-forget — return value is discarded.
@@ -5214,6 +5422,44 @@ abstract class NativeComponent
         }
 
         $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::Interaction);
+    }
+
+    /** The value a UI event carries, as the arguments appended to a callback's own. */
+    private function uiEventArgs(array $event): array
+    {
+        return match ($event['type'] ?? -1) {
+            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
+            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
+            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
+            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
+            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
+            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
+        };
+    }
+
+    /**
+     * Every runloop extension's handler for the id, on any component in
+     * this one's tree, as `[component, handler]`. More than one is a clash.
+     *
+     * @return list<array{0: NativeComponent, 1: \Closure}>
+     */
+    private function extensionCallbackClaims(int $callbackId): array
+    {
+        if ($callbackId === 0 || self::$nativeExtensions === []) {
+            return [];
+        }
+
+        $claims = [];
+
+        foreach ($this->componentTree() as $component) {
+            foreach (self::$nativeExtensions as $extension) {
+                if (($handler = $extension->resolveCallback($component, $callbackId)) !== null) {
+                    $claims[] = [$component, $handler];
+                }
+            }
+        }
+
+        return $claims;
     }
 
     private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed
