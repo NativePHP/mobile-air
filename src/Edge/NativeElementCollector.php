@@ -163,8 +163,9 @@ class NativeElementCollector
 
     /**
      * Bind the registry callbacks register into. Nullable so a caller that
-     * swaps it for the length of a subtree (Asgard's `@server` regions) can
-     * put back exactly what it found, including "nothing bound yet".
+     * swaps it for the length of a subtree (a package rendering part of a
+     * view against its own registry) can put back exactly what it found,
+     * including "nothing bound yet".
      */
     public static function setCallbacks(?CallbackRegistry $callbacks): void
     {

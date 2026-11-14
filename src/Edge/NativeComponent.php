@@ -20,6 +20,7 @@ use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Browser;
+use Native\Mobile\Edge\Contracts\RunloopExtension;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -28,9 +29,6 @@ use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
 use Native\Mobile\Edge\Enums\ActionSource;
-use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
-use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
-use Native\Mobile\Edge\Exceptions\FragmentActionNotAllowedException;
 use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
@@ -77,6 +75,14 @@ abstract class NativeComponent
     const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
+
+    /**
+     * Packages hooked into every screen's runloop, in the order they were
+     * registered. See {@see extend()}.
+     *
+     * @var list<RunloopExtension>
+     */
+    private static array $nativeExtensions = [];
 
     /**
      * The component currently driving the runloop (rendering or handling an
@@ -256,13 +262,12 @@ abstract class NativeComponent
         // state the next (recovered) frame still wants.
         $this->beginChildComponentFrame();
 
-        // Same idea for Asgard regions: the record of which regions are
-        // on screen belongs to one frame. Set here rather than off the
-        // collector's reset() because a screen can render without the
-        // collector at all (a programmatic Element tree), and such a
-        // screen must read as having no regions, not as still having the
-        // previous screen's.
-        Asgard\ServerRegion::beginFrame();
+        // Called here rather than off the collector's reset() because a
+        // screen can render without the collector at all (a programmatic
+        // Element tree).
+        foreach (self::$nativeExtensions as $extension) {
+            $extension->beginFrame();
+        }
 
         $result = $this->render();
 
@@ -272,9 +277,9 @@ abstract class NativeComponent
 
         $this->endChildComponentFrame();
 
-        // Regions that painted a placeholder this frame ask for their
-        // fragment now, once per component (Asgard protocol §3).
-        Asgard\ServerRegion::requestMissing();
+        foreach (self::$nativeExtensions as $extension) {
+            $extension->endFrame($this);
+        }
 
         return $element;
     }
@@ -746,8 +751,8 @@ abstract class NativeComponent
 
     /**
      * The layout whose chrome wraps this screen: the route's layout class,
-     * or null for none. Asgard's ServerScreen answers with one built from
-     * the chrome the server sent instead.
+     * or null for none. A screen that builds its chrome some other way
+     * (from data it loaded, say) overrides this.
      */
     protected function chromeLayout(): ?NativeLayout
     {
@@ -1601,7 +1606,11 @@ abstract class NativeComponent
         try {
             $t0 = microtime(true);
             $this->beginChildComponentFrame();
-            Asgard\ServerRegion::beginFrame();
+
+            foreach (self::$nativeExtensions as $extension) {
+                $extension->beginFrame();
+            }
+
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
             $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
@@ -1610,8 +1619,10 @@ abstract class NativeComponent
             nphp_frame_end();
             $t2 = microtime(true);
 
-            // Same as renderToElement(): ask for what this frame is missing.
-            Asgard\ServerRegion::requestMissing();
+            // Same as renderToElement().
+            foreach (self::$nativeExtensions as $extension) {
+                $extension->endFrame($this);
+            }
 
             NativeRouter::debugLog(sprintf(
                 'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
@@ -1822,26 +1833,14 @@ abstract class NativeComponent
             return -1;
         }
 
-        // An Asgard fragment landed since the last frame without an event
-        // to wake the loop (a FragmentSource that answered at once, from a
-        // cache say). Take the next turn now so it paints.
-        if (Asgard\ServerRegion::repaintPending()) {
-            return 0;
-        }
-
         $polls = $this->nextPollTimeout($definitions);
+        $wake = $this->nextExtensionWake();
 
-        // An Asgard timer wakes the loop at its deadline, with no input
-        // needed, so a server screen or action that waits too long fails
-        // on time. It is on another clock than the polls (Carbon's, which
-        // tests can move), so it is worked out on its own.
-        $server = $this->serverDeadlineWait();
-
-        if ($server === null) {
+        if ($wake === null) {
             return $polls;
         }
 
-        return $polls === -1 ? $server : min($polls, $server);
+        return $polls === -1 ? $wake : min($polls, $wake);
     }
 
     /** The #[Poll] and native:poll part of nextEventTimeout(). */
@@ -1878,57 +1877,59 @@ abstract class NativeComponent
     }
 
     /**
-     * Milliseconds until the next Asgard timer or failure of this screen
-     * or its children is due, or null when there is none. A covered
-     * screen's are left for when it runs again.
+     * The soonest turn a runloop extension asked for, in milliseconds, or
+     * null when none is waiting on anything. 0 means repaint now.
      */
-    private function serverDeadlineWait(): ?int
+    private function nextExtensionWake(): ?int
     {
-        if (! Asgard\ServerRegion::hasDeadlines() && ! Asgard\ServerMethods::hasDeadlines()) {
+        if (self::$nativeExtensions === []) {
             return null;
         }
 
         $tree = iterator_to_array($this->componentTree(), false);
-        $deadlines = array_filter(
-            [Asgard\ServerRegion::nextDeadline($tree), Asgard\ServerMethods::nextDeadline($tree)],
-            fn (?float $at) => $at !== null,
-        );
+        $soonest = null;
 
-        if ($deadlines === []) {
-            return null;
+        foreach (self::$nativeExtensions as $extension) {
+            $wake = $extension->nextWake($tree);
+
+            if ($wake !== null) {
+                $soonest = $soonest === null ? $wake : min($soonest, $wake);
+            }
         }
 
-        return max(0, (int) ceil(min($deadlines) - Asgard\ServerRegion::now()));
+        return $soonest === null ? null : max(0, $soonest);
     }
 
     /**
-     * Act on the Asgard timers and failures of this screen and its children
-     * that are due (ServerRegion::expire(), ServerMethods::expire()). Run
-     * at the top of each turn of the loop. A closure of a `#[Server]`
-     * method that throws shows the error screen, as any interaction does.
-     * Returns whether anything was acted on.
+     * Give each runloop extension its turn (RunloopExtension::tick()), at
+     * the top of each turn of the loop. What one throws shows the error
+     * screen, as any interaction does, and an extension that ends the loop
+     * (by navigating, say) stops the rest from ticking. Returns whether
+     * any of them asked for a new frame.
      */
-    private function expireServerDeadlines(): bool
+    private function tickExtensions(): bool
     {
-        if (! Asgard\ServerRegion::hasDeadlines() && ! Asgard\ServerMethods::hasDeadlines()) {
+        if (self::$nativeExtensions === []) {
             return false;
         }
 
-        $acted = false;
+        $repaint = false;
 
-        $this->runGuardedInteraction('expireServerDeadlines()', function () use (&$acted) {
+        $this->runGuardedInteraction('RunloopExtension::tick()', function () use (&$repaint) {
             $tree = iterator_to_array($this->componentTree(), false);
-            $acted = Asgard\ServerRegion::expire($tree);
 
-            // A server screen that gave up has left, and its calls with it.
-            if ($this->nativeRunning) {
-                $acted = Asgard\ServerMethods::expire($tree) || $acted;
+            foreach (self::$nativeExtensions as $extension) {
+                if (! $this->nativeRunning) {
+                    break;
+                }
+
+                $repaint = $extension->tick($tree) || $repaint;
             }
 
             $this->flushDispatchedEvents();
         });
 
-        return $acted;
+        return $repaint;
     }
 
     /**
@@ -2205,17 +2206,14 @@ abstract class NativeComponent
             return;
         }
 
-        // An Asgard `#[Server]` response (docs/ASGARD-SERVER-METHODS.md
-        // §3). The request was performed natively while this loop blocked,
-        // so its answer comes back on the one channel the loop is already
-        // waiting on. Route it to the pending-request table and stop: it
-        // is framework plumbing, not an event a component listens for, and
-        // the re-render at the top of the loop paints whatever the delta
-        // and the closure changed.
-        if ($eventName === Asgard\ServerMethods::RESPONSE_EVENT) {
-            Asgard\ServerMethods::deliver(is_array($payload) ? $payload : []);
-
-            return;
+        // A runloop extension may claim the event as its own plumbing (an
+        // answer to a request it made while the loop blocked, say). A
+        // claimed event reaches no listener, and the re-render at the top
+        // of the loop paints whatever the extension changed.
+        foreach (self::$nativeExtensions as $extension) {
+            if ($extension->handleNativeEvent($eventName, $payload)) {
+                return;
+            }
         }
 
         // An event marked BroadcastsGlobally that another lane has fired. This
@@ -2858,6 +2856,30 @@ abstract class NativeComponent
     }
 
     /**
+     * Hook a package into every screen's runloop. See RunloopExtension for
+     * what each hook is called for. Usually called from a service
+     * provider's boot(). Registering the same instance twice does nothing.
+     */
+    public static function extend(RunloopExtension $extension): void
+    {
+        if (! in_array($extension, self::$nativeExtensions, true)) {
+            self::$nativeExtensions[] = $extension;
+        }
+    }
+
+    /** @return list<RunloopExtension> The registered runloop extensions, in order. */
+    public static function extensions(): array
+    {
+        return self::$nativeExtensions;
+    }
+
+    /** @internal Forget every runloop extension. For tests. */
+    public static function forgetExtensions(): void
+    {
+        self::$nativeExtensions = [];
+    }
+
+    /**
      * The component currently driving the runloop, or null when none is active
      * (or the last active one has since been freed). Used by
      * {@see PendingAsyncTask} to scope async completion callbacks to the screen
@@ -3084,17 +3106,15 @@ abstract class NativeComponent
             self::$nativeActiveComponent = null;
         }
 
-        // Drop in-flight #[Server] requests owned by this component. The
-        // pending table holds this instance and the closure bound to it, so
-        // leaving entries behind keeps a dead screen alive; a response that
-        // arrives after this is discarded (ASGARD-SERVER-METHODS.md §4).
-        Asgard\ServerMethods::forget($this);
-
-        // Same for region requests: an answer that lands after this is
-        // dropped, and this component's fragments go with it. Both run for
-        // every component, UsesServer or not, since any view can hold an
-        // @server region.
-        Asgard\ServerRegion::forget($this);
+        // Extensions drop whatever they hold for this component. Children
+        // were unmounted above, so theirs went first.
+        foreach (self::$nativeExtensions as $extension) {
+            try {
+                $extension->componentUnmounted($this);
+            } catch (\Throwable $e) {
+                NativeRouter::debugLog('RunloopExtension::componentUnmounted() failed: '.$e->getMessage());
+            }
+        }
     }
 
     public function onResume(): void
@@ -3231,10 +3251,9 @@ abstract class NativeComponent
                 break;
             }
 
-            // Asgard timers and failures that are due: a server screen that
-            // gives up leaves, and a failed server action fires its event,
-            // which this screen hears on the next turn.
-            if ($this->expireServerDeadlines()) {
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
                 $skipRender = false;
             }
 
@@ -3479,10 +3498,9 @@ abstract class NativeComponent
                 break;
             }
 
-            // Asgard timers and failures that are due: a server screen that
-            // gives up leaves, and a failed server action fires its event,
-            // which this screen hears on the next turn.
-            if ($this->expireServerDeadlines()) {
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
                 $skipRender = false;
             }
 
@@ -4066,6 +4084,17 @@ abstract class NativeComponent
     }
 
     // ── Injection (called by NativeRouter) ──────────
+
+    /**
+     * The context of the route table entry that opened this screen (see
+     * NativeRouter::setRouteTable()), or null for an app route. Called
+     * before mount(). Does nothing by default: a screen class that serves
+     * a route table overrides it to learn which of its routes it is.
+     */
+    public function setRouteContext(mixed $context): void
+    {
+        //
+    }
 
     public function setRouter(NativeRouter $router): void
     {
@@ -5178,7 +5207,10 @@ abstract class NativeComponent
      * template or the device chose has already been held to
      * {@see ComponentMethodInvoker::assertCallable()}. A name the developer
      * chose by writing an attribute (#[Poll], a component #[On]) skips the
-     * guard, so those methods may be protected.
+     * guard, so those methods may be protected. A name and arguments chosen
+     * outside the app ({@see ActionSource::Remote}) are also held to
+     * {@see ComponentMethodInvoker::assertRemoteCallable()} here, for the
+     * same reason.
      *
      * Private on purpose, so nothing can override it. It is called on other
      * instances too (`emit()` runs it on the parent), which private allows
@@ -5208,11 +5240,22 @@ abstract class NativeComponent
             ComponentMethodInvoker::assertCallable($this, $method);
         }
 
-        if ($source->fromFragment()) {
-            ComponentMethodInvoker::assertFragmentCallable($this, $method, $args);
+        if ($source->isRemote()) {
+            ComponentMethodInvoker::assertRemoteCallable($this, $method, $args);
         }
 
-        return $this->callAction($method, $args, $source);
+        // Runloop extensions wrap the call only now, once the guards above
+        // have passed, so a refused call never reaches one. The first
+        // registered is the outermost. $next takes no arguments, so no
+        // extension can swap in a method or arguments the guards did not see.
+        $next = fn () => $this->callAction($method, $args, $source);
+
+        foreach (array_reverse(self::$nativeExtensions) as $extension) {
+            $inner = $next;
+            $next = fn () => $extension->aroundAction($this, $method, $args, $source, $inner);
+        }
+
+        return $next();
     }
 
     /**
@@ -5228,14 +5271,14 @@ abstract class NativeComponent
      * @param  string  $method  Method to call. It exists, and is callable for this source.
      * @param  array  $args  Arguments, resolved with container injection and
      *                       implicit model / enum binding. Not for
-     *                       {@see ActionSource::FragmentClient}: a server
-     *                       chose those, so they are passed as they are.
+     *                       {@see ActionSource::Remote}: something outside
+     *                       the app chose those, so they are passed as they are.
      * @param  ActionSource  $source  What triggered the call.
      * @return mixed The return value. {@see ActionSource::SearchQuery} depends on it.
      */
     protected function callAction(string $method, array $args, ActionSource $source): mixed
     {
-        if ($source === ActionSource::FragmentClient) {
+        if ($source->isRemote()) {
             return (new \ReflectionMethod($this, $method))->invokeArgs($this, array_values($args));
         }
 
@@ -5255,22 +5298,24 @@ abstract class NativeComponent
         // Ids no component owns are dropped, exactly as before.
         $owner = $this->findCallbackOwner($callbackId);
 
-        // A tap on a server-rendered fragment resolves in that region's
-        // own registry (Asgard protocol §9.2, §10). A fragment's
-        // ids are derived from expressions a server wrote, so one could be
-        // made to equal a screen callback's id, or another region's. An id
-        // more than one scope claims is dropped rather than guessed at.
-        $fragmentCallbacks = $this->findFragmentCallbacks($callbackId);
+        // A runloop extension may have registered callbacks of its own
+        // on a component. Ids are derived from expressions, and an
+        // extension's could come from outside the app, so one could be made
+        // to equal a callback the screen owns, or one another extension
+        // registered. An id more than one scope claims is dropped rather
+        // than guessed at.
+        $claims = $this->extensionCallbackClaims($callbackId);
 
-        if ($fragmentCallbacks !== []) {
-            if ($owner !== null || count($fragmentCallbacks) > 1) {
-                NativeRouter::debugLog("Asgard: callback id [{$callbackId}] is claimed by more than one scope — dropped.");
+        if ($claims !== []) {
+            if ($owner !== null || count($claims) > 1) {
+                NativeRouter::debugLog("callback id [{$callbackId}] is claimed by more than one scope, dropped.");
 
                 return;
             }
 
-            [$component, $region, $callback] = $fragmentCallbacks[0];
-            $component->dispatchFragmentCallback($region, $callback, $event);
+            [$component, $handler] = $claims[0];
+            $handler(...$this->uiEventArgs($event));
+            $component->flushDispatchedEvents();
 
             return;
         }
@@ -5393,112 +5438,28 @@ abstract class NativeComponent
     }
 
     /**
-     * Every fragment registry in this component's tree that resolves the
-     * id, as `[component, region, callback]`. More than one is a clash.
+     * Every runloop extension's handler for the id, on any component in
+     * this one's tree, as `[component, handler]`. More than one is a clash.
      *
-     * @return list<array{0: NativeComponent, 1: string, 2: array}>
+     * @return list<array{0: NativeComponent, 1: \Closure}>
      */
-    private function findFragmentCallbacks(int $callbackId): array
+    private function extensionCallbackClaims(int $callbackId): array
     {
-        if ($callbackId === 0) {
+        if ($callbackId === 0 || self::$nativeExtensions === []) {
             return [];
         }
 
-        $matches = [];
+        $claims = [];
 
         foreach ($this->componentTree() as $component) {
-            foreach (Asgard\ServerRegion::registriesOf($component) as $region => $registry) {
-                if (($callback = $registry->resolve($callbackId)) !== null) {
-                    $matches[] = [$component, $region, $callback];
+            foreach (self::$nativeExtensions as $extension) {
+                if (($handler = $extension->resolveCallback($component, $callbackId)) !== null) {
+                    $claims[] = [$component, $handler];
                 }
             }
         }
 
-        return $matches;
-    }
-
-    /**
-     * Run a tap on one of this component's fragment callbacks (§10).
-     *
-     * A `server` target sends an ActionRequest with the state as it is
-     * now, and nothing runs here, whatever methods this component has. A
-     * `client` target runs a `#[NativeAction]` method of this component
-     * through runAction(). A method the fragment may not call runs
-     * nothing and is logged, or throws with `app.debug` on. Either way a
-     * client callback never falls back to the server.
-     */
-    private function dispatchFragmentCallback(string $region, array $callback, array $event): void
-    {
-        $target = $callback['target'] ?? null;
-        $method = $callback['method'];
-        $args = [...$callback['args'], ...$this->uiEventArgs($event)];
-
-        if ($target === Asgard\FragmentCallbacks::TARGET_SERVER) {
-            Asgard\ServerRegion::action($this, $region, $method, $args);
-
-            return;
-        }
-
-        if ($target === Asgard\FragmentCallbacks::TARGET_NAVIGATE) {
-            $this->followFragmentNavigation($region, $method, $callback['args']);
-
-            return;
-        }
-
-        if ($target !== Asgard\FragmentCallbacks::TARGET_CLIENT) {
-            return;
-        }
-
-        try {
-            ComponentMethodInvoker::assertFragmentCallable($this, $method, $args);
-        } catch (ComponentMethodNotFoundException|DirectlyCallingLifecycleHooksNotAllowedException|FragmentActionNotAllowedException $e) {
-            if (config('app.debug')) {
-                throw $e;
-            }
-
-            NativeRouter::debugLog("Asgard: fragment in region [{$region}] asked for [{$method}], refused: ".$e->getMessage());
-
-            return;
-        }
-
-        $this->invokeUiInteraction($method, $args, ActionSource::FragmentClient);
-    }
-
-    /**
-     * Move the app for a navigation slot in a fragment or a server screen's
-     * chrome (§12, "Navigation"). Any route the app knows may be the
-     * target, its own or a server screen's, and nothing else: a URI that
-     * matches no route runs nothing and is logged, or throws with
-     * `app.debug` on. It never falls through to the web the way an
-     * unmatched navigate() would.
-     *
-     * @param  array{0: ?string, 1: ?string}  $args  [uri, transition]
-     */
-    private function followFragmentNavigation(string $region, string $mode, array $args): void
-    {
-        [$uri, $transition] = $args;
-
-        if ($mode !== 'back' && ! NativeRouter::isNativeRoute((string) $uri)) {
-            $message = "Asgard: region [{$region}] asked to navigate to [{$uri}], which is not a route this app knows.";
-
-            if (config('app.debug')) {
-                throw new \RuntimeException($message);
-            }
-
-            NativeRouter::debugLog($message.' Nothing happened.');
-
-            return;
-        }
-
-        match ($mode) {
-            'back' => $this->back(),
-            'replace' => $this->replace((string) $uri),
-            default => $this->navigate((string) $uri),
-        };
-
-        if ($transition !== null) {
-            $this->transition(Transition::from($transition));
-        }
+        return $claims;
     }
 
     private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed
@@ -5512,15 +5473,17 @@ abstract class NativeComponent
     /**
      * @internal The single interaction entry point shared by the device
      *           runloop and the test harness, so both accept the same methods.
+     *           Pass {@see ActionSource::Remote} for a call whose name and
+     *           arguments came from outside the app.
      */
     public function __invokeInteraction(
         string $method,
         array $parameters,
         ActionSource $source = ActionSource::Interaction,
     ): mixed {
-        // A fragment's client callback goes straight to the chokepoint: a
-        // server chose the name, so none of the shortcuts below apply.
-        if ($source->fromFragment()) {
+        // A remote call goes straight to the chokepoint: something outside
+        // the app chose the name, so none of the shortcuts below apply.
+        if ($source->isRemote()) {
             return $this->runAction($method, $parameters, $source);
         }
 
@@ -5547,16 +5510,6 @@ abstract class NativeComponent
 
         if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
             return $this->{$method}(...$parameters);
-        }
-
-        // A `#[Server]` method does not run to completion here. Its body
-        // runs, the state that body leaves behind is snapshotted and sent,
-        // and the closure it returned is held until the server answers
-        // (ASGARD-SERVER-METHODS.md §2). The body still goes through
-        // ComponentMethodInvoker inside call(), so the attribute narrows
-        // what is callable and never widens it.
-        if (Asgard\ServerMethods::isServerMethod($this, $method)) {
-            return Asgard\ServerMethods::call($this, $method, $parameters);
         }
 
         return $this->runAction($method, $parameters, $source);

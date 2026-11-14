@@ -112,8 +112,7 @@ class TabBar
 
     /**
      * Add a tab that is already an element, after the builder tabs. For
-     * callers that wire the element's callbacks themselves, as Asgard's
-     * server chrome does.
+     * callers that wire the element's callbacks themselves.
      */
     public function tabElement(BottomNavItem $item): self
     {

@@ -1,10 +1,10 @@
 <?php
 
-use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
+use Native\Mobile\Edge\Exceptions\RemoteActionNotAllowedException;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
@@ -49,18 +49,12 @@ function fireKinded(TestableComponent $screen, string $expression, string $kind,
 }
 
 /**
- * Paint a fragment whose button calls a client action, then tap it the
- * way a user would. set() repaints without going through callAction().
+ * Make a call whose method name and arguments came from outside the app,
+ * for example by a server.
  */
-function tapFragmentClientAction(TestableComponent $screen): void
+function callRemote(TestableComponent $screen, string $method, array $args = []): void
 {
-    ServerRegion::applyFragment('picks', [
-        'type' => 'pressable',
-        'on_press' => ['call' => 'pick', 'args' => ['red', 2], 'target' => 'client'],
-        'children' => [['type' => 'text', 'props' => ['text' => 'Pick red']]],
-    ], $screen->instance());
-
-    $screen->set('count', $screen->get('count'))->tap('Pick red');
+    $screen->instance()->__invokeInteraction($method, $args, ActionSource::Remote);
 }
 
 /**
@@ -176,12 +170,12 @@ it('routes a drag_end callback through callAction with the decoded translation',
         ->and($screen->instance()->ran)->toBe(['dragged:card:12.5,-3']);
 });
 
-it('routes a fragment client callback through callAction with its args as sent', function () {
+it('routes a remote call through callAction with its args as sent', function () {
     $screen = Native::test(ActionPipelineScreen::class);
 
-    tapFragmentClientAction($screen);
+    callRemote($screen, 'pick', ['red', 2]);
 
-    expect($screen->instance()->actions)->toBe([['fragment_client', 'pick', ['red', 2]]])
+    expect($screen->instance()->actions)->toBe([['remote', 'pick', ['red', 2]]])
         ->and($screen->instance()->ran)->toBe(['pick:red:2']);
 });
 
@@ -205,7 +199,7 @@ it('reaches no handler by any route when callAction declines to delegate', funct
     fireKinded($screen, "loadRange('rows')", 'virtual_window', ['type' => 2, 'text' => '5,9']);
     fireKinded($screen, "selectionChanged('field')", 'text_selection', ['type' => 2, 'text' => "1,4\x1Fhello"]);
     fireKinded($screen, "dragged('card')", 'drag_end', ['type' => 2, 'text' => '1,2']);
-    tapFragmentClientAction($screen);
+    callRemote($screen, 'pick', ['red', 2]);
 
     // Every source was seen...
     expect($screen->instance()->sources())->toBe([
@@ -220,7 +214,7 @@ it('reaches no handler by any route when callAction declines to delegate', funct
         'virtual_window',
         'text_selection',
         'drag_end',
-        'fragment_client',
+        'remote',
     ]);
 
     // ...and every case of the enum was among them, so a new
@@ -255,8 +249,8 @@ it('routes the harness call/firePoll/search verbs through callAction too', funct
  * routes, so the name must not reach anything the developer did not make a
  * public action: not a protected method, not a lifecycle hook, not one of
  * NativeComponent's own public methods. On a device the template is trusted
- * code, but the same rule is what keeps a remote renderer (asgard) from
- * turning a callback into a call to an arbitrary method.
+ * code, but the same rule is what keeps a name chosen outside the app
+ * from turning a callback into a call to an arbitrary method.
  */
 dataset('guarded kinds', [
     'tap' => [null, ['type' => 0]],
@@ -335,6 +329,32 @@ it('guards every source a template or the device names, and only those', functio
         'virtual_window' => true,
         'text_selection' => true,
         'drag_end' => true,
-        'fragment_client' => true,
+        'remote' => true,
     ]);
+});
+
+// ── Names chosen outside the app need #[NativeAction] ─
+
+it('refuses a remote call to a public method without #[NativeAction]', function () {
+    $screen = Native::test(ActionPipelineScreen::class);
+
+    expect(fn () => callRemote($screen, 'unmarked'))
+        ->toThrow(RemoteActionNotAllowedException::class);
+
+    // A template may still call it.
+    $screen->call('unmarked');
+
+    expect($screen->instance()->ran)->toBe(['unmarked']);
+});
+
+it('keeps the #[NativeAction] rule when a callAction() override never calls parent', function () {
+    $screen = Native::test(ActionPipelineScreen::class);
+    $screen->instance()->bypassParent = true;
+
+    expect(fn () => callRemote($screen, 'unmarked'))
+        ->toThrow(RemoteActionNotAllowedException::class);
+
+    // The override never saw the call, so it had no chance to run it.
+    expect($screen->instance()->actions)->toBe([])
+        ->and($screen->instance()->ran)->toBe([]);
 });

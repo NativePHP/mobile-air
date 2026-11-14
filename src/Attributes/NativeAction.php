@@ -5,7 +5,8 @@ namespace Native\Mobile\Attributes;
 use Attribute;
 
 /**
- * Marks a method as dispatchable from a server-rendered fragment.
+ * Marks a method as one that something outside the app, for example a
+ * server, may ask the component to run.
  *
  *     #[NativeAction]
  *     public function refresh(): void
@@ -13,17 +14,15 @@ use Attribute;
  *         // ...
  *     }
  *
- * Client-side callbacks resolve through a bare `method_exists()` check,
- * which means any public method on the component. That is fine while the
- * only thing naming a method is the app's own Blade. It stops being fine
- * once the expression arrives from a server (Asgard protocol
- * §10): the callable surface would be every public method the component
+ * A template may name any public method on its component. That is fine
+ * while the only thing naming methods is the app's own Blade. It stops
+ * being fine once the name and arguments arrive from outside the app:
+ * the callable surface would be every public method the component
  * happens to have.
  *
- * So a fragment may only name methods carrying this attribute. Nothing
- * dispatches on it yet — that is the event workstream — but the marker
- * ships now so components can be written against the final rule instead
- * of being retrofitted later.
+ * So a call with ActionSource::Remote may only reach methods carrying
+ * this attribute, and only with plain-value arguments. See
+ * ComponentMethodInvoker::assertRemoteCallable().
  */
 #[Attribute(Attribute::TARGET_METHOD)]
 class NativeAction {}

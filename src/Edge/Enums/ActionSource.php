@@ -54,13 +54,13 @@ enum ActionSource: string
     case DragEnd = 'drag_end';
 
     /**
-     * A tap inside a server-rendered fragment whose callback targets the
-     * client (Asgard protocol §10). A server chose the name, so on
-     * top of the guard the method must carry `#[NativeAction]` and take
-     * only JSON-shaped parameters, and its arguments are passed as they
-     * came, with no container injection or model / enum binding.
+     * A call whose method name and arguments were chosen outside the app,
+     * for example by a server. On top of the callable guard the method must
+     * carry `#[NativeAction]` and take only plain-value parameters, and its
+     * arguments are passed as they came, with no container injection or
+     * model / enum binding. See ComponentMethodInvoker::assertRemoteCallable().
      */
-    case FragmentClient = 'fragment_client';
+    case Remote = 'remote';
 
     /**
      * Whether the method name must pass ComponentMethodInvoker's callable
@@ -89,7 +89,7 @@ enum ActionSource: string
             self::VirtualWindow,
             self::TextSelection,
             self::DragEnd,
-            self::FragmentClient,
+            self::Remote,
             self::ParentBinding,
             self::NativeEvent => true,
 
@@ -99,11 +99,11 @@ enum ActionSource: string
     }
 
     /**
-     * Whether the name came from a server-rendered fragment, so the method
-     * must also pass ComponentMethodInvoker::assertFragmentCallable().
+     * Whether the name and arguments came from outside the app, so the
+     * method must also pass ComponentMethodInvoker::assertRemoteCallable().
      */
-    public function fromFragment(): bool
+    public function isRemote(): bool
     {
-        return $this === self::FragmentClient;
+        return $this === self::Remote;
     }
 }

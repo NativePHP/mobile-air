@@ -128,11 +128,17 @@ class ActionPipelineScreen extends NativeComponent
         $this->ran[] = 'onChildSaid:'.$word;
     }
 
-    /** A client action a server-rendered fragment may call. */
+    /** An action something outside the app may call. */
     #[NativeAction]
     public function pick(string $colour, int $times): void
     {
         $this->ran[] = "pick:{$colour}:{$times}";
+    }
+
+    /** Public, so a template may call it, but not marked #[NativeAction]. */
+    public function unmarked(): void
+    {
+        $this->ran[] = 'unmarked';
     }
 
     public function markSaved(string $bound, string $word): void

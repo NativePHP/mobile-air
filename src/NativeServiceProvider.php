@@ -42,12 +42,6 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
-use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
-use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
-use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
-use Native\Mobile\Edge\Asgard\NullFragmentSource;
-use Native\Mobile\Edge\Asgard\NullServerTransport;
-use Native\Mobile\Edge\Asgard\NullUploadTransport;
 use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
@@ -59,7 +53,6 @@ use Native\Mobile\Events\GlobalEventDispatcher;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
-use Native\Mobile\Http\Middleware\OpensServerRoutes;
 use Native\Mobile\Http\NativeScreenEntry;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
@@ -142,7 +135,6 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
         $this->registerPluginServices();
-        $this->registerAsgardTransport();
         $this->prepForIos();
         $this->registerJumpBridgeFallback();
 
@@ -223,32 +215,6 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->app->singleton(System::class, fn () => new System);
         $this->app->singleton(Dialog::class, fn () => new Dialog);
         $this->app->singleton(File::class, fn () => new File);
-    }
-
-    /**
-     * The seam a `#[Server]` method's request goes out through
-     * (docs/ASGARD-SERVER-METHODS.md §3).
-     *
-     * Bound by default to a transport that always fails. The real one
-     * comes from a client package (midgard) when the app has an Asgard
-     * server configured. Failing is deliberately not a fatal: an unsent
-     * request takes the same path as a device with no network, so a
-     * screen written against `#[Server]` behaves correctly (loading flag
-     * cleared, error branch run) with nothing to send with.
-     */
-    protected function registerAsgardTransport(): void
-    {
-        // `bindIf`, because these are defaults: a client package such as
-        // midgard binds the real one from its own provider, and package
-        // providers register in an order neither side controls. A plain
-        // bind here would silently replace midgard's when it ran first.
-        $this->app->bindIf(ServerTransport::class, NullServerTransport::class);
-        $this->app->bindIf(UploadTransport::class, NullUploadTransport::class);
-
-        // Where `@server` regions get their fragments. The default asks
-        // nobody, so every region keeps its placeholder until a client
-        // package (midgard) binds a real one.
-        $this->app->bindIf(FragmentSource::class, NullFragmentSource::class);
     }
 
     protected function registerPluginServices(): void
@@ -538,26 +504,6 @@ class NativeServiceProvider extends PackageServiceProvider
                 }
             ?>";
         });
-
-        // Asgard regions (Asgard protocol §3):
-        //
-        //     @server('sales-summary')
-        //         <x-skeleton-card />
-        //     @endserver
-        //
-        // open() emits the `server_region` node and returns whether the
-        // placeholder body should run — false means it already painted a
-        // fragment in its place. The body is guarded rather than always
-        // rendered because a fragment REPLACES the placeholder; rendering
-        // both and discarding one would run the placeholder's own Blade
-        // (and any component it mounts) for nothing.
-        Blade::directive('server', function ($expression) {
-            return "<?php if (\\Native\\Mobile\\Edge\\Asgard\\ServerRegion::open({$expression})): ?>";
-        });
-
-        Blade::directive('endserver', function () {
-            return '<?php endif; \\Native\\Mobile\\Edge\\Asgard\\ServerRegion::close(); ?>';
-        });
     }
 
     protected function registerFilesystems(): void
@@ -687,11 +633,6 @@ class NativeServiceProvider extends PackageServiceProvider
         // and getting it wrong would silently disable the middleware. Pushing
         // it in a console context is harmless — nothing dispatches a request.
         $this->app->make(HttpKernel::class)->pushMiddleware(HonorsRequestedNativeScreen::class);
-
-        // Server routes live only in NativeRouter, so a cold deep link or a
-        // hot-reload restore to one would 404 in Laravel's router. This
-        // opens them when no Laravel route claims the path.
-        $this->app->make(HttpKernel::class)->pushMiddleware(OpensServerRoutes::class);
     }
 
     /**
@@ -873,11 +814,6 @@ class NativeServiceProvider extends PackageServiceProvider
             // Gesture / interaction
             'gesture_area' => Elements\GestureArea::class,
             'refreshable' => Elements\Refreshable::class,
-
-            // Asgard regions — the container `@server(...)` opens. Registered
-            // as a core element so `<native:*>` resolution and fragment
-            // validation both see it; it is only ever emitted by the directive.
-            'server_region' => Elements\ServerRegion::class,
 
             // Canvas/shapes
             'canvas' => Elements\Canvas::class,

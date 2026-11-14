@@ -9,13 +9,13 @@ use RuntimeException;
 
 /**
  * What a request for a native screen runs: the body of every Route::native()
- * route, and of a server route opened by OpensServerRoutes.
+ * route. Public API, so a package that opens screens from its own HTTP
+ * routes or middleware (for example a path served from a named route
+ * table, see NativeRouter::setRouteTable()) enters the runloop the same way.
  *
  * It starts the navigation runloop at the requested path, replays the
  * navigation stack a hot reload saved, and answers with whatever the
- * runloop exits with. The screen class comes from the route. For a server
- * route it is Asgard\ServerScreen, and NativeRouter::start() looks up the
- * screen address from the path.
+ * runloop exits with. The screen class comes from the caller.
  */
 final class NativeScreenEntry
 {

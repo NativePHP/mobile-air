@@ -4,8 +4,6 @@ namespace Native\Mobile\Testing;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Traits\Macroable;
-use Native\Mobile\Edge\Asgard\ServerRegion;
-use Native\Mobile\Edge\Asgard\ServerScreen;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\NativeComponent;
@@ -15,6 +13,9 @@ use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\ScreenGuard;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
+use Native\Mobile\Events\Screen\ScreenMounted;
+use Native\Mobile\Events\Screen\ScreenResumed;
+use Native\Mobile\Events\Screen\ScreenUnmounted;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
@@ -121,6 +122,9 @@ class TestableComponent
     /** Platform for ios:/android: Tailwind variants (null = neither). */
     protected ?string $platform;
 
+    /** The URI this screen was opened at, when it was opened by one (visit() or follow()). */
+    protected ?string $uri = null;
+
     /** The screen this one was pushed from (flow stack), if any. */
     protected ?TestableComponent $parent = null;
 
@@ -178,13 +182,14 @@ class TestableComponent
         // regression can hide from an otherwise thorough suite.
         $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['screen'] ?? null);
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['context'] ?? null);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, ?string $screen = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, mixed $routeContext = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
+        $this->uri = $uri;
 
         // dd() in a component throws instead of killing the test process;
         // guard() converts it into a readable failure below.
@@ -206,12 +211,10 @@ class TestableComponent
             Assert::fail("[$componentClass] is not a NativeComponent.");
         }
 
-        // A server route opens the generic ServerScreen for one server screen.
-        if ($screen !== null && $component instanceof ServerScreen) {
-            $component->showScreen($screen);
-        }
-
         $this->component = $component;
+        // A route table entry's context, handed over before mount() as
+        // the router does.
+        $component->setRouteContext($routeContext);
         $component->setParams($params);
         $component->setData($data);
         // From the URI, as the router does: visit('/search?q=x') and a followed
@@ -270,11 +273,8 @@ class TestableComponent
             $component->publishPlaceholder();
 
             $component->mountComponent();
+            $this->announce(new ScreenMounted(get_class($component), $this->uri));
             $component->flushDispatchedEvents();
-
-            // A server screen that gave up left for this one, and the
-            // router fires its event once this screen is live.
-            static::announceServerScreenFailures();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
             // render, exactly like runLoop() honoring a pre-set intent.
@@ -328,9 +328,7 @@ class TestableComponent
         $this->startInteraction();
 
         // Same entry point the device runloop uses, so a template-callable
-        // method such as navigate() is callable from a test too, and a
-        // #[Server] method reaches the transport instead of dropping its
-        // closure (docs/ASGARD-SERVER-METHODS.md §2).
+        // method such as navigate() is callable from a test too.
         $this->guard(fn () => $this->component->__invokeInteraction($method, $args));
 
         return $this->afterInteraction();
@@ -598,18 +596,13 @@ class TestableComponent
 
     /**
      * Let time pass with no input, then take the turn the runloop takes
-     * when it wakes on its own: Asgard timers that are now due run out (a
-     * server screen with no body gives up, a server action or `#[Server]`
-     * call fails), failures a source reported are acted on, and the
-     * screen draws a frame.
+     * when it wakes on its own: runloop extensions tick (timers of theirs
+     * that are now due run out), and the screen draws a frame.
      *
-     *     $source->fail('screen', ServerRegion::NETWORK);
-     *     $screen->wait()->assertWentBack();
+     *     $screen->wait(16)->assertSee('Timed out');
      *
-     *     $screen->wait(16)->assertReplacedWith('/');
-     *
-     * Time moves on Carbon's clock (Carbon::setTestNow()), which is the one
-     * Asgard timers run on.
+     * Time moves on Carbon's clock (Carbon::setTestNow()), so an
+     * extension's timers should read it.
      */
     public function wait(float $seconds = 0): static
     {
@@ -621,17 +614,22 @@ class TestableComponent
 
         $this->guard(fn () => $this->scoped(function () {
             /** @var NativeComponent $this */
-            $this->expireServerDeadlines();
+            $this->tickExtensions();
         }));
 
         return $this->afterInteraction();
     }
 
-    /** Fire the events of server screens that gave up, as the router does. */
-    protected static function announceServerScreenFailures(): void
+    /**
+     * Fire a screen lifecycle event as the router does: best-effort, so a
+     * listener that throws does not take the screen down.
+     */
+    protected function announce(object $event): void
     {
-        foreach (ServerScreen::takeFailures() as $failure) {
-            ServerRegion::fire($failure);
+        try {
+            event($event);
+        } catch (\Throwable) {
+            //
         }
     }
 
@@ -763,12 +761,12 @@ class TestableComponent
         // re-fire it (NativeRouter::loop does exactly this).
         $this->component->resetNavigationIntent();
 
-        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, screen: $resolved['screen'] ?? null);
+        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, routeContext: $resolved['context'] ?? null);
 
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.
             $this->component->unmount();
-            ServerRegion::sync();
+            $this->announce(new ScreenUnmounted(get_class($this->component), $this->uri));
             $next->parent = $this->parent;
             $this->suspended = true;
         } else {
@@ -812,7 +810,7 @@ class TestableComponent
         );
 
         $this->component->unmount();
-        ServerRegion::sync();
+        $this->announce(new ScreenUnmounted(get_class($this->component), $this->uri));
         $this->suspended = true;
 
         $this->parent->resumeFromFlow();
@@ -847,8 +845,8 @@ class TestableComponent
 
         $this->guard(function () {
             $this->component->onResume();
+            $this->announce(new ScreenResumed(get_class($this->component), $this->uri));
             $this->component->flushDispatchedEvents();
-            static::announceServerScreenFailures();
             $this->takeTurns(render: true);
         });
 

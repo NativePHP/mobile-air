@@ -117,8 +117,8 @@ class CallbackRegistry
 
     /**
      * What a registered expression resolves to. A screen's registry reads
-     * `method('arg', ...)`; a fragment's registry overrides this to read
-     * its own encoding (Asgard\FragmentCallbacks).
+     * `method('arg', ...)`. A subclass that registers expressions in some
+     * other encoding overrides this to read them.
      */
     protected function parseExpression(string $expression): array
     {

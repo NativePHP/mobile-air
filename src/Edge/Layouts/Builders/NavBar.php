@@ -449,8 +449,7 @@ class NavBar
 
     /**
      * Add an action that is already an element, after the builder actions.
-     * For callers that wire the element's callbacks themselves, as Asgard's
-     * server chrome does.
+     * For callers that wire the element's callbacks themselves.
      */
     public function actionElement(TopBarAction $action): self
     {
