@@ -599,9 +599,7 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
-            ? new ($this->nativeLayout)()
-            : null;
+        $layout = $this->chromeLayout();
 
         // ── Inline chrome (screen blade) ──
         // Non-custom bars are hoisted out of the content tree so they
@@ -729,6 +727,18 @@ abstract class NativeComponent
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * The layout whose chrome wraps this screen: the route's layout class,
+     * or null for none. A screen that builds its chrome some other way
+     * (from data it loaded, say) overrides this.
+     */
+    protected function chromeLayout(): ?NativeLayout
+    {
+        return ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
+            : null;
     }
 
     /**
