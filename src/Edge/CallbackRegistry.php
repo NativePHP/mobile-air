@@ -188,6 +188,12 @@ class CallbackRegistry
      */
     public static function parse(string $expression): array
     {
+        $expression = trim($expression);
+
+        if (str_starts_with($expression, '$')) {
+            return self::parseAssignment($expression);
+        }
+
         if (! str_contains($expression, '(')) {
             return ['method' => $expression, 'args' => []];
         }
@@ -214,6 +220,65 @@ class CallbackRegistry
         }
 
         return ['method' => $method, 'args' => $args];
+    }
+
+    /** The method an assignment handler runs: `$prop = <literal>`. */
+    public const ASSIGN = '__assignProperty';
+
+    /** The method a toggle handler runs: `$prop = !$prop`. */
+    public const TOGGLE = '__toggleProperty';
+
+    /**
+     * Parse a handler that sets a property instead of calling a method:
+     *
+     *     $showSheet = true          → __assignProperty('showSheet', true)
+     *     $tab = 'settings'          → __assignProperty('tab', 'settings')
+     *     $count = 0                 → __assignProperty('count', 0)
+     *     $open = !$open             → __toggleProperty('open')
+     *
+     * The value must be a literal: true, false, null, a number or a quoted
+     * string. Nothing is evaluated. Anything else comes back with the
+     * expression itself as the method name, which no component has, so
+     * dispatch reports it.
+     */
+    private static function parseAssignment(string $expression): array
+    {
+        $invalid = ['method' => $expression, 'args' => []];
+
+        if (preg_match('/^\$([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.+)$/s', $expression, $m) !== 1) {
+            return $invalid;
+        }
+
+        [, $property, $value] = $m;
+        $value = trim($value);
+
+        if (preg_match('/^!\s*\$([A-Za-z_][A-Za-z0-9_]*)$/', $value, $toggle) === 1) {
+            return $toggle[1] === $property
+                ? ['method' => self::TOGGLE, 'args' => [$property]]
+                : $invalid;
+        }
+
+        $lower = strtolower($value);
+
+        if (in_array($lower, ['true', 'false', 'null'], true)) {
+            return ['method' => self::ASSIGN, 'args' => [$property, json_decode($lower)]];
+        }
+
+        if (is_numeric($value) && preg_match('/^-?(0|[1-9]\d*)(\.\d+)?$/', $value) === 1) {
+            return ['method' => self::ASSIGN, 'args' => [$property, json_decode($value)]];
+        }
+
+        $quote = $value[0] ?? '';
+
+        if (($quote === "'" || $quote === '"') && strlen($value) >= 2 && $value[-1] === $quote) {
+            $decoded = json_decode('['.self::toJsonArgs($value).']', true);
+
+            if (is_array($decoded) && count($decoded) === 1 && is_string($decoded[0])) {
+                return ['method' => self::ASSIGN, 'args' => [$property, $decoded[0]]];
+            }
+        }
+
+        return $invalid;
     }
 
     /**

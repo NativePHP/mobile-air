@@ -26,6 +26,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
@@ -4286,6 +4287,71 @@ abstract class NativeComponent
         ComponentState::set($this, $property, $value);
     }
 
+    /**
+     * Run a `$property = <literal>` handler (CallbackRegistry::parse()).
+     * The value was a literal in the view. It goes through the same state
+     * pipeline as a model sync, so #[Locked] and the updating/updated
+     * hooks apply. Extra arguments a UI event appends are ignored.
+     *
+     * @internal
+     */
+    public function __assignProperty(string $property, mixed $value = null): void
+    {
+        if ($this->handlerProperty($property)) {
+            ComponentState::set($this, $property, $value);
+        }
+    }
+
+    /**
+     * Run a `$property = !$property` handler (CallbackRegistry::parse()).
+     *
+     * @internal
+     */
+    public function __toggleProperty(string $property): void
+    {
+        if (! $this->handlerProperty($property)) {
+            return;
+        }
+
+        $current = $this->{$property} ?? null;
+
+        if (! is_bool($current)) {
+            $this->reportInvalidHandler(InvalidHandlerException::notBool($this, $property, $current));
+
+            return;
+        }
+
+        ComponentState::set($this, $property, ! $current);
+    }
+
+    /** Whether a handler may set this property. Reports it when not. */
+    private function handlerProperty(string $property): bool
+    {
+        $settable = property_exists($this, $property)
+            && ($reflection = new \ReflectionProperty($this, $property))->isPublic()
+            && ! $reflection->isStatic();
+
+        if (! $settable) {
+            $this->reportInvalidHandler(InvalidHandlerException::property($this, $property));
+        }
+
+        return $settable;
+    }
+
+    /**
+     * A handler that cannot run: thrown while debugging, so the error
+     * screen names it, and logged otherwise. Never silently dropped.
+     */
+    final protected function reportInvalidHandler(InvalidHandlerException $e): void
+    {
+        if (config('app.debug')) {
+            throw $e;
+        }
+
+        NativeRouter::debugLog($e->getMessage());
+        error_log('NativePHP: '.$e->getMessage());
+    }
+
     /** @internal State pipeline hook dispatch, scoped inside the component. */
     final public function __invokeStateHook(string $method, array $parameters): void
     {
@@ -4652,13 +4718,7 @@ abstract class NativeComponent
 
         $parent = $source->nativeParentComponent;
         if ($parent !== null && isset($source->nativeChildEventBindings[$event->name()])) {
-            $binding = CallbackRegistry::parse($source->nativeChildEventBindings[$event->name()]);
-
-            $this->invokeComponentEventAction(
-                $parent,
-                $binding['method'],
-                [...$binding['args'], ...$event->params()],
-            );
+            $this->invokeChildEventBinding($parent, $source->nativeChildEventBindings[$event->name()], $event->params());
         }
 
         for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
@@ -4697,15 +4757,7 @@ abstract class NativeComponent
         $parent = $this->nativeParentComponent;
 
         if ($parent !== null && isset($this->nativeChildEventBindings[$event])) {
-            $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
-
-            if (method_exists($parent, $binding['method'])) {
-                $this->invokeComponentEventAction(
-                    $parent,
-                    $binding['method'],
-                    [...$binding['args'], ...$args],
-                );
-            }
+            $this->invokeChildEventBinding($parent, $this->nativeChildEventBindings[$event], $args);
         }
 
         for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
@@ -4732,6 +4784,32 @@ abstract class NativeComponent
             // protected, and may legitimately be named updatedFoo().
             $this->invokeComponentEventAction($this, $method, $args, guarded: false);
         }
+    }
+
+    /**
+     * Run an `@event="..."` binding from a child's mounting tag on its
+     * parent: a method with the binding's arguments first and the event's
+     * after, or a property handler (`$open = false`), which takes none of
+     * the event's. A binding the parent cannot run is reported.
+     */
+    private function invokeChildEventBinding(NativeComponent $parent, string $expression, array $params): void
+    {
+        $binding = CallbackRegistry::parse($expression);
+        $method = $binding['method'];
+
+        if ($method === CallbackRegistry::ASSIGN || $method === CallbackRegistry::TOGGLE) {
+            $parent->{$method}(...$binding['args']);
+
+            return;
+        }
+
+        if (! method_exists($parent, $method)) {
+            $parent->reportInvalidHandler(InvalidHandlerException::unknown($parent, $method));
+
+            return;
+        }
+
+        $this->invokeComponentEventAction($parent, $method, [...$binding['args'], ...$params]);
     }
 
     private function invokeComponentEventAction(
@@ -4778,6 +4856,8 @@ abstract class NativeComponent
         $args = $callback['args'];
 
         if (! method_exists($this, $method)) {
+            $this->reportInvalidHandler(InvalidHandlerException::unknown($this, $method));
+
             return;
         }
 
@@ -4889,6 +4969,8 @@ abstract class NativeComponent
             '__overlayDismiss',
             '__overlaySetFontSize',
             '__syncProperty',
+            CallbackRegistry::ASSIGN,
+            CallbackRegistry::TOGGLE,
         ];
 
         // Direct template navigation remains supported for compatibility.
