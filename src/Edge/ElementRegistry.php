@@ -31,6 +31,14 @@ class ElementRegistry
         return new $class;
     }
 
+    /** Whether the element registered for this type closes on navigation. */
+    public static function closesOnNavigation(string $type): bool
+    {
+        $class = static::$elements[$type] ?? null;
+
+        return $class !== null && is_a($class, Element::class, true) && $class::closesOnNavigation();
+    }
+
     public static function all(): array
     {
         return static::$elements;

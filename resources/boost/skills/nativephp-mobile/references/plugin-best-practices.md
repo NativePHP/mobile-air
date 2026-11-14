@@ -71,6 +71,24 @@ Apps then write `@link="openMarkdownLink"`. The native renderer still sends the 
 
 Registered names are **global** at compile time (the same as `@change`). If a plugin registers `link`, `@link` on a nested child component is no longer `$this->emit('link')` — it becomes a first-class element handler. Pick spellings that will not collide with child-component emits.
 
+## UI component overlays
+
+A UI plugin element presented over the whole window (a sheet, a modal) and shown while its `visible` prop is true should close when its screen navigates away. Otherwise it covers the next screen, and its later dismiss callback can reach the wrong component. Return `true` from `closesOnNavigation()`:
+
+```php
+class Sheet extends Element
+{
+    protected string $type = 'vendor.sheet';
+
+    public static function closesOnNavigation(): bool
+    {
+        return true;
+    }
+}
+```
+
+`navigate()`, `back()` and `replace()` then publish the leaving screen's last frame with `visible` set to `false` on that element, including inside child components. The element's `type` must match the manifest `type`.
+
 ## v4 Compatibility
 
 - Require the SDK with a constraint that allows v4: `"nativephp/mobile": "^3.0|^4.0"`.

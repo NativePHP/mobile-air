@@ -18,6 +18,11 @@ class BottomSheet extends Element
         return new static;
     }
 
+    public static function closesOnNavigation(): bool
+    {
+        return true;
+    }
+
     public function applyAttributes(array $attrs): void
     {
         if (isset($attrs['visible'])) {

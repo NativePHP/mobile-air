@@ -143,6 +143,17 @@ abstract class Element
         return [];
     }
 
+    /**
+     * Whether this element is presented over the whole window (a sheet,
+     * a modal, …) and is shown while its `visible` prop is true. When its
+     * screen navigates away, the farewell frame sets `visible` to false
+     * on every such node. See NativeComponent::publishFinalState().
+     */
+    public static function closesOnNavigation(): bool
+    {
+        return false;
+    }
+
     // ── Tree building ─────────────────────────────────
 
     public function addChild(Element $child): static
