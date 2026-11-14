@@ -15,6 +15,11 @@ use Native\Mobile\Edge\NativeComponent;
  */
 class ChromeColumnLayout extends NativeLayout
 {
+    public function usesNativeChrome(): bool
+    {
+        return false;
+    }
+
     public function navBar(NativeComponent $screen): ?NavBar
     {
         return NavBar::make()->title($screen->navTitle());
