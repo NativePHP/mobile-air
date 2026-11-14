@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Enums\ActionSource;
@@ -580,6 +581,45 @@ class TestableComponent
         // and no Laravel listener ran. The harness leaves the
         // frame and its count as they were in that case.
         return $this->afterInteraction(render: ! $unheard);
+    }
+
+    /**
+     * Let time pass with no input, then take the turn the runloop takes
+     * when it wakes on its own: runloop extensions tick (timers of theirs
+     * that are now due run out), and the screen draws a frame.
+     *
+     *     $screen->wait(16)->assertSee('Timed out');
+     *
+     * Time moves on Carbon's clock (Carbon::setTestNow()), so an
+     * extension's timers should read it.
+     */
+    public function wait(float $seconds = 0): static
+    {
+        $this->startInteraction();
+
+        if ($seconds > 0) {
+            Carbon::setTestNow(Carbon::now()->addMilliseconds((int) round($seconds * 1000)));
+        }
+
+        $this->guard(fn () => $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $this->tickExtensions();
+        }));
+
+        return $this->afterInteraction();
+    }
+
+    /**
+     * Fire a screen lifecycle event as the router does: best-effort, so a
+     * listener that throws does not take the screen down.
+     */
+    protected function announce(object $event): void
+    {
+        try {
+            event($event);
+        } catch (\Throwable) {
+            //
+        }
     }
 
     /** Simulate the system back gesture / hardware back button. */
