@@ -139,6 +139,43 @@ it('drops the callback when the origin screen has been freed and its object id r
         ->and(AsyncTaskRegistry::scope($id))->toBeNull();
 });
 
+it('runs a child component\'s finished() callback against that child, not the screen', function () {
+    $screen = new AsyncScreenDouble;
+    $child = new AsyncScreenDouble;
+    (fn () => $this->nativeChildComponents = ['card' => $child])->call($screen);
+    setActiveComponent($screen);
+
+    $id = 'a2c';
+    AsyncTaskRegistry::register($id, $screen, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, (fn () => function ($result) {
+        $this->result = $result;
+    })->call($child));
+
+    $screen->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($child->result)->toBe('DONE')
+        ->and($screen->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
+it('drops a child component\'s callback once that child has left the screen', function () {
+    $screen = new AsyncScreenDouble;
+    $detached = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $id = 'a2d';
+    AsyncTaskRegistry::register($id, $screen, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, (fn () => function ($result) {
+        $this->result = $result;
+    })->call($detached));
+
+    $screen->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($detached->result)->toBeNull()
+        ->and($screen->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
 it('routes a failed() callback an AsyncTaskException with the original message', function () {
     $screen = new AsyncScreenDouble;
     setActiveComponent($screen);

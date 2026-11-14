@@ -2635,9 +2635,10 @@ abstract class NativeComponent
      *     screen is showing. No origin-screen check.
      *   - otherwise (scoped) → DROP if the screen that dispatched the task is no
      *     longer topmost (firing a component-bound callback against the wrong
-     *     live component is a footgun). Else run the finished()/failed() callback,
-     *     rebound to this live component, with the raw result / an
-     *     AsyncTaskException.
+     *     live component is a footgun). Else run the finished()/failed() callback
+     *     with the raw result / an AsyncTaskException: against the child
+     *     component that wrote it while that child is still mounted, otherwise
+     *     rebound to this live component.
      */
     private function handleAsyncCompletion(string $eventClass, array $payload): void
     {
@@ -2685,10 +2686,20 @@ abstract class NativeComponent
                 $callback = app($callback);
             }
 
-            // Bind the closure to this live component so finished()/failed() can
-            // mutate state via $this. Static closures run without $this.
-            if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
-                $callback = \Closure::bind($callback, $this, static::class);
+            // A closure written inside a child component keeps that child as
+            // $this, as long as the child is still mounted on this screen. A
+            // child that has since unmounted, or been replaced by a new
+            // instance under the same key, drops the result. Any other
+            // closure is bound to this screen so finished()/failed() can
+            // mutate its state. Static closures run without $this.
+            if ($callback instanceof \Closure && ! ($reflection = new \ReflectionFunction($callback))->isStatic()) {
+                $owner = $reflection->getClosureThis();
+
+                if (! $owner instanceof self) {
+                    $callback = \Closure::bind($callback, $this, static::class);
+                } elseif (! in_array($owner, iterator_to_array($this->componentTree(), false), true)) {
+                    return;
+                }
             }
 
             if ($failed) {
