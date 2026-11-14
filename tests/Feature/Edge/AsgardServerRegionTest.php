@@ -11,7 +11,7 @@ use Tests\Fixtures\Edge\ServerRegionScreen;
 
 /**
  * Blade `@server` → collector → element tree, for the region primitive
- * described in docs/ASGARD-PROTOCOL.md §3. No transport is involved:
+ * described in the Asgard protocol, §3. No transport is involved:
  * fragments arrive through `ServerRegion::applyFragment()`, which is the
  * seam a later workstream feeds from the network.
  */

@@ -539,7 +539,7 @@ class NativeServiceProvider extends PackageServiceProvider
             ?>";
         });
 
-        // Asgard regions (docs/ASGARD-PROTOCOL.md §3):
+        // Asgard regions (Asgard protocol §3):
         //
         //     @server('sales-summary')
         //         <x-skeleton-card />

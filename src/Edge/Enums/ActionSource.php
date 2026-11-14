@@ -55,7 +55,7 @@ enum ActionSource: string
 
     /**
      * A tap inside a server-rendered fragment whose callback targets the
-     * client (docs/ASGARD-PROTOCOL.md §10). A server chose the name, so on
+     * client (Asgard protocol §10). A server chose the name, so on
      * top of the guard the method must carry `#[NativeAction]` and take
      * only JSON-shaped parameters, and its arguments are passed as they
      * came, with no container injection or model / enum binding.

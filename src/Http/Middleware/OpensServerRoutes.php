@@ -11,7 +11,7 @@ use Native\Mobile\Http\NativeScreenEntry;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Opens a server route (docs/ASGARD-PROTOCOL.md §12, "Routes") that came in
+ * Opens a server route (Asgard protocol §12, "Routes") that came in
  * as a request.
  *
  * Server routes live only in NativeRouter, filled at boot from the cached

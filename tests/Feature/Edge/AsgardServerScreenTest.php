@@ -11,7 +11,7 @@ use Tests\Fixtures\Edge\AppPromoScreen;
 
 /**
  * Whole server screens, server routes and chrome
- * (docs/ASGARD-PROTOCOL.md §12): a server route opens the generic
+ * (Asgard protocol §12): a server route opens the generic
  * ServerScreen, whose body is the `screen` region and whose chrome comes
  * with each answer.
  */

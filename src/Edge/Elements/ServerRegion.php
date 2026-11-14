@@ -7,7 +7,7 @@ use Native\Mobile\Edge\Element;
 
 /**
  * The container a `@server('name') … @endserver` block opens — the
- * Asgard region primitive (docs/ASGARD-PROTOCOL.md §3).
+ * Asgard region primitive (Asgard protocol §3).
  *
  * It holds exactly one of two child sets, never both: the placeholder
  * the app ships with, or the fragment a server returned for this
@@ -30,7 +30,7 @@ use Native\Mobile\Edge\Element;
  * Neither renderer knows `server_region`, and neither needs to. The node
  * leaves PHP as a `column` (see wireType()) with no props of its own,
  * which both platforms already paint as a plain vertical container
- * (ASGARD-PROTOCOL.md §12 q5). Only its key travels, because that is
+ * (Asgard protocol §13 q5). Only its key travels, because that is
  * what puts fragment nodes under `/<region>/…`. Anything the author
  * passed through `@server('x', ['class' => '…'])` still applies, the
  * same as on any other column.

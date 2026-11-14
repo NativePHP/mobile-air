@@ -12,7 +12,7 @@ use Native\Mobile\Edge\NativeComponent;
 
 /**
  * The layout a ServerScreen wears: built from the chrome its server sent
- * (docs/ASGARD-PROTOCOL.md §12, "Chrome") rather than from a class in the
+ * (Asgard protocol §12, "Chrome") rather than from a class in the
  * app. It feeds the same NavBar and TabBar builders an app layout does,
  * so everything after this, native chrome or drawn, is the code every
  * other screen goes through.

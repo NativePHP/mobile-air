@@ -16,7 +16,7 @@ use Tests\Fixtures\Edge\FragmentSourceScreen;
 use Tests\Fixtures\Edge\ServerRegionScreen;
 
 /**
- * Asking for fragments (docs/ASGARD-PROTOCOL.md §3): a region that painted
+ * Asking for fragments (Asgard protocol §3): a region that painted
  * its placeholder asks the bound FragmentSource once, refresh asks again,
  * and a delivery lands on the component that rendered the region and
  * repaints the screen.

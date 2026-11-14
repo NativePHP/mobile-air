@@ -12,7 +12,7 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Asgard\ServerScreenFailed;
 
 /**
- * The screen every server route opens (docs/ASGARD-PROTOCOL.md §12,
+ * The screen every server route opens (Asgard protocol §12,
  * "Screens").
  *
  * One class stands in for every server screen. The router tells it which

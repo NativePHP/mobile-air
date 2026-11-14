@@ -8,7 +8,7 @@ use Native\Mobile\Edge\Asgard\ComponentAddress;
 
 /**
  * Names the address a component's server half is found under
- * (docs/ASGARD-PROTOCOL.md §4).
+ * (Asgard protocol §4).
  *
  *     #[ServerAddress('home')]
  *     class Home extends NativeComponent

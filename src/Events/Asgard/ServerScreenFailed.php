@@ -7,7 +7,7 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
  * A server screen gave up before its body arrived
- * (docs/ASGARD-PROTOCOL.md §12.1).
+ * (Asgard protocol §12.1).
  *
  * The app has already left the screen when this fires. It went back to the
  * screen below, or replaced itself with the app's `/` route when there was

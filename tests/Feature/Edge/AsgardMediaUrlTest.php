@@ -8,7 +8,7 @@ use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 
 /**
- * Media URLs in what a server sends (docs/ASGARD-PROTOCOL.md §9.6). A
+ * Media URLs in what a server sends (Asgard protocol §9.6). A
  * relative or root-relative src means an app asset or a device file in the
  * app's own views, so a fragment may only carry absolute https URLs.
  */

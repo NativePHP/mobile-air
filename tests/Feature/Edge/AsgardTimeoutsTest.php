@@ -21,7 +21,7 @@ use Tests\Fixtures\Edge\ServerMethodFailureScreen;
 
 /**
  * Timeouts and failures for server screens, server actions and #[Server]
- * methods (docs/ASGARD-PROTOCOL.md §10.2, §12.1). A server screen whose
+ * methods (Asgard protocol §10.2, §12.1). A server screen whose
  * body does not come gives up and leaves, and ServerScreenFailed fires on
  * the screen it lands on. A server action or #[Server] call that fails
  * fires ServerActionFailed on its own screen, and an @server region whose

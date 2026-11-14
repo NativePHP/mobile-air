@@ -7,7 +7,7 @@ use Native\Mobile\Edge\Asgard\RegionBatch;
 use Native\Mobile\Edge\Asgard\RegionRequest;
 
 /**
- * Where a region's fragment comes from (docs/ASGARD-PROTOCOL.md §3, §8).
+ * Where a region's fragment comes from (Asgard protocol §3, §8).
  *
  * The client asks once a region has painted its placeholder, and again
  * when a component calls refreshServerRegions() (from UsesServer).

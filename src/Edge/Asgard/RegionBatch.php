@@ -4,7 +4,7 @@ namespace Native\Mobile\Edge\Asgard;
 
 /**
  * Several regions of one component instance, asked for in one request
- * (docs/ASGARD-PROTOCOL.md §3.1). Handed to FragmentSource::batch().
+ * (Asgard protocol §3.1). Handed to FragmentSource::batch().
  *
  * Each region is still its own RegionRequest, with its own id, timer and
  * supersede rule. The batch only groups them on the wire: one body with

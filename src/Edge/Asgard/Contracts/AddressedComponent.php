@@ -8,7 +8,7 @@ namespace Native\Mobile\Edge\Asgard\Contracts;
  *
  * Asgard's ServerScreen is one: a single class shows every server screen,
  * so its address is the screen it was opened for, and its state is the
- * route's parameters and query (docs/ASGARD-PROTOCOL.md §12, "Screens").
+ * route's parameters and query (Asgard protocol §12, "Screens").
  */
 interface AddressedComponent
 {

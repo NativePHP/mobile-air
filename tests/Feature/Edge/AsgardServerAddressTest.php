@@ -13,7 +13,7 @@ use Tests\Fixtures\Edge\NamedRegionScreen;
 use Tests\Fixtures\Edge\NamedServerMethodScreen;
 
 /**
- * #[ServerAddress] (docs/ASGARD-PROTOCOL.md §4): a component can name the
+ * #[ServerAddress] (Asgard protocol §4): a component can name the
  * address its server half is found under, instead of its class name in
  * dot notation.
  */

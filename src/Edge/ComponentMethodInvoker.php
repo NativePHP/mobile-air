@@ -68,7 +68,7 @@ class ComponentMethodInvoker extends BoundMethod
 
     /**
      * Throw unless a server-rendered fragment may run this method with
-     * these arguments (docs/ASGARD-PROTOCOL.md §10): everything
+     * these arguments (Asgard protocol §10): everything
      * assertCallable() asks, plus a `#[NativeAction]` attribute on the
      * method, and parameters that take the arguments as they are.
      *

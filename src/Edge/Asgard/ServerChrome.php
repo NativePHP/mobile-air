@@ -3,7 +3,7 @@
 namespace Native\Mobile\Edge\Asgard;
 
 /**
- * The client's check of a server screen's chrome (docs/ASGARD-PROTOCOL.md
+ * The client's check of a server screen's chrome (Asgard protocol
  * §12, "Chrome").
  *
  * The server checks chrome before it sends it. The client checks it again

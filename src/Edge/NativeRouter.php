@@ -172,7 +172,7 @@ class NativeRouter
     protected static array $routes = [];
 
     /**
-     * Routes to server screens (docs/ASGARD-PROTOCOL.md §12, "Routes"), keyed
+     * Routes to server screens (Asgard protocol §12, "Routes"), keyed
      * by URI pattern. Each opens a generic Asgard\ServerScreen for the named
      * screen. Filled at runtime from the server's route list, so it changes
      * while the app runs. Matched only after every app route: a server route

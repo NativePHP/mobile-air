@@ -17,7 +17,7 @@ use Tests\Fixtures\Edge\FragmentActionChild;
 use Tests\Fixtures\Edge\FragmentActionScreen;
 
 /**
- * Taps inside a server-rendered fragment (docs/ASGARD-PROTOCOL.md §10).
+ * Taps inside a server-rendered fragment (Asgard protocol §10).
  * A callback slot is `{"call", "args", "target"}`. A client target runs a
  * #[NativeAction] method on the component that owns the region; a server
  * target sends an ActionRequest and runs nothing here.

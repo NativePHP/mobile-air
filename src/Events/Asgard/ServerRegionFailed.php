@@ -7,7 +7,7 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
  * A request for an `@server` region did not get an answer the client could
- * use (docs/ASGARD-PROTOCOL.md §3.1, §10.2).
+ * use (Asgard protocol §3.1, §10.2).
  *
  * It covers the first fetch, a refreshServerRegions() and a fetch a push
  * stream signal started. It fires on the screen the region is on (the

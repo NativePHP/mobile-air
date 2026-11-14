@@ -6,7 +6,7 @@ use Native\Mobile\Edge\Asgard\UploadRequest;
 
 /**
  * Whatever actually sends a file to an `#[Upload]` method
- * (docs/ASGARD-PROTOCOL.md §10.6).
+ * (Asgard protocol §10.6).
  *
  * The same deal as ServerTransport: start the request off the UI thread,
  * return the id its answer will carry, and hand the answer to

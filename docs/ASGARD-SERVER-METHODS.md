@@ -2,9 +2,9 @@
 
 **Status:** implemented. The device half is here, the HTTP transport is
 `HttpServerTransport` in `nativephp/midgard`, and the server half is the
-`call` endpoint in `nativephp/asgard`. Companion to `ASGARD-PROTOCOL.md`, which
-defines the transport, session, crypto and component addressing this reuses
-wholesale (§10.5 there has the wire).
+`call` endpoint in `nativephp/asgard`. Companion to
+the [Asgard protocol](https://github.com/NativePHP/asgard-protocol), which defines the transport,
+session, crypto and component addressing this reuses wholesale (§10.5 there has the wire).
 
 `@server` regions are declarative: a part of a screen renders on a server.
 `#[Server]` methods are the imperative counterpart: a method call goes to a

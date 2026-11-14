@@ -13,7 +13,7 @@ use Native\Mobile\Events\Asgard\ServerRegionFailed;
 use Native\Mobile\System;
 
 /**
- * The client half of an Asgard region (docs/ASGARD-PROTOCOL.md §3).
+ * The client half of an Asgard region (Asgard protocol §3).
  *
  * `@server('sales-summary') ... @endserver` compiles to open()/close()
  * around the placeholder body. open() emits the `server_region` node and

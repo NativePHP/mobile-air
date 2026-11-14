@@ -11,7 +11,7 @@ use Tests\Fixtures\Edge\ServerMethodScreen;
 
 /**
  * Batched region requests, regions an answer carries inline, and refresh
- * hints (docs/ASGARD-PROTOCOL.md §3.1, §10.2, §10.5).
+ * hints (Asgard protocol §3.1, §10.2, §10.5).
  *
  * RegionFailureScreen draws two regions, `stats` and `feed`.
  */

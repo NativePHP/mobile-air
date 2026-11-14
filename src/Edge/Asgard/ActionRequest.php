@@ -4,7 +4,7 @@ namespace Native\Mobile\Edge\Asgard;
 
 /**
  * A tap inside a region's fragment whose callback targets the server
- * (docs/ASGARD-PROTOCOL.md §10), handed to FragmentSource::action().
+ * (Asgard protocol §10), handed to FragmentSource::action().
  *
  * It is a RegionRequest for the same region, carrying the state the
  * component had when the tap landed, plus the callback's `call` and

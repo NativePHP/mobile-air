@@ -9,7 +9,7 @@ use Native\Mobile\Edge\NativeComponent;
 /**
  * Screen fixture with one Asgard region. The region has no transport
  * behind it, so unless a test applies a fragment it stays on its
- * placeholder — the degraded state ASGARD-PROTOCOL.md §3 calls the
+ * placeholder — the degraded state Asgard protocol §3 calls the
  * intended one — while the rest of the screen keeps working.
  */
 class ServerRegionScreen extends NativeComponent

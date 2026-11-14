@@ -6,7 +6,7 @@ use Native\Mobile\Edge\CallbackRegistry;
 
 /**
  * The callback registry a region's fragment registers into
- * (docs/ASGARD-PROTOCOL.md §9.2, §10).
+ * (Asgard protocol §9.2, §10).
  *
  * A fragment callback slot is an object on the wire:
  *

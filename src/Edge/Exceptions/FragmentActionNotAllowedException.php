@@ -7,7 +7,7 @@ use Native\Mobile\Edge\NativeComponent;
 
 /**
  * A server-rendered fragment named a client action it may not run
- * (docs/ASGARD-PROTOCOL.md §10).
+ * (Asgard protocol §10).
  */
 class FragmentActionNotAllowedException extends BadMethodCallException
 {

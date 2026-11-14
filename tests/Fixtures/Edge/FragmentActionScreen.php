@@ -10,7 +10,7 @@ use Native\Mobile\Edge\NativeComponent;
 
 /**
  * Screen fixture for taps inside a server-rendered fragment
- * (docs/ASGARD-PROTOCOL.md §10): two regions, a placeholder with its own
+ * (Asgard protocol §10): two regions, a placeholder with its own
  * callback, an optional child with a region of the same name, and
  * methods of every kind a fragment might try to name.
  */

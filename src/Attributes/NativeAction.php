@@ -16,7 +16,7 @@ use Attribute;
  * Client-side callbacks resolve through a bare `method_exists()` check,
  * which means any public method on the component. That is fine while the
  * only thing naming a method is the app's own Blade. It stops being fine
- * once the expression arrives from a server (docs/ASGARD-PROTOCOL.md
+ * once the expression arrives from a server (Asgard protocol
  * §10): the callable surface would be every public method the component
  * happens to have.
  *

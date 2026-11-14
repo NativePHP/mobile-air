@@ -7,7 +7,7 @@ use Native\Mobile\Attributes\ServerAddress;
 use ReflectionClass;
 
 /**
- * Dot-notation component addressing (docs/ASGARD-PROTOCOL.md §4).
+ * Dot-notation component addressing (Asgard protocol §4).
  *
  *     App\Native\Components\SalesSummary → app.native.components.sales_summary
  *

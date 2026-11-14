@@ -563,7 +563,8 @@ return [
     | Asgard
     |--------------------------------------------------------------------------
     |
-    | Server-rendered regions, screens and actions (docs/ASGARD-PROTOCOL.md).
+    | Server-rendered regions, screens and actions. The protocol is at
+    | https://github.com/NativePHP/asgard-protocol.
     |
     | screen_timeout: seconds a server screen waits for its body. When none
     | has arrived by then, the app goes back to the screen below, or to `/`

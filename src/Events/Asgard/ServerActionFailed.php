@@ -7,7 +7,7 @@ use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
  * A server action did not get an answer the client could use
- * (docs/ASGARD-PROTOCOL.md §10.2, docs/ASGARD-SERVER-METHODS.md §7).
+ * (Asgard protocol §10.2, docs/ASGARD-SERVER-METHODS.md §7).
  *
  * It covers a tap inside a fragment or on server chrome, a `#[Server]`
  * method call, and an upload from uploadToServer(). It fires on the screen the action was sent from (the

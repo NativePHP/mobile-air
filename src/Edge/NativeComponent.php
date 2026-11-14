@@ -273,7 +273,7 @@ abstract class NativeComponent
         $this->endChildComponentFrame();
 
         // Regions that painted a placeholder this frame ask for their
-        // fragment now, once per component (ASGARD-PROTOCOL.md §3).
+        // fragment now, once per component (Asgard protocol §3).
         Asgard\ServerRegion::requestMissing();
 
         return $element;
@@ -5256,7 +5256,7 @@ abstract class NativeComponent
         $owner = $this->findCallbackOwner($callbackId);
 
         // A tap on a server-rendered fragment resolves in that region's
-        // own registry (docs/ASGARD-PROTOCOL.md §9.2, §10). A fragment's
+        // own registry (Asgard protocol §9.2, §10). A fragment's
         // ids are derived from expressions a server wrote, so one could be
         // made to equal a screen callback's id, or another region's. An id
         // more than one scope claims is dropped rather than guessed at.
