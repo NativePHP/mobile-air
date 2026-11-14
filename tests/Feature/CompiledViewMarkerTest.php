@@ -62,6 +62,18 @@ it('recompiles a nested partial that a web render compiled first', function () {
     expect(file_get_contents($compiledPartial))->toContain(NativeTagPrecompiler::COMPILED_MARKER);
 });
 
+it('recompiles views a web render compiled between two native frames', function () {
+    $screen = Native::test(MarkerScreen::class)->assertSee('Partial content');
+
+    $compiledRoot = compileAsWeb('marker-screen');
+    $compiledPartial = compileAsWeb('marker-partial');
+
+    $screen->set('frame', 1)->assertSee('Root content')->assertSee('Partial content');
+
+    expect(file_get_contents($compiledRoot))->toContain(NativeTagPrecompiler::COMPILED_MARKER)
+        ->and(file_get_contents($compiledPartial))->toContain(NativeTagPrecompiler::COMPILED_MARKER);
+});
+
 it('leaves non-native compilation untouched', function () {
     $compiled = compileAsWeb('marker-screen');
 

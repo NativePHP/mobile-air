@@ -543,7 +543,7 @@ struct StackBarBackgroundModifier: ViewModifier {
 /// title-display-mode work). Pre-iOS-26 the subtitle is silently dropped
 /// in `.large`/`.automatic` modes — fall back to `displayMode('inline')`
 /// to keep the subtitle visible on older OSes.
-private struct NavigationSubtitleModifier: ViewModifier {
+struct NavigationSubtitleModifier: ViewModifier {
     let subtitle: String
     let showsAsPrincipal: Bool
 

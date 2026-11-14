@@ -40,6 +40,7 @@ class Text extends Element
             'line-height-px' => 'lineHeightPx',
             'text-align' => 'textAlign',
             'max-lines' => 'maxLines',
+            'min-scale' => 'minScale',
             'content-transition' => 'contentTransition',
         ] as $kebab => $camel) {
             if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
@@ -103,6 +104,9 @@ class Text extends Element
         }
         if (isset($attrs['maxLines'])) {
             $this->maxLines((int) $attrs['maxLines']);
+        }
+        if (isset($attrs['minScale'])) {
+            $this->minScale((float) $attrs['minScale']);
         }
         if (isset($attrs['contentTransition'])) {
             $this->contentTransition((string) $attrs['contentTransition']);
@@ -184,6 +188,21 @@ class Text extends Element
     public function maxLines(int $lines): static
     {
         $this->textProps['max_lines'] = $lines;
+
+        return $this;
+    }
+
+    /**
+     * Let text that is too wide for its lines shrink, down to this share of
+     * its font size, before it truncates. Pair it with `maxLines(1)` to keep
+     * a value like a big number on one line at large system text sizes: iOS
+     * maps it to `minimumScaleFactor`, Android to auto-size (plain text only;
+     * text with inline runs keeps its size there). Clamped to 0–1; 1, the
+     * default, never shrinks.
+     */
+    public function minScale(float $scale): static
+    {
+        $this->textProps['min_scale'] = max(0.0, min(1.0, $scale));
 
         return $this;
     }

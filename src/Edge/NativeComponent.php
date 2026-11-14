@@ -15,6 +15,7 @@ use Native\Mobile\AsyncTask;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Attributes\Lazy;
 use Native\Mobile\Attributes\Locked;
+use Native\Mobile\Attributes\Memo;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
@@ -30,6 +31,7 @@ use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
 use Native\Mobile\Edge\Exceptions\FragmentActionNotAllowedException;
+use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
@@ -1512,6 +1514,7 @@ abstract class NativeComponent
         // must run under the flag; everything outside stays plain HTML. Restore
         // the previous state so nested native renders unwind cleanly.
         $wasActive = NativeTagPrecompiler::setActive(true);
+        NativeTagPrecompiler::beginRender();
 
         try {
             $compiledPath = $compiler->getCompiledPath($bladePath);
@@ -1521,8 +1524,13 @@ abstract class NativeComponent
             // `view:cache` got there first), which would include as plain
             // HTML and collect zero elements. Nested @includes get the
             // same guard via the view creator in NativeServiceProvider.
-            if ($compiler->isExpired($bladePath)
-                || ! NativeTagPrecompiler::compiledFileIsNative($compiledPath)) {
+            // Once per view per frame: a list of child components renders the
+            // same view once per row, and each check stats the file twice and
+            // reads its head. A view edited (or hot reloaded) is still picked
+            // up on the next frame.
+            if (! NativeTagPrecompiler::onceThisFrame('current:'.$compiledPath)
+                && ($compiler->isExpired($bladePath)
+                    || ! NativeTagPrecompiler::compiledFileIsNative($compiledPath))) {
                 $compiler->compile($bladePath);
             }
 
@@ -1570,6 +1578,7 @@ abstract class NativeComponent
             $factory->decrementRender();
             $factory->flushStateIfDoneRendering();
         } finally {
+            NativeTagPrecompiler::endRender();
             NativeTagPrecompiler::setActive($wasActive);
             TailwindParser::endViewDiagnostics();
         }
@@ -1615,16 +1624,37 @@ abstract class NativeComponent
 
     private function getPublicProperties(): array
     {
-        $reflect = new \ReflectionClass($this);
         $props = [];
 
-        foreach ($reflect->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
-            if (! $prop->isStatic()) {
-                $props[$prop->getName()] = $prop->getValue($this);
-            }
+        foreach (self::publicPropertiesOf(static::class) as $name => $prop) {
+            $props[$name] = $this->{$name};
         }
 
         return $props;
+    }
+
+    /**
+     * A component class's public instance properties, reflected once per class.
+     * They're read on every render (view data and, for a #[Memo] child, its
+     * fingerprint), once per child in a list.
+     *
+     * @param  class-string<NativeComponent>  $class
+     * @return array<string, \ReflectionProperty>
+     */
+    private static function publicPropertiesOf(string $class): array
+    {
+        if (isset(self::$nativePublicProperties[$class])) {
+            return self::$nativePublicProperties[$class];
+        }
+
+        $props = [];
+        foreach ((new \ReflectionClass($class))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
+            if (! $prop->isStatic()) {
+                $props[$prop->getName()] = $prop;
+            }
+        }
+
+        return self::$nativePublicProperties[$class] = $props;
     }
 
     // ── Computed properties (#[Computed]) ────────────
@@ -3747,7 +3777,7 @@ abstract class NativeComponent
 
     // ── Navigation methods ──────────────────────────
 
-    public function navigate(string $uri, array $data = []): static
+    public function navigate(string $uri, array $data = [], Transition|string|null $transition = null): static
     {
         if ($this->openedExternally($uri)) {
             return $this;
@@ -3757,24 +3787,24 @@ abstract class NativeComponent
         // the screen so the intent lands where the runloop reads it (and
         // publishFinalState renders the full screen, not the child alone).
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->navigate($uri, $data);
+            $this->rootScreen()->navigate($uri, $data, $transition);
 
             return $this;
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, static::appPath($uri), $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, static::appPath($uri), $data, $transition);
         $this->publishFinalState();
         $this->stop();
 
         return $this;
     }
 
-    public function back(): static
+    public function back(Transition|string|null $transition = null): static
     {
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->back();
+            $this->rootScreen()->back($transition);
 
             return $this;
         }
@@ -3795,7 +3825,7 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK, transition: $transition);
 
         // The farewell frame keeps a PHP-initiated pop looking fresh while
         // the native side animates it. Answering a SYSTEM back is the
@@ -3813,7 +3843,7 @@ abstract class NativeComponent
         return $this;
     }
 
-    public function replace(string $uri, array $data = []): static
+    public function replace(string $uri, array $data = [], Transition|string|null $transition = null): static
     {
         if ($this->openedExternally($uri)) {
             return $this;
@@ -3821,13 +3851,13 @@ abstract class NativeComponent
 
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->replace($uri, $data);
+            $this->rootScreen()->replace($uri, $data, $transition);
 
             return $this;
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data, $transition);
         $this->publishFinalState();
         $this->stop();
 
@@ -3874,14 +3904,18 @@ abstract class NativeComponent
 
     /**
      * Close every bottom sheet and modal in the farewell frame, child
-     * components' too. Both are presented over the whole window, so one
-     * still open would cover the next screen until its first frame
-     * arrives. The frame is a full emit (no REUSE markers), so each of
-     * them is in it with all of its props.
+     * components' too, along with any plugin element whose class opts in
+     * through Element::closesOnNavigation(). All are presented over the
+     * whole window, so one still open would cover the next screen until
+     * its first frame arrives. The frame is a full emit (no REUSE
+     * markers), so each of them is in it with all of its props.
+     *
+     * `bottom_sheet` and `modal` are listed by type because the UI plugin
+     * that registers them may not declare closesOnNavigation().
      */
     private static function closeSheetsAndModals(array $node): array
     {
-        if (in_array($node['type'], ['bottom_sheet', 'modal'], true)) {
+        if (in_array($node['type'], ['bottom_sheet', 'modal'], true) || ElementRegistry::closesOnNavigation($node['type'])) {
             $node['props']['visible'] = false;
         }
 
@@ -4438,6 +4472,71 @@ abstract class NativeComponent
         ComponentState::set($this, $property, $value);
     }
 
+    /**
+     * Run a `$property = <literal>` handler (CallbackRegistry::parse()).
+     * The value was a literal in the view. It goes through the same state
+     * pipeline as a model sync, so #[Locked] and the updating/updated
+     * hooks apply. Extra arguments a UI event appends are ignored.
+     *
+     * @internal
+     */
+    public function __assignProperty(string $property, mixed $value = null): void
+    {
+        if ($this->handlerProperty($property)) {
+            ComponentState::set($this, $property, $value);
+        }
+    }
+
+    /**
+     * Run a `$property = !$property` handler (CallbackRegistry::parse()).
+     *
+     * @internal
+     */
+    public function __toggleProperty(string $property): void
+    {
+        if (! $this->handlerProperty($property)) {
+            return;
+        }
+
+        $current = $this->{$property} ?? null;
+
+        if (! is_bool($current)) {
+            $this->reportInvalidHandler(InvalidHandlerException::notBool($this, $property, $current));
+
+            return;
+        }
+
+        ComponentState::set($this, $property, ! $current);
+    }
+
+    /** Whether a handler may set this property. Reports it when not. */
+    private function handlerProperty(string $property): bool
+    {
+        $settable = property_exists($this, $property)
+            && ($reflection = new \ReflectionProperty($this, $property))->isPublic()
+            && ! $reflection->isStatic();
+
+        if (! $settable) {
+            $this->reportInvalidHandler(InvalidHandlerException::property($this, $property));
+        }
+
+        return $settable;
+    }
+
+    /**
+     * A handler that cannot run: thrown while debugging, so the error
+     * screen names it, and logged otherwise. Never silently dropped.
+     */
+    final protected function reportInvalidHandler(InvalidHandlerException $e): void
+    {
+        if (config('app.debug')) {
+            throw $e;
+        }
+
+        NativeRouter::debugLog($e->getMessage());
+        error_log('NativePHP: '.$e->getMessage());
+    }
+
     /** @internal State pipeline hook dispatch, scoped inside the component. */
     final public function __invokeStateHook(string $method, array $parameters): void
     {
@@ -4482,6 +4581,33 @@ abstract class NativeComponent
      * @var array<string, string>
      */
     protected array $nativeChildEventBindings = [];
+
+    /**
+     * #[Memo]: what this child rendered from at its last render (memoState()),
+     * or null when it must render (never rendered, or state not comparable).
+     *
+     * @var array{0: array<string, mixed>, 1: array<string, string>, 2: array<string, mixed>, 3: int}|null
+     */
+    private ?array $nativeMemoState = null;
+
+    /** #[Memo]: that state serialised, kept only when it holds an object that could change in place. */
+    private ?string $nativeMemoSerialized = null;
+
+    /**
+     * #[Memo]: the top-level elements this child built at its last render.
+     *
+     * @var list<Element>|null
+     */
+    private ?array $nativeMemoRoots = null;
+
+    /** @var array<class-string, bool> Which component classes carry #[Memo] */
+    private static array $nativeMemoClasses = [];
+
+    /** @var array<class-string, array<string, \ReflectionProperty>> */
+    private static array $nativePublicProperties = [];
+
+    /** @var array<class-string, array<string, \ReflectionProperty|null>> */
+    private static array $nativeChildPropMatches = [];
 
     /**
      * Start a render frame's child bookkeeping: occurrence counters restart
@@ -4586,7 +4712,134 @@ abstract class NativeComponent
             $child->mountComponent();
         }
 
-        $child->renderAsChild();
+        $this->renderChild($child, $isNew);
+    }
+
+    /**
+     * Render a mounted child in place, or for a #[Memo] child whose props and
+     * state are what they were at its last render, put back the elements it
+     * built then. Skipping the render skips its Blade view, its element
+     * building and its nested children; the elements re-attached are the same
+     * instances, so toArray() emits the same nodes, ids and callbacks.
+     */
+    private function renderChild(NativeComponent $child, bool $isNew): void
+    {
+        if (! $child->rendersMemoized() || NativeElementCollector::isStreaming()) {
+            $child->renderAsChild();
+
+            return;
+        }
+
+        if (! $isNew && $child->nativeMemoRoots !== null && $child->memoUnchanged()) {
+            foreach ($child->nativeMemoRoots as $root) {
+                NativeElementCollector::attachElement($root);
+            }
+
+            return;
+        }
+
+        $roots = NativeElementCollector::captureRoots(fn () => $child->renderAsChild());
+
+        foreach ($roots as $root) {
+            NativeElementCollector::attachElement($root->markReusedAsBuilt());
+        }
+
+        // Taken after the render, so state the render itself settles counts
+        // as the baseline for the next frame.
+        $child->nativeMemoRoots = $roots;
+        $child->rememberMemoState();
+    }
+
+    /** Whether this component's class opts in to #[Memo]. */
+    private function rendersMemoized(): bool
+    {
+        return self::$nativeMemoClasses[static::class] ??= (new \ReflectionClass($this))->getAttributes(Memo::class) !== [];
+    }
+
+    /**
+     * What this component renders from: its public properties (its props and
+     * its own state), its @event bindings, the same for every nested child, and
+     * the force-full-frame epoch (a region reset or hot reload drops every memo).
+     *
+     * @return array{0: array<string, mixed>, 1: array<string, string>, 2: array<string, mixed>, 3: int}
+     */
+    private function memoState(): array
+    {
+        $children = [];
+        foreach ($this->nativeChildComponents as $identity => $child) {
+            $children[$identity] = $child->memoState();
+        }
+
+        return [
+            $this->getPublicProperties(),
+            $this->nativeChildEventBindings,
+            $children,
+            nativephp_force_full_frame_epoch(),
+        ];
+    }
+
+    /**
+     * Record what this #[Memo] child rendered from, to compare the next frame
+     * against. Arrays and scalars compare with ===. State holding an object (an
+     * enum aside) compares as a serialised copy instead, which catches an object
+     * changed in place and matches an equal fresh instance. State that can't be
+     * serialised (a closure, a resource) isn't recorded, so the child renders
+     * every frame.
+     */
+    private function rememberMemoState(): void
+    {
+        $state = $this->memoState();
+        $this->nativeMemoState = $state;
+        $this->nativeMemoSerialized = null;
+
+        if (! self::holdsMutableObject($state)) {
+            return;
+        }
+
+        try {
+            $this->nativeMemoSerialized = serialize($state);
+        } catch (\Throwable) {
+            $this->nativeMemoState = null;
+        }
+    }
+
+    /** Whether this #[Memo] child's state is what it was at its last render. */
+    private function memoUnchanged(): bool
+    {
+        if ($this->nativeMemoState === null) {
+            return false;
+        }
+
+        $state = $this->memoState();
+
+        // Plain values compare as they are. State holding objects compares by
+        // value instead: `===` would miss an object mutated in place, and
+        // would re-render a child handed an equal but fresh instance each frame.
+        if ($this->nativeMemoSerialized === null) {
+            return $state === $this->nativeMemoState;
+        }
+
+        try {
+            return serialize($state) === $this->nativeMemoSerialized;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /** @param  array<array-key, mixed>  $values */
+    private static function holdsMutableObject(array $values): bool
+    {
+        foreach ($values as $value) {
+            if (is_array($value)) {
+                if (self::holdsMutableObject($value)) {
+                    return true;
+                }
+            } elseif (is_object($value) && ! $value instanceof \UnitEnum) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -4631,15 +4884,13 @@ abstract class NativeComponent
      */
     private function applyChildProps(NativeComponent $child, array $attrs): void
     {
-        $reflect = new \ReflectionClass($child);
-
         foreach ($attrs as $attrName => $value) {
             // Collector-internal leftovers are never props.
             if (str_starts_with($attrName, 'native-') || str_starts_with($attrName, '_')) {
                 continue;
             }
 
-            $property = $this->matchChildProp($reflect, $attrName);
+            $property = self::matchChildProp($child::class, (string) $attrName);
 
             if ($property === null) {
                 continue;
@@ -4660,19 +4911,29 @@ abstract class NativeComponent
         }
     }
 
-    /** Resolve an attribute name to the child's public prop, if declared. */
-    private function matchChildProp(\ReflectionClass $reflect, string $attrName): ?\ReflectionProperty
+    /**
+     * Resolve an attribute name to the child's public prop, if declared. Cached
+     * per class and attribute: every child tag in a list resolves the same
+     * attributes on every frame.
+     *
+     * @param  class-string<NativeComponent>  $class
+     */
+    private static function matchChildProp(string $class, string $attrName): ?\ReflectionProperty
     {
+        if (array_key_exists($attrName, self::$nativeChildPropMatches[$class] ?? [])) {
+            return self::$nativeChildPropMatches[$class][$attrName];
+        }
+
+        $props = self::publicPropertiesOf($class);
+        $match = null;
         foreach (array_unique([$attrName, Str::camel($attrName)]) as $candidate) {
-            if ($reflect->hasProperty($candidate)) {
-                $property = $reflect->getProperty($candidate);
-                if ($property->isPublic() && ! $property->isStatic()) {
-                    return $property;
-                }
+            if (isset($props[$candidate])) {
+                $match = $props[$candidate];
+                break;
             }
         }
 
-        return null;
+        return self::$nativeChildPropMatches[$class][$attrName] = $match;
     }
 
     /**
@@ -4804,13 +5065,7 @@ abstract class NativeComponent
 
         $parent = $source->nativeParentComponent;
         if ($parent !== null && isset($source->nativeChildEventBindings[$event->name()])) {
-            $binding = CallbackRegistry::parse($source->nativeChildEventBindings[$event->name()]);
-
-            $parent->runAction(
-                $binding['method'],
-                [...$binding['args'], ...$event->params()],
-                ActionSource::ParentBinding,
-            );
+            $this->invokeChildEventBinding($parent, $source->nativeChildEventBindings[$event->name()], $event->params());
         }
 
         for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
@@ -4849,15 +5104,7 @@ abstract class NativeComponent
         $parent = $this->nativeParentComponent;
 
         if ($parent !== null && isset($this->nativeChildEventBindings[$event])) {
-            $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
-
-            if (method_exists($parent, $binding['method'])) {
-                $parent->runAction(
-                    $binding['method'],
-                    [...$binding['args'], ...$args],
-                    ActionSource::ParentBinding,
-                );
-            }
+            $this->invokeChildEventBinding($parent, $this->nativeChildEventBindings[$event], $args);
         }
 
         for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
@@ -4884,6 +5131,32 @@ abstract class NativeComponent
             // legitimately be named updatedFoo().
             $this->runAction($method, $args, ActionSource::ComponentEvent);
         }
+    }
+
+    /**
+     * Run an `@event="..."` binding from a child's mounting tag on its
+     * parent: a method with the binding's arguments first and the event's
+     * after, or a property handler (`$open = false`), which takes none of
+     * the event's. A binding the parent cannot run is reported.
+     */
+    private function invokeChildEventBinding(NativeComponent $parent, string $expression, array $params): void
+    {
+        $binding = CallbackRegistry::parse($expression);
+        $method = $binding['method'];
+
+        if ($method === CallbackRegistry::ASSIGN || $method === CallbackRegistry::TOGGLE) {
+            $parent->{$method}(...$binding['args']);
+
+            return;
+        }
+
+        if (! method_exists($parent, $method)) {
+            $parent->reportInvalidHandler(InvalidHandlerException::unknown($parent, $method));
+
+            return;
+        }
+
+        $parent->runAction($method, [...$binding['args'], ...$params], ActionSource::ParentBinding);
     }
 
     // ── Action invocation ───────────────────────────
@@ -5022,6 +5295,8 @@ abstract class NativeComponent
         $args = $callback['args'];
 
         if (! method_exists($this, $method)) {
+            $this->reportInvalidHandler(InvalidHandlerException::unknown($this, $method));
+
             return;
         }
 
@@ -5255,6 +5530,8 @@ abstract class NativeComponent
             '__overlayDismiss',
             '__overlaySetFontSize',
             '__syncProperty',
+            CallbackRegistry::ASSIGN,
+            CallbackRegistry::TOGGLE,
         ];
 
         // Direct template navigation remains supported for compatibility.
