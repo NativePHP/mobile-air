@@ -169,6 +169,12 @@ final class PerTabNavigationCoordinator: ObservableObject {
         guard target > 0 else {
             // Below/at root depth with a non-root URI — treat as a root
             // swap within the tab (replace at root); clear pushed levels.
+            // The root level must show the swapped-in screen, or it keeps
+            // the tab URL's tree — empty when the app launched straight
+            // into a sub-route such as `/components/icon-button`.
+            if rootLevelUri != uri {
+                rootLevelUri = uri
+            }
             if !path.isEmpty {
                 path = []
             }
