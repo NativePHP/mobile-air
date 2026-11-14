@@ -3591,7 +3591,7 @@ abstract class NativeComponent
 
     // ── Navigation methods ──────────────────────────
 
-    public function navigate(string $uri, array $data = []): static
+    public function navigate(string $uri, array $data = [], Transition|string|null $transition = null): static
     {
         if ($this->openedExternally($uri)) {
             return $this;
@@ -3601,24 +3601,24 @@ abstract class NativeComponent
         // the screen so the intent lands where the runloop reads it (and
         // publishFinalState renders the full screen, not the child alone).
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->navigate($uri, $data);
+            $this->rootScreen()->navigate($uri, $data, $transition);
 
             return $this;
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, static::appPath($uri), $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, static::appPath($uri), $data, $transition);
         $this->publishFinalState();
         $this->stop();
 
         return $this;
     }
 
-    public function back(): static
+    public function back(Transition|string|null $transition = null): static
     {
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->back();
+            $this->rootScreen()->back($transition);
 
             return $this;
         }
@@ -3639,7 +3639,7 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK, transition: $transition);
 
         // The farewell frame keeps a PHP-initiated pop looking fresh while
         // the native side animates it. Answering a SYSTEM back is the
@@ -3657,7 +3657,7 @@ abstract class NativeComponent
         return $this;
     }
 
-    public function replace(string $uri, array $data = []): static
+    public function replace(string $uri, array $data = [], Transition|string|null $transition = null): static
     {
         if ($this->openedExternally($uri)) {
             return $this;
@@ -3665,13 +3665,13 @@ abstract class NativeComponent
 
         // Screen-level concern — see navigate().
         if ($this->nativeParentComponent !== null) {
-            $this->rootScreen()->replace($uri, $data);
+            $this->rootScreen()->replace($uri, $data, $transition);
 
             return $this;
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data);
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, static::appPath($uri), $data, $transition);
         $this->publishFinalState();
         $this->stop();
 
