@@ -572,6 +572,7 @@ private struct PerTabContent: View {
                 .modifier(TabsToolbarModifier(
                     showBack: fallbackShowBack && isRoot,
                     title: fallbackTitle,
+                    subtitle: "",
                     titleNode: nil,
                     actions: [],
                     textArgb: fallbackTextArgb,
@@ -585,6 +586,7 @@ private struct PerTabContent: View {
     @ViewBuilder
     private func renderLevel(_ root: NativeUINode, isRoot: Bool) -> some View {
         let title = root.props.getString("nav_title", default: fallbackTitle)
+        let subtitle = root.props.getString("nav_subtitle", default: "")
         // Per-screen explicit hide signal (PHP-side `$hidesTabBar` /
         // `tabBarOptions()->hidden()`). Unions with the `!isRoot`
         // path-depth signal in `HideTabBarOnPushModifier` so either can
@@ -658,9 +660,17 @@ private struct PerTabContent: View {
             // blanking it renders those entries as empty glass pills.
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(titleDisplayMode)
+            // Large and automatic bars take the subtitle from the system
+            // (iOS 26+); inline bars stack it under the title in the
+            // `.principal` slot, as the stack renderer does.
+            .modifier(NavigationSubtitleModifier(
+                subtitle: subtitle,
+                showsAsPrincipal: titleDisplayMode == .inline
+            ))
             .modifier(TabsToolbarModifier(
                 showBack: manualBack,
                 title: title,
+                subtitle: subtitle,
                 titleNode: titleNode,
                 actions: actions,
                 textArgb: textArgb,
@@ -734,6 +744,7 @@ private struct PerTabContent: View {
 private struct TabsToolbarModifier: ViewModifier {
     let showBack: Bool
     let title: String
+    let subtitle: String
     let titleNode: NativeUINode?
     let actions: [NativeUINode]
     let textArgb: Int
@@ -779,6 +790,20 @@ private struct TabsToolbarModifier: ViewModifier {
                             ForEach(titleNode.children) { child in
                                 NodeView(node: child).equatable()
                             }
+                        }
+                    }
+                } else if inline && !subtitle.isEmpty {
+                    // The system inline title has no subtitle line, so draw
+                    // both in the principal slot, matching the stack
+                    // renderer's inline title.
+                    ToolbarItem(placement: .principal) {
+                        VStack(spacing: 0) {
+                            Text(title)
+                                .font(.headline)
+                                .foregroundColor(textColor)
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundColor(textColor.opacity(0.7))
                         }
                     }
                 }
