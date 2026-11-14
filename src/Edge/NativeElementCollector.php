@@ -254,6 +254,19 @@ class NativeElementCollector
      */
     public static function capture(\Closure $render): Element
     {
+        return static::wrapRoots(static::captureRoots($render));
+    }
+
+    /**
+     * capture(), handing back the top-level elements the closure built as
+     * they are, rather than wrapped in one root. Attaching them in order
+     * (attachElement()) puts the same tree in place as rendering there
+     * would: how a #[Memo] child keeps what it built to reuse next frame.
+     *
+     * @return list<Element>
+     */
+    public static function captureRoots(\Closure $render): array
+    {
         $saved = [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack];
         static::$stack = [];
         static::$roots = [];
@@ -262,12 +275,11 @@ class NativeElementCollector
 
         try {
             $render();
-            $roots = static::$roots;
+
+            return array_values(static::$roots);
         } finally {
             [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack] = $saved;
         }
-
-        return static::wrapRoots($roots);
     }
 
     /**

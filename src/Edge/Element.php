@@ -97,6 +97,23 @@ abstract class Element
      */
     protected ?CallbackRegistry $ownedCallbacks = null;
 
+    /**
+     * A #[Memo] child's root, reused as built while the child's state is
+     * unchanged: nothing under it changes, so toArray() keeps what its last
+     * walk of the subtree produced (see lastWalk) and can answer a frame that
+     * puts it back in the same place with a REUSE marker without walking it.
+     */
+    private bool $reusedAsBuilt = false;
+
+    /**
+     * What toArray() last produced for this subtree, when reusedAsBuilt: where it
+     * was walked (registry, next positional id, key path, index), the root's id
+     * and content hash, every id the walk emitted, and the next positional id after it.
+     *
+     * @var array{at: string, id: int, hash: string, ids: array<int, true>, nextId: int}|null
+     */
+    private ?array $lastWalk = null;
+
     public function markCustomChrome(bool $custom = true): static
     {
         $this->customChrome = $custom;
@@ -116,6 +133,19 @@ abstract class Element
     public function ownCallbacks(CallbackRegistry $callbacks): static
     {
         $this->ownedCallbacks = $callbacks;
+
+        return $this;
+    }
+
+    /**
+     * Mark this element as a #[Memo] child's root, reused as built while the
+     * child doesn't re-render. Its subtree must not change after this.
+     *
+     * @internal NativeComponent marks the roots a #[Memo] child keeps.
+     */
+    public function markReusedAsBuilt(): static
+    {
+        $this->reusedAsBuilt = true;
 
         return $this;
     }
@@ -925,6 +955,65 @@ abstract class Element
         int $indexInParent = 0,
         array &$emittedIds = [],
         array &$lastNodeHashes = []
+    ): array {
+        if (! $this->reusedAsBuilt) {
+            return $this->walk($registry, $nextId, $parentKeyPath, $indexInParent, $emittedIds, $lastNodeHashes);
+        }
+
+        // A #[Memo] child's root, unchanged since it was built. Put back in
+        // the same place (same registry, positional id, key path and index),
+        // its walk gives the same ids and hashes as last time; when the native
+        // side still holds that subtree (its hash is what we recorded for it
+        // last frame) and none of its ids is taken, answer with the REUSE
+        // marker the walk would end in, without walking it.
+        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F{$nextId}\x1F{$parentKeyPath}\x1F{$indexInParent}";
+        $last = $this->lastWalk;
+
+        if ($last !== null
+            && $last['at'] === $at
+            && ($lastNodeHashes[$last['id']] ?? null) === $last['hash']
+            && array_intersect_key($last['ids'], $emittedIds) === []) {
+            $emittedIds += $last['ids'];
+            $nextId = $last['nextId'];
+
+            return [
+                'id' => $last['id'],
+                'type' => $this->type,
+                'flags' => 1, // NPHP_NODE_FLAG_REUSE
+                '_hash' => $last['hash'],
+            ];
+        }
+
+        $emittedBefore = count($emittedIds);
+        $node = $this->walk($registry, $nextId, $parentKeyPath, $indexInParent, $emittedIds, $lastNodeHashes);
+
+        $this->lastWalk = [
+            'at' => $at,
+            'id' => $node['id'],
+            'hash' => $node['_hash'],
+            'ids' => array_slice($emittedIds, $emittedBefore, null, true),
+            'nextId' => $nextId,
+        ];
+
+        return $node;
+    }
+
+    /**
+     * Serialize this element and its subtree for the native side: ids, fields,
+     * callbacks, and a Merkle content hash per node that subtree-memo uses to
+     * send REUSE markers for what the native side already has.
+     *
+     * @param  array<int, true>  $emittedIds
+     * @param  array<int, string>  $lastNodeHashes
+     * @return array<string, mixed>
+     */
+    private function walk(
+        CallbackRegistry $registry,
+        int &$nextId,
+        string $parentKeyPath,
+        int $indexInParent,
+        array &$emittedIds,
+        array &$lastNodeHashes
     ): array {
         // An element collected inside a child component's render scope
         // carries that child's registry — its callbacks must register

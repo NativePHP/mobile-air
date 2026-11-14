@@ -360,7 +360,7 @@ class NativeServiceProvider extends PackageServiceProvider
 
             $compiler = $this->app['blade.compiler'];
 
-            if (! NativeTagPrecompiler::compiledFileIsNative($compiler->getCompiledPath($path))) {
+            if (! NativeTagPrecompiler::compiledFileIsNativeThisFrame($compiler->getCompiledPath($path))) {
                 $compiler->compile($path);
             }
         });
