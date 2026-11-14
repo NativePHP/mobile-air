@@ -4825,7 +4825,7 @@ abstract class NativeComponent
             $parts = explode(',', $event['text'] ?? '', 2);
             $x = (float) ($parts[0] ?? 0);
             $y = (float) ($parts[1] ?? 0);
-            $this->$method(...[...$args, $x, $y]);
+            $this->invokeUiInteraction($method, [...$args, $x, $y]);
 
             return;
         }
