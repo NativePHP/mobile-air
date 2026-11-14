@@ -3,6 +3,7 @@
 namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
+use Native\Mobile\Attributes\NativeAction;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Edge\Enums\ActionSource;
@@ -125,6 +126,19 @@ class ActionPipelineScreen extends NativeComponent
     public function onChildSaid(string $word): void
     {
         $this->ran[] = 'onChildSaid:'.$word;
+    }
+
+    /** An action something outside the app may call. */
+    #[NativeAction]
+    public function pick(string $colour, int $times): void
+    {
+        $this->ran[] = "pick:{$colour}:{$times}";
+    }
+
+    /** Public, so a template may call it, but not marked #[NativeAction]. */
+    public function unmarked(): void
+    {
+        $this->ran[] = 'unmarked';
     }
 
     public function markSaved(string $bound, string $word): void

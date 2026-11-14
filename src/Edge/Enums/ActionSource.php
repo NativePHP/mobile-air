@@ -54,6 +54,15 @@ enum ActionSource: string
     case DragEnd = 'drag_end';
 
     /**
+     * A call whose method name and arguments were chosen outside the app,
+     * for example by a server. On top of the callable guard the method must
+     * carry `#[NativeAction]` and take only plain-value parameters, and its
+     * arguments are passed as they came, with no container injection or
+     * model / enum binding. See ComponentMethodInvoker::assertRemoteCallable().
+     */
+    case Remote = 'remote';
+
+    /**
      * Whether the method name must pass ComponentMethodInvoker's callable
      * guard: public, not static, not a lifecycle hook, not declared on
      * NativeComponent itself.
@@ -80,11 +89,21 @@ enum ActionSource: string
             self::VirtualWindow,
             self::TextSelection,
             self::DragEnd,
+            self::Remote,
             self::ParentBinding,
             self::NativeEvent => true,
 
             self::Poll,
             self::ComponentEvent => false,
         };
+    }
+
+    /**
+     * Whether the name and arguments came from outside the app, so the
+     * method must also pass ComponentMethodInvoker::assertRemoteCallable().
+     */
+    public function isRemote(): bool
+    {
+        return $this === self::Remote;
     }
 }

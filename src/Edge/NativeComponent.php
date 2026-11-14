@@ -27,8 +27,8 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
-use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Enums\ActionSource;
+use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
 use Native\Mobile\Edge\Layouts\Builders\NavBarOptions;
@@ -5023,7 +5023,10 @@ abstract class NativeComponent
      * template or the device chose has already been held to
      * {@see ComponentMethodInvoker::assertCallable()}. A name the developer
      * chose by writing an attribute (#[Poll], a component #[On]) skips the
-     * guard, so those methods may be protected.
+     * guard, so those methods may be protected. A name and arguments chosen
+     * outside the app ({@see ActionSource::Remote}) are also held to
+     * {@see ComponentMethodInvoker::assertRemoteCallable()} here, for the
+     * same reason.
      *
      * Private on purpose, so nothing can override it. It is called on other
      * instances too (`emit()` runs it on the parent), which private allows
@@ -5053,6 +5056,10 @@ abstract class NativeComponent
             ComponentMethodInvoker::assertCallable($this, $method);
         }
 
+        if ($source->isRemote()) {
+            ComponentMethodInvoker::assertRemoteCallable($this, $method, $args);
+        }
+
         return $this->callAction($method, $args, $source);
     }
 
@@ -5068,12 +5075,18 @@ abstract class NativeComponent
      *
      * @param  string  $method  Method to call. It exists, and is callable for this source.
      * @param  array  $args  Arguments, resolved with container injection and
-     *                       implicit model / enum binding.
+     *                       implicit model / enum binding. Not for
+     *                       {@see ActionSource::Remote}: something outside
+     *                       the app chose those, so they are passed as they are.
      * @param  ActionSource  $source  What triggered the call.
      * @return mixed The return value. {@see ActionSource::SearchQuery} depends on it.
      */
     protected function callAction(string $method, array $args, ActionSource $source): mixed
     {
+        if ($source->isRemote()) {
+            return (new \ReflectionMethod($this, $method))->invokeArgs($this, array_values($args));
+        }
+
         return ComponentMethodInvoker::invokeLifecycle($this, $method, $args);
     }
 
@@ -5214,12 +5227,20 @@ abstract class NativeComponent
     /**
      * @internal The single interaction entry point shared by the device
      *           runloop and the test harness, so both accept the same methods.
+     *           Pass {@see ActionSource::Remote} for a call whose name and
+     *           arguments came from outside the app.
      */
     public function __invokeInteraction(
         string $method,
         array $parameters,
         ActionSource $source = ActionSource::Interaction,
     ): mixed {
+        // A remote call goes straight to the chokepoint: something outside
+        // the app chose the name, so none of the shortcuts below apply.
+        if ($source->isRemote()) {
+            return $this->runAction($method, $parameters, $source);
+        }
+
         $internalCallbacks = [
             '__navigate',
             '__overlayBack',
