@@ -148,7 +148,8 @@ struct NativePHPApp: App {
 
         // 7. OTA check/download lives in the mobile-ota plugin. Core only
         // applies pending zips from Documents/updates on boot (ensureAppExists
-        // → applyPendingUpdates). Do not re-enable a Bifrost client here.
+        // → applyPendingUpdates), and only when that plugin is installed
+        // (NATIVEPHP_OTA). Do not re-enable a Bifrost client here.
 
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render

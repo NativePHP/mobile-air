@@ -1,6 +1,10 @@
 import SwiftUI
 import UIKit
 
+// Debug builds only. A "leave this demo app" gesture in a release build is
+// the kind of thing App Review reads as an app that loads other apps.
+#if DEBUG
+
 /// Global three-finger swipe-right recognizer, attached to the key window so it
 /// fires over ANY content — the local native-ui tree, the WebView, or a remote
 /// app rendered through Jump. On fire it posts `JumpEscapeHatch`; the Jump
@@ -60,3 +64,5 @@ struct EscapeHatchGesture: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     }
 }
+
+#endif

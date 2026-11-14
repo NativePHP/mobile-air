@@ -3,6 +3,7 @@ package com.nativephp.mobile.bridge
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import com.nativephp.mobile.bridge.plugins.PluginFeatures
 import com.nativephp.mobile.security.AppKeyStore
 import java.io.File
 import java.io.FileOutputStream
@@ -485,6 +486,12 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun applyPendingUpdatesUnlocked(): Boolean {
+        // Only the mobile-ota plugin queues payloads. Without it this path is
+        // switched off, and a stray pending.zip is never run as the app.
+        if (!PluginFeatures.OTA) {
+            return false
+        }
+
         // DEBUG is the native:run payload. Always extract it (extractLaravelBundleUnlocked)
         // and do not apply a leftover pending OTA on top — otherwise developers
         // never see the PHP they just shipped. Versioned builds still apply pending.

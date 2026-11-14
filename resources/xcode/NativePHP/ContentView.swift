@@ -122,10 +122,12 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
+        #if DEBUG
         // Global 3-finger swipe-right escape hatch (attaches a recognizer to the
         // key window). Fires `JumpEscapeHatch`; the Jump client exits any
-        // connected demo app back to the Jump home.
+        // connected demo app back to the Jump home. Debug builds only.
         .background(EscapeHatchGesture())
+        #endif
         // Push a native AppearanceChanged event to PHP when the system theme
         // flips (Control Center toggle, sunset auto-switch). Drives the
         // reactive `System::appearance()` / `#[On(AppearanceChanged)]` path.
