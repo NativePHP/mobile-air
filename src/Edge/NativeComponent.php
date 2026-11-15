@@ -2230,7 +2230,7 @@ abstract class NativeComponent
                 $bound = ($closure instanceof \Closure && ! (new \ReflectionFunction($closure))->isStatic())
                     ? \Closure::bind($closure, $this, static::class)
                     : $closure;
-                $bound($eventObject);
+                $this->__runHandler(fn () => $bound($eventObject));
             }
         }
 
@@ -2618,7 +2618,7 @@ abstract class NativeComponent
         }
 
         try {
-            call_user_func($callback, $this->makeEventInstance($eventClass, $payload));
+            $this->__runHandler(fn () => call_user_func($callback, $this->makeEventInstance($eventClass, $payload)));
         } finally {
             // One outcome per capture — drop success/cancel/denied siblings too.
             NativeCallbacks::forget($id, $eventClass);
@@ -2995,7 +2995,7 @@ abstract class NativeComponent
         $this->nativeAnsweringSystemBack = true;
 
         try {
-            $this->onBackPressed();
+            $this->__runHandler(fn () => $this->onBackPressed());
         } finally {
             $this->nativeAnsweringSystemBack = false;
         }
@@ -4990,7 +4990,7 @@ abstract class NativeComponent
         $method = $binding['method'];
 
         if ($method === CallbackRegistry::ASSIGN || $method === CallbackRegistry::TOGGLE) {
-            $parent->{$method}(...$binding['args']);
+            $parent->__runHandler(fn () => $parent->{$method}(...$binding['args']));
 
             return;
         }
@@ -5028,6 +5028,10 @@ abstract class NativeComponent
      * {@see ComponentMethodInvoker::assertRemoteCallable()} here, for the
      * same reason.
      *
+     * callAction() runs inside {@see __runHandler()}, again here rather than
+     * in the hook, so ValidatesInput sees every action whether or not an
+     * override of callAction() calls parent.
+     *
      * Private on purpose, so nothing can override it. It is called on other
      * instances too (`emit()` runs it on the parent), which private allows
      * because it is declared on this class.
@@ -5060,7 +5064,7 @@ abstract class NativeComponent
             ComponentMethodInvoker::assertRemoteCallable($this, $method, $args);
         }
 
-        return $this->callAction($method, $args, $source);
+        return $this->__runHandler(fn () => $this->callAction($method, $args, $source));
     }
 
     /**
@@ -5263,9 +5267,23 @@ abstract class NativeComponent
         ];
 
         if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
-            return $this->{$method}(...$parameters);
+            return $this->__runHandler(fn () => $this->{$method}(...$parameters));
         }
 
         return $this->runAction($method, $parameters, $source);
+    }
+
+    /**
+     * @internal Run one handler of this component: every action that
+     *           {@see runAction()} invokes, plus the handlers that don't go
+     *           through it (a native:model sync and the other framework
+     *           callbacks, an `->on()` closure listener, a fluent native
+     *           callback, a parent's assign/toggle binding and a system
+     *           back). ValidatesInput keeps a ValidationException in this
+     *           component's bag here, whichever component triggered it.
+     */
+    public function __runHandler(\Closure $handler): mixed
+    {
+        return $handler();
     }
 }
