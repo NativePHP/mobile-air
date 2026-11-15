@@ -270,6 +270,13 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     }
 
     Scaffold(
+        // A persistent background layer (map behind the app) needs the
+        // content canvas transparent; otherwise keep the themed surface.
+        containerColor = if (LocalBackgroundLayerPresent.current) {
+            Color.Transparent
+        } else {
+            MaterialTheme.colorScheme.background
+        },
         topBar = topBar@{
           if (hideNavBar) return@topBar
           // iOS renders `searchBar()` BELOW the navigation title. Mirror that:
