@@ -333,9 +333,9 @@ it('guards every source a template or the device names, and only those', functio
     ]);
 });
 
-// ── Names chosen outside the app need #[NativeAction] ─
+// ── Names chosen outside the app need #[ClientAction] ─
 
-it('refuses a remote call to a public method without #[NativeAction]', function () {
+it('refuses a remote call to a public method without #[ClientAction]', function () {
     $screen = Native::test(ActionPipelineScreen::class);
 
     expect(fn () => callRemote($screen, 'unmarked'))
@@ -347,7 +347,7 @@ it('refuses a remote call to a public method without #[NativeAction]', function 
     expect($screen->instance()->ran)->toBe(['unmarked']);
 });
 
-it('keeps the #[NativeAction] rule when a callAction() override never calls parent', function () {
+it('keeps the #[ClientAction] rule when a callAction() override never calls parent', function () {
     $screen = Native::test(ActionPipelineScreen::class);
     $screen->instance()->bypassParent = true;
 
