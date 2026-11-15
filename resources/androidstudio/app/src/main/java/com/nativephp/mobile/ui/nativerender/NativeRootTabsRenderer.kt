@@ -419,7 +419,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             MaterialTheme.colorScheme.background
         },
         topBar = {
-            if (hasNavBar && !hideNavBar && !isOnSearchTab) {
+            if (hasNavBar && !hideNavBar && !isOnSearchTab) Box(Modifier.hiddenWhileA11yModal(titleNode)) {
                 val searchField: @Composable (Modifier) -> Unit = { fieldModifier ->
                     InlineNavSearchField(
                         placeholder = searchPlaceholder,
@@ -525,6 +525,8 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             // or `tabBarOptions()->hidden()`.
             if (hideTabBar || hiddenForPush) return@bottomBar
 
+            // Each part is hidden on its own while a modal is shown, so an
+            // accessory that holds the modal stays reachable and the tabs don't.
             Column {
                 // Persistent accessory pinned above the NavigationBar
                 // (Apple Music / Spotify / YouTube Music MiniPlayer
@@ -536,7 +538,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
                         tonalElevation = 3.dp,
                         shadowElevation = 4.dp,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().hiddenWhileA11yModal(accessory),
                     ) {
                         NodeView(node = acc)
                     }
@@ -549,7 +551,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     fontFamily = chromeFontFamily,
                 )
 
-                if (customPresenter != null && presentationConfiguration != null) {
+                if (customPresenter != null && presentationConfiguration != null) Column(Modifier.hiddenWhileA11yModal(null)) {
                     customPresenter(
                         NativeTabPresentationContext(
                             tabs = tabDescriptors,
@@ -563,6 +565,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         ),
                     )
                 } else NavigationBar(
+                    modifier = Modifier.hiddenWhileA11yModal(null),
                     containerColor = if (bgArgb != 0)
                         argbToComposeColor(bgArgb)
                     else
