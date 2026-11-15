@@ -124,6 +124,69 @@ final class NativeElementBridge {
     /// SwiftUI re-renders the entire tree mid-animation = visible jitter.
     private static var nativeChromePrevTrees: [String: NativeUITree] = [:]
 
+    /// One parsed frame, ready for the main thread.
+    struct Settled {
+        let finalTree: NativeUITree
+        let nativeChromeContinuation: Bool
+        let isFreshStackMount: Bool
+    }
+
+    /// The newest parsed frame the main thread hasn't taken yet, and whether
+    /// any frame it stands in for was a navigation.
+    struct MainFrame {
+        let settled: Settled
+        let isNav: Bool
+    }
+
+    /// Lock protecting mainSlot.
+    private static var mainSlotLock = os_unfair_lock()
+
+    /// Holds at most one frame for the main thread. The shadow thread
+    /// overwrites it and only schedules a main-queue block when it was empty,
+    /// so a busy main thread takes the newest tree once instead of working
+    /// through every tree posted while it was busy.
+    private static var mainSlot: MainFrame?
+
+    /// Put a frame in the main slot. Returns true when the slot was empty,
+    /// so the caller has to schedule a block to take it. A frame it replaces
+    /// passes on its navigation flag and fresh-stack flag, since the main
+    /// thread still has to treat the newer frame as that navigation.
+    static func offerToMain(_ settled: Settled, isNav: Bool) -> Bool {
+        os_unfair_lock_lock(&mainSlotLock)
+        defer { os_unfair_lock_unlock(&mainSlotLock) }
+
+        guard let waiting = mainSlot else {
+            mainSlot = MainFrame(settled: settled, isNav: isNav)
+            return true
+        }
+
+        mainSlot = MainFrame(
+            settled: Settled(
+                finalTree: settled.finalTree,
+                nativeChromeContinuation: settled.nativeChromeContinuation,
+                isFreshStackMount: settled.isFreshStackMount || waiting.settled.isFreshStackMount
+            ),
+            isNav: isNav || waiting.isNav
+        )
+        return false
+    }
+
+    /// Take the frame waiting for the main thread, if any.
+    static func takeForMain() -> MainFrame? {
+        os_unfair_lock_lock(&mainSlotLock)
+        defer { os_unfair_lock_unlock(&mainSlotLock) }
+
+        let frame = mainSlot
+        mainSlot = nil
+        return frame
+    }
+
+    private static func clearMainSlot() {
+        os_unfair_lock_lock(&mainSlotLock)
+        mainSlot = nil
+        os_unfair_lock_unlock(&mainSlotLock)
+    }
+
     // MARK: - Shadow Thread with Frame Coalescing
     // PHP thread queues each frame and signals the shadow thread. The shadow
     // thread parses every queued frame, in order, and hands only the newest
@@ -369,13 +432,6 @@ final class NativeElementBridge {
     /// the next frame's REUSE markers find what they name, then posts only
     /// the newest to the main thread (coalescing the SwiftUI work).
     private static func shadowThreadLoop() {
-        /// One parsed frame, ready for the main thread.
-        struct Settled {
-            let finalTree: NativeUITree
-            let nativeChromeContinuation: Bool
-            let isFreshStackMount: Bool
-        }
-
         func runPass() {
             // Take every queued frame
             os_unfair_lock_lock(&pendingLock)
@@ -500,11 +556,24 @@ final class NativeElementBridge {
         }
 
         func post(_ settled: Settled, isNav: Bool) {
+            // A block is already on its way to take the slot. It will take
+            // this frame instead of the one it was scheduled for.
+            guard offerToMain(settled, isNav: isNav) else { return }
+
+            DispatchQueue.main.async {
+                guard let frame = takeForMain() else { return }
+                apply(frame.settled, isNav: frame.isNav)
+            }
+        }
+
+        /// Show a parsed frame. Runs on the main thread.
+        @MainActor
+        func apply(_ settled: Settled, isNav: Bool) {
             let finalTree = settled.finalTree
             let nativeChromeContinuation = settled.nativeChromeContinuation
             let isFreshStackMount = settled.isFreshStackMount
 
-            DispatchQueue.main.async {
+            do {
                 // T2 checkpoint — tree is now on the main thread about
                 // to drive SwiftUI. The next CADisplayLink tick is T3.
                 InteractionTracker.shared.onTreePostedToMain()
@@ -1086,6 +1155,12 @@ final class NativeElementBridge {
     /// one all the way down, so a positional id that now names a different
     /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
+        // A REUSE marker hands back the previous tree's own node, so there
+        // is nothing under it to compare.
+        if old === new {
+            return old
+        }
+
         guard old.id == new.id, old.type == new.type else {
             return new
         }
@@ -1141,6 +1216,7 @@ final class NativeElementBridge {
         os_unfair_lock_lock(&pendingLock)
         pendingUpdates.clear()
         os_unfair_lock_unlock(&pendingLock)
+        clearMainSlot()
         // Format-version check lives in postTreeUpdateFromRegion() — it covers
         // every publish path, not just startWatching().
     }
@@ -1164,6 +1240,7 @@ final class NativeElementBridge {
         os_unfair_lock_lock(&pendingLock)
         pendingUpdates.clear()
         os_unfair_lock_unlock(&pendingLock)
+        clearMainSlot()
 
         // Phase 0 — re-verify wire format on next region registration.
         // A hot-reload cycle can swap libphp.a out from under us.
