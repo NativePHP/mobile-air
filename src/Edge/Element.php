@@ -1092,7 +1092,14 @@ abstract class Element
         // reacts to. If a future per-field mutation test ever fails to
         // repaint, the missing field is here (§3 Phase 2 pitfalls:
         // "Hash the right things").
+        //
+        // The id is in it too, so a parent's hash covers the ids of its
+        // whole subtree. Without it, a row whose key changes but whose
+        // content doesn't leaves its parent's hash as it was, the parent
+        // goes out as REUSE, and the phone keeps the row under its old id
+        // while PHP records the new one.
         $contentHash = hash('xxh3', serialize([
+            $id,
             $this->type,
             $layout,
             $style,

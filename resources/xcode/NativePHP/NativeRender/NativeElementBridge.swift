@@ -124,10 +124,10 @@ final class NativeElementBridge {
     /// SwiftUI re-renders the entire tree mid-animation = visible jitter.
     private static var nativeChromePrevTrees: [String: NativeUITree] = [:]
 
-    // MARK: - Shadow Thread with Frame Coalescing
-    // Mirrors Android's AtomicReference<ShadowUpdate> + LockSupport pattern.
-    // PHP thread sets pendingUpdate and signals the shadow thread.
-    // Shadow thread grabs the latest update atomically — intermediate frames are dropped.
+    // MARK: - Shadow Thread
+    // Mirrors Android's PendingFrames + LockSupport pattern.
+    // PHP thread queues each frame and signals the shadow thread.
+    // Shadow thread parses every frame, in the order PHP published them.
 
     /// Snapshot of raw buffer data passed from PHP thread to shadow thread.
     private struct ShadowUpdate {
@@ -136,14 +136,38 @@ final class NativeElementBridge {
         let typeTable: [String]
         let nodeCount: Int
         let isNav: Bool
+        /// The buffers are read in place from the producer's A/B ring.
+        let zeroCopy: Bool
+
+        /// This frame with its buffers copied out of the producer's, if they're read in place.
+        func detached() -> ShadowUpdate {
+            guard zeroCopy else { return self }
+            return ShadowUpdate(
+                flatData: Data([UInt8](flatData)), propData: propData.map { Data([UInt8]($0)) },
+                typeTable: typeTable, nodeCount: nodeCount, isNav: isNav, zeroCopy: false
+            )
+        }
     }
 
-    /// Lock protecting pendingUpdate (os_unfair_lock is ~25ns, lighter than pthread_mutex)
-    private static var pendingLock = os_unfair_lock()
+    /// Frames that can wait before the reader gives up on them. Parsing is
+    /// much cheaper than building a frame in PHP, so this is only reached
+    /// when the shadow thread is starved. Dropped frames break the REUSE
+    /// chain, so a full frame is asked for then.
+    private static let maxPendingFrames = 8
 
-    /// Latest pending update — set by PHP thread, consumed by shadow thread.
-    /// Overwrites any unconsumed update (frame coalescing).
-    private static var pendingUpdate: ShadowUpdate?
+    /// Frames waiting to be parsed, oldest first. See PendingFrames.
+    private static let pendingFrames = PendingFrames<ShadowUpdate>(capacity: maxPendingFrames) { $0.detached() }
+
+    /// Set when a frame couldn't be built from the previous tree, or frames
+    /// were dropped: the screen keeps the last tree that was built, and
+    /// frames with REUSE markers are rejected until PHP sends one without,
+    /// which it does when it gets `EventType.fullFrame`. Shadow thread only.
+    private static var awaitingFullFrame = false
+
+    /// A REUSE marker named a node the previous tree doesn't have.
+    private struct MissingReuse: Error {
+        let id: Int
+    }
 
     /// Shadow thread condvar + mutex for sleeping/waking
     private static var shadowMutex = pthread_mutex_t()
@@ -265,7 +289,7 @@ final class NativeElementBridge {
     // MARK: - Tree Update (called from PHP thread via C bridge)
 
     /// Called from C bridge after nativephp_element_publish().
-    /// Heap-copies buffers, sets pending update (coalescing any stale frame),
+    /// Heap-copies buffers, queues the frame behind any not yet parsed,
     /// and wakes the shadow thread. Returns immediately to unblock PHP.
     static func postTreeUpdate(
         flatPtr: UnsafeRawPointer, flatSize: Int,
@@ -315,13 +339,10 @@ final class NativeElementBridge {
 
         let update = ShadowUpdate(
             flatData: flatData, propData: propData,
-            typeTable: typeTable, nodeCount: nodeCount, isNav: isNav
+            typeTable: typeTable, nodeCount: nodeCount, isNav: isNav, zeroCopy: zeroCopy
         )
 
-        // Atomically set pending update — overwrites any unconsumed frame (coalescing)
-        os_unfair_lock_lock(&pendingLock)
-        pendingUpdate = update
-        os_unfair_lock_unlock(&pendingLock)
+        pendingFrames.add(update)
 
         // Ensure shadow thread is running (self-healing)
         ensureShadowThread()
@@ -359,28 +380,25 @@ final class NativeElementBridge {
     }
 
     /// Shadow thread main loop. Sleeps on condvar, wakes when postTreeUpdate
-    /// signals. Grabs the latest pending update atomically (coalescing — any
-    /// intermediate frames are dropped). Parses tree, diffs, posts to main thread.
+    /// signals. Takes every frame in the order PHP published it. Parses tree,
+    /// diffs, posts to main thread.
     private static func shadowThreadLoop() {
         func runPass() {
-            // Grab latest pending update (atomic swap to nil)
-            os_unfair_lock_lock(&pendingLock)
-            let update = pendingUpdate
-            pendingUpdate = nil
-            os_unfair_lock_unlock(&pendingLock)
-
-            guard let update else {
+            guard let taken = pendingFrames.take() else {
                 // No work — sleep until signaled
                 pthread_mutex_lock(&shadowMutex)
                 // Double-check after acquiring mutex to avoid missed wake
-                os_unfair_lock_lock(&pendingLock)
-                let hasWork = pendingUpdate != nil
-                os_unfair_lock_unlock(&pendingLock)
-                if !hasWork && shadowRunning {
+                if pendingFrames.isEmpty && shadowRunning {
                     pthread_cond_wait(&shadowCond, &shadowMutex)
                 }
                 pthread_mutex_unlock(&shadowMutex)
                 return
+            }
+
+            let (update, droppedBefore) = taken
+
+            if droppedBefore && !awaitingFullFrame {
+                requestFullFrame("the shadow thread fell \(maxPendingFrames) frames behind and dropped them")
             }
 
             // Mark "tree update arrived from PHP" — this is the T1
@@ -389,13 +407,25 @@ final class NativeElementBridge {
             // includes PHP processing + wire only, not native parse.
             InteractionTracker.shared.onTreeUpdateReceived()
 
-            // Parse tree from flat buffer
-            guard let tree = readTreeFromFlatBuffer(
-                update.flatData, propData: update.propData,
-                typeTable: update.typeTable, nodeCount: update.nodeCount
-            ) else {
+            // Parse tree from flat buffer. While a full frame is awaited, a
+            // REUSE marker has nothing to splice.
+            let parsed: NativeUITree?
+            do {
+                parsed = try readTreeFromFlatBuffer(
+                    update.flatData, propData: update.propData,
+                    typeTable: update.typeTable, nodeCount: update.nodeCount,
+                    prevIndex: awaitingFullFrame ? [:] : buildIdNodeIndex(previousTree)
+                )
+            } catch {
+                if !awaitingFullFrame, let missing = error as? MissingReuse {
+                    requestFullFrame("REUSE marker for id=\(missing.id), which the previous tree doesn't have")
+                }
                 return
             }
+            guard let tree = parsed else {
+                return
+            }
+            awaitingFullFrame = false
 
             // Determine whether this is a continuation within native chrome
             // (same root sentinel type as the previous publish). Used both
@@ -593,6 +623,14 @@ final class NativeElementBridge {
         return found
     }
 
+    /// Reject frames with REUSE markers until one without arrives, and ask
+    /// PHP to send one. The screen keeps the last tree that was built.
+    private static func requestFullFrame(_ reason: String) {
+        print("NativeElementBridge: rejecting frames until a full one arrives: \(reason)")
+        awaitingFullFrame = true
+        nativeElementWriteEvent(Int32(EventType.fullFrame), 0, 0, nil, 0)
+    }
+
     // MARK: - Event Sending
 
     /// Write event to PHP shared memory event ring buffer.
@@ -769,7 +807,14 @@ final class NativeElementBridge {
 
     // MARK: - Flat Buffer Tree Reader
 
-    private static func readTreeFromFlatBuffer(_ flatData: Data, propData: Data?, typeTable: [String], nodeCount: Int) -> NativeUITree? {
+    /// Build the tree in a frame. `prevIndex` is the previous tree by id, for
+    /// REUSE markers to splice from.
+    ///
+    /// Throws `MissingReuse` when a REUSE marker names an id `prevIndex`
+    /// doesn't have. The frame can't be read past it: its subtree isn't in
+    /// the buffer, so what follows would be read as children of the wrong
+    /// parent.
+    private static func readTreeFromFlatBuffer(_ flatData: Data, propData: Data?, typeTable: [String], nodeCount: Int, prevIndex: [Int: NativeUINode]) throws -> NativeUITree? {
         guard nodeCount > 0 else { return nil }
 
         let perNode = flatData.count / nodeCount
@@ -781,12 +826,8 @@ final class NativeElementBridge {
 
         guard flatData.count >= nodeCount * stride else { return nil }
 
-        // Phase 2 — flatten the previous tree into an id → node map so
-        // REUSE markers in this frame splice prior subtrees in O(1).
-        let prevIndex = buildIdNodeIndex(previousTree)
-
         var offset = 0
-        guard let root = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else {
+        guard let root = try readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else {
             return nil
         }
         return NativeUITree(version: 0, callbackCount: 0, root: root)
@@ -806,7 +847,7 @@ final class NativeElementBridge {
         return out
     }
 
-    private static func readNodeDFS(_ flatData: Data, propData: Data?, typeTable: [String], stride: Int, offset: inout Int, prevIndex: [Int: NativeUINode]) -> NativeUINode? {
+    private static func readNodeDFS(_ flatData: Data, propData: Data?, typeTable: [String], stride: Int, offset: inout Int, prevIndex: [Int: NativeUINode]) throws -> NativeUINode? {
         guard offset + stride <= flatData.count else { return nil }
 
         // Phase 2 — peek the flag byte at offset 160 BEFORE advancing
@@ -821,17 +862,13 @@ final class NativeElementBridge {
                 Int(buf.baseAddress!.advanced(by: nodeStart).loadUnaligned(fromByteOffset: 0, as: UInt32.self).littleEndian)
             }
             offset += stride
-            if let prior = prevIndex[reuseId] {
-                return prior
+            guard let prior = prevIndex[reuseId] else {
+                throw MissingReuse(id: reuseId)
             }
-            // PHP shouldn't emit REUSE for an id we haven't seen — that's a
-            // forceFullFrame oversight. Drop the subtree and let the empty
-            // hole make the bug visible.
-            print("NativeElementBridge: REUSE flag set for id=\(reuseId) but no prior node in index — skipping")
-            return nil
+            return prior
         }
 
-        return flatData.withUnsafeBytes { buf in
+        return try flatData.withUnsafeBytes { buf in
             let base = buf.baseAddress!.advanced(by: offset)
             offset += stride
 
@@ -940,7 +977,7 @@ final class NativeElementBridge {
             var children: [NativeUINode] = []
             children.reserveCapacity(childCount)
             for _ in 0..<childCount {
-                guard let child = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else { break }
+                guard let child = try readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else { break }
                 children.append(child)
             }
 
@@ -1108,9 +1145,8 @@ final class NativeElementBridge {
         previousTree = nil
         nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
-        os_unfair_lock_lock(&pendingLock)
-        pendingUpdate = nil
-        os_unfair_lock_unlock(&pendingLock)
+        pendingFrames.clear()
+        awaitingFullFrame = false
         // Format-version check lives in postTreeUpdateFromRegion() — it covers
         // every publish path, not just startWatching().
     }
@@ -1131,9 +1167,8 @@ final class NativeElementBridge {
         previousTree = nil
         nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
-        os_unfair_lock_lock(&pendingLock)
-        pendingUpdate = nil
-        os_unfair_lock_unlock(&pendingLock)
+        pendingFrames.clear()
+        awaitingFullFrame = false
 
         // Phase 0 — re-verify wire format on next region registration.
         // A hot-reload cycle can swap libphp.a out from under us.
