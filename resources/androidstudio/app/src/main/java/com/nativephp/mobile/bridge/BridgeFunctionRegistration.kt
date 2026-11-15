@@ -10,6 +10,7 @@ import com.nativephp.mobile.bridge.functions.FileFunctions
 import com.nativephp.mobile.bridge.functions.PerfFunctions
 import com.nativephp.mobile.bridge.functions.SystemFunctions
 import com.nativephp.mobile.bridge.functions.UIFunctions
+import com.nativephp.mobile.bridge.plugins.registerContextOnlyBridgeFunctions
 import com.nativephp.mobile.bridge.plugins.registerPluginBridgeFunctions
 
 /**
@@ -19,6 +20,49 @@ import com.nativephp.mobile.bridge.plugins.registerPluginBridgeFunctions
 fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     val registry = BridgeFunctionRegistry.shared
 
+    registerCoreContextBridgeFunctions(registry, context)
+
+    // The core functions below need the Activity.
+    registry.register("System.MinimizeApp", SystemFunctions.MinimizeApp(activity))
+
+    // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog
+    // plugin). iOS twin: Bridge/Functions/DialogFunctions.swift.
+    registry.register("Dialog.Alert", DialogFunctions.Alert(activity))
+    registry.register("Dialog.Toast", DialogFunctions.Toast(activity))
+
+    // File.* — core built-in (migrated from the nativephp/mobile-file plugin).
+    // iOS twin: Bridge/Functions/FileFunctions.swift.
+    registry.register("File.Move", FileFunctions.Move(activity))
+    registry.register("File.Copy", FileFunctions.Copy(activity))
+
+    registry.register("UI.SetBackground", UIFunctions.SetBackground(activity))
+
+    // Register plugin bridge functions
+    registerPluginBridgeFunctions(activity, context)
+
+    bridgeFunctionsRegistered = true
+}
+
+@Volatile
+private var bridgeFunctionsRegistered = false
+
+/**
+ * Register the bridge functions that work without an Activity: core ones and
+ * plugins' Context-only ones. For PHP booted with no screen, such as from
+ * PHPBridge.runArtisan(). Does nothing once registerBridgeFunctions() has
+ * run, and that still registers everything when the app opens later.
+ */
+@Synchronized
+fun registerContextBridgeFunctions(context: Context) {
+    if (bridgeFunctionsRegistered) return
+
+    registerCoreContextBridgeFunctions(BridgeFunctionRegistry.shared, context)
+    registerContextOnlyBridgeFunctions(context)
+
+    bridgeFunctionsRegistered = true
+}
+
+private fun registerCoreContextBridgeFunctions(registry: BridgeFunctionRegistry, context: Context) {
     // AsyncTask.* — background PHP work with UI completion callbacks
     // (AsyncTask::dispatch()). iOS twin: Bridge/Functions/AsyncFunctions.swift.
     registry.register("AsyncTask.Dispatch", AsyncFunctions.Dispatch())
@@ -43,21 +87,9 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     registry.register("System.OpenAppSettings", SystemFunctions.OpenAppSettings(context))
     registry.register("System.GetAppearance", SystemFunctions.GetAppearance(context))
     registry.register("System.GetOrientation", SystemFunctions.GetOrientation(context))
-    registry.register("System.MinimizeApp", SystemFunctions.MinimizeApp(activity))
     registry.register("System.OpenInBrowser", SystemFunctions.OpenInBrowser(context))
 
-    // Dialog.* — core built-in (migrated from the nativephp/mobile-dialog
-    // plugin). iOS twin: Bridge/Functions/DialogFunctions.swift.
-    registry.register("Dialog.Alert", DialogFunctions.Alert(activity))
-    registry.register("Dialog.Toast", DialogFunctions.Toast(activity))
-
-    // File.* — core built-in (migrated from the nativephp/mobile-file plugin).
-    // iOS twin: Bridge/Functions/FileFunctions.swift.
-    registry.register("File.Move", FileFunctions.Move(activity))
-    registry.register("File.Copy", FileFunctions.Copy(activity))
-
     registry.register("UI.SetTransition", UIFunctions.SetTransition())
-    registry.register("UI.SetBackground", UIFunctions.SetBackground(activity))
 
     // Performance tracking
     registry.register("Perf.Enable", PerfFunctions.Enable())
@@ -73,7 +105,4 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     registry.register("Perf.SetDiffEnabled", PerfFunctions.SetDiffEnabled())
     registry.register("Perf.SetFpsOverlayEnabled", PerfFunctions.SetFpsOverlayEnabled())
     registry.register("Perf.Memory", PerfFunctions.Memory())
-
-    // Register plugin bridge functions
-    registerPluginBridgeFunctions(activity, context)
 }
