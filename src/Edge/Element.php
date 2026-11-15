@@ -887,6 +887,8 @@ abstract class Element
             $props['on_press_up'] = $registry->register($this->pressUpMethod);
         }
 
+        $props = $this->resolveA11yCallbacks($registry, $props);
+
         if (! empty($this->darkProps)) {
             $props = array_merge($props, $this->darkProps);
         }
