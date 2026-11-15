@@ -8,6 +8,7 @@ use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
 use Tests\Fixtures\Edge\ErrorProbeElement;
 use Tests\Fixtures\Edge\PingReceived;
+use Tests\Fixtures\Edge\PlainValidatingHostScreen;
 use Tests\Fixtures\Edge\SignupScreen;
 use Tests\Fixtures\Edge\ValidatingChild;
 use Tests\Fixtures\Edge\ValidatingHostScreen;
@@ -148,4 +149,12 @@ it('keeps a parent listener\'s messages in the parent\'s bag when a child emits'
     expect($test->instance()->getErrorBag()->keys())->toBe(['title'])
         ->and($child->getErrorBag()->isEmpty())->toBeTrue()
         ->and($child->emitted)->toBeTrue();
+});
+
+it('lets a parent without the trait fail as it would without this child', function () {
+    $test = Native::test(PlainValidatingHostScreen::class);
+
+    expect(fn () => $test->tap('Save draft'))->toThrow(ValidationException::class, 'The title field is required.')
+        ->and(validatingChild($test)->getErrorBag()->isEmpty())->toBeTrue()
+        ->and(validatingChild($test)->emitted)->toBeFalse();
 });

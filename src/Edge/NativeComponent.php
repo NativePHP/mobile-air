@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\Engines\CompilerEngine;
 use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
@@ -88,6 +89,9 @@ abstract class NativeComponent
      * @var \WeakReference<self>|null
      */
     private static ?\WeakReference $nativeActiveComponent = null;
+
+    /** @var \WeakMap<ValidationException, true>|null ValidationExceptions that left a handler of a component without ValidatesInput. */
+    private static ?\WeakMap $nativeUnkeptValidation = null;
 
     private ?NativeDumpException $dumpException = null;
 
@@ -5281,9 +5285,27 @@ abstract class NativeComponent
      *           callback, a parent's assign/toggle binding and a system
      *           back). ValidatesInput keeps a ValidationException in this
      *           component's bag here, whichever component triggered it.
+     *
+     *           A ValidationException that leaves a handler here, on a
+     *           component without the trait, is marked so that a
+     *           component further out with the trait (a child whose
+     *           emit() ran this listener) lets it reach the overlay.
      */
     public function __runHandler(\Closure $handler): mixed
     {
-        return $handler();
+        try {
+            return $handler();
+        } catch (ValidationException $exception) {
+            self::$nativeUnkeptValidation ??= new \WeakMap;
+            self::$nativeUnkeptValidation[$exception] = true;
+
+            throw $exception;
+        }
+    }
+
+    /** @internal Whether a ValidationException left a handler of a component without ValidatesInput. */
+    protected static function validationLeftUnkept(ValidationException $exception): bool
+    {
+        return isset(self::$nativeUnkeptValidation[$exception]);
     }
 }

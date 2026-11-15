@@ -141,13 +141,22 @@ trait ValidatesInput
 
     /**
      * @internal Wraps every handler of this component: taps, native:model
-     *           syncs, listeners, polls and the system back.
+     *           syncs, listeners, polls and the system back. It runs the
+     *           handler itself rather than through the parent, which marks
+     *           the ValidationExceptions it lets through.
      */
     public function __runHandler(\Closure $handler): mixed
     {
         try {
-            return parent::__runHandler($handler);
+            return $handler();
         } catch (ValidationException $exception) {
+            // Thrown by a handler of a component without the trait that ran
+            // inside this one, such as a parent listener of an emit(). It
+            // goes to the overlay, as it would if this child had no trait.
+            if (static::validationLeftUnkept($exception)) {
+                throw $exception;
+            }
+
             // validate() and validateOnly() have already updated the bag;
             // a hand-thrown ValidationException::withMessages() has not.
             if ($exception !== $this->recordedValidationException) {
