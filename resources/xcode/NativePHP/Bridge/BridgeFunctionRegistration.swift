@@ -45,6 +45,12 @@ func registerBridgeFunctions() {
     registry.register("Dialog.Alert", function: DialogFunctions.Alert())
     registry.register("Dialog.Toast", function: DialogFunctions.Toast())
 
+    // Accessibility.* — screen-reader announcements and focus moves
+    // (Native\Mobile\Accessibility). Android twin:
+    // bridge/functions/AccessibilityFunctions.kt.
+    registry.register("Accessibility.Announce", function: AccessibilityFunctions.Announce())
+    registry.register("Accessibility.Focus", function: AccessibilityFunctions.Focus())
+
     // File.* — core built-in (migrated from the nativephp/mobile-file plugin).
     // Android twin: bridge/functions/FileFunctions.kt.
     registry.register("File.Move", function: FileFunctions.Move())

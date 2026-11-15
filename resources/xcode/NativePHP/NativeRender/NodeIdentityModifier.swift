@@ -10,6 +10,9 @@ import SwiftUI
 /// `ref` at all, so every `tapOn: id:` failed with "Element with Id matching
 /// regex not found" even though the ref was present in the tree.
 ///
+/// It is also what `Accessibility::focus()` names, so the element this
+/// makes is the one VoiceOver moves to.
+///
 /// Only applied to nodes with a `ref` (see `NodeDecorations.ref`).
 struct NodeIdentityModifier: ViewModifier {
     let node: NativeUINode
@@ -17,11 +20,13 @@ struct NodeIdentityModifier: ViewModifier {
     func body(content: Content) -> some View {
         let ref = node.props.getString("ref", default: "")
 
-        if NodeAccessibility.applies(to: node) {
+        if NodeAccessibility.applies(to: node), NodeAccessibility.isElement(node) {
             // `NodeAccessibilityModifier` has already made this node one
             // element (a labelled container, or a pressable read as a
             // button). Name that element rather than wrapping it in another.
-            content.accessibilityIdentifier(ref)
+            content
+                .accessibilityIdentifier(ref)
+                .modifier(NodeAccessibilityFocusModifier(ref: ref))
         } else {
             content
                 // `.contain` keeps this node's DESCENDANTS as separate
@@ -35,6 +40,7 @@ struct NodeIdentityModifier: ViewModifier {
                 // lost the same content.
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(ref)
+                .modifier(NodeAccessibilityFocusModifier(ref: ref))
         }
     }
 }
