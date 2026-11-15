@@ -1313,6 +1313,15 @@ int ephemeral_php_boot(const char *bootstrapPath) {
         return -4;
     }
 
+    // One ephemeral context per process. A second boot would start another
+    // thread and replace the semaphores the first one waits on.
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
+    if (ephemeral_initialized) {
+        pthread_mutex_unlock(&g_ephemeral_mutex);
+        return 0;
+    }
+
     fprintf(stderr, "ephemeral_php_boot: creating ephemeral thread\n");
     fflush(stderr);
 
@@ -1332,20 +1341,31 @@ int ephemeral_php_boot(const char *bootstrapPath) {
     if (rc != 0) {
         fprintf(stderr, "ephemeral_php_boot: pthread_create FAILED: %d\n", rc);
         fflush(stderr);
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         return -1;
     }
 
     // Block until ephemeral runtime finishes booting
     dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
 
-    fprintf(stderr, "ephemeral_php_boot: done, result=%d\n", ephemeral_work_int_result);
+    int result = ephemeral_work_int_result;
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+
+    fprintf(stderr, "ephemeral_php_boot: done, result=%d\n", result);
     fflush(stderr);
 
-    return ephemeral_work_int_result;
+    return result;
 }
 
+// Callers may overlap (a BGTask, an App Intent, a plugin's bridge call), and
+// they share one work slot, so each holds g_ephemeral_mutex for its whole
+// round trip. The caller owns and frees the returned string: it is taken out
+// of the slot, so no later caller can be handed the same pointer (#433).
 const char *ephemeral_php_artisan(const char *command) {
+    pthread_mutex_lock(&g_ephemeral_mutex);
+
     if (!ephemeral_initialized) {
+        pthread_mutex_unlock(&g_ephemeral_mutex);
         return strdup("Ephemeral runtime not booted.");
     }
 
@@ -1356,15 +1376,25 @@ const char *ephemeral_php_artisan(const char *command) {
     dispatch_semaphore_signal(ephemeral_work_sem);
     dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
 
-    return ephemeral_work_str_result;
+    char *result = ephemeral_work_str_result;
+    ephemeral_work_str_result = NULL;
+    ephemeral_work_str_arg = NULL;
+
+    pthread_mutex_unlock(&g_ephemeral_mutex);
+
+    return result;
 }
 
 void ephemeral_php_shutdown(void) {
-    if (!ephemeral_initialized) return;
+    pthread_mutex_lock(&g_ephemeral_mutex);
 
-    ephemeral_work_type = EPHEMERAL_WORK_SHUTDOWN;
-    dispatch_semaphore_signal(ephemeral_work_sem);
-    dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
+    if (ephemeral_initialized) {
+        ephemeral_work_type = EPHEMERAL_WORK_SHUTDOWN;
+        dispatch_semaphore_signal(ephemeral_work_sem);
+        dispatch_semaphore_wait(ephemeral_done_sem, DISPATCH_TIME_FOREVER);
+    }
+
+    pthread_mutex_unlock(&g_ephemeral_mutex);
 }
 
 int ephemeral_php_is_booted(void) {
