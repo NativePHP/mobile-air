@@ -2,6 +2,7 @@ package com.nativephp.mobile.bridge
 
 import android.content.Context
 import androidx.fragment.app.FragmentActivity
+import com.nativephp.mobile.bridge.functions.AccessibilityFunctions
 import com.nativephp.mobile.bridge.functions.AsyncFunctions
 import com.nativephp.mobile.bridge.functions.DeviceFunctions
 import com.nativephp.mobile.bridge.functions.DialogFunctions
@@ -50,6 +51,12 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     // plugin). iOS twin: Bridge/Functions/DialogFunctions.swift.
     registry.register("Dialog.Alert", DialogFunctions.Alert(activity))
     registry.register("Dialog.Toast", DialogFunctions.Toast(activity))
+
+    // Accessibility.* — screen-reader announcements and focus moves
+    // (Native\Mobile\Accessibility). iOS twin:
+    // Bridge/Functions/AccessibilityFunctions.swift.
+    registry.register("Accessibility.Announce", AccessibilityFunctions.Announce())
+    registry.register("Accessibility.Focus", AccessibilityFunctions.Focus())
 
     // File.* — core built-in (migrated from the nativephp/mobile-file plugin).
     // iOS twin: Bridge/Functions/FileFunctions.swift.

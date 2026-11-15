@@ -26,9 +26,34 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.collapse
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.dismiss
+import androidx.compose.ui.semantics.expand
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selectableGroup
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 
@@ -359,6 +384,11 @@ fun Modifier.nodeGestures(
         return this
     }
 
+    // `disabled` stops every handler; the clickable stays in place, with
+    // enabled = false, so TalkBack still finds the element and says it is
+    // unavailable.
+    val enabled = !node.props.getBool("disabled")
+
     val nodeId = node.id
 
     var mod: Modifier = this
@@ -369,7 +399,7 @@ fun Modifier.nodeGestures(
     // (scroll steals the stream, node leaves composition) so a held button
     // is never left stuck. Observes without consuming, so it composes with
     // the clickable below when @tap is also present.
-    if (pressDownId != 0 || pressUpId != 0) {
+    if (enabled && (pressDownId != 0 || pressUpId != 0)) {
         mod = mod.pointerInput(pressDownId, pressUpId, nodeId) {
             awaitEachGesture {
                 awaitFirstDown(requireUnconsumed = false)
@@ -421,19 +451,23 @@ fun Modifier.nodeGestures(
     val needCombined = onLongClickAction != null || onDoubleClickAction != null
 
     // A tappable `pressable` is a button to TalkBack, as SwiftUI's Button
-    // is to VoiceOver. The clickable already merges its children's text
-    // into one focusable element.
-    val role = if (NodeAccessibility.isButton(node.type, callbackId != 0, node.props.getBool("has_menu"))) {
-        Role.Button
-    } else {
-        null
-    }
+    // is to VoiceOver, unless `a11y-role` says otherwise. The clickable
+    // already merges its children's text into one focusable element.
+    val role = composeRole(
+        NodeAccessibility.role(
+            node.type,
+            node.props.getString("a11y_role"),
+            hasPress = callbackId != 0,
+            hasMenu = node.props.getBool("has_menu"),
+        ),
+    )
 
     return if (interactionSource != null) {
         if (needCombined) {
             mod.combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
+                enabled = enabled,
                 role = role,
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
@@ -443,6 +477,7 @@ fun Modifier.nodeGestures(
             mod.clickable(
                 interactionSource = interactionSource,
                 indication = null,
+                enabled = enabled,
                 role = role,
                 onClick = onClickAction,
             )
@@ -450,13 +485,14 @@ fun Modifier.nodeGestures(
     } else {
         if (needCombined) {
             mod.combinedClickable(
+                enabled = enabled,
                 role = role,
                 onLongClick = onLongClickAction,
                 onDoubleClick = onDoubleClickAction,
                 onClick = onClickAction,
             )
         } else {
-            mod.clickable(role = role, onClick = onClickAction)
+            mod.clickable(enabled = enabled, role = role, onClick = onClickAction)
         }
     }
 }
@@ -464,9 +500,47 @@ fun Modifier.nodeGestures(
 // MARK: - Accessibility Modifier
 
 /**
- * Gives a core container (`pressable`, `column`, `row`, `stack`) with an
- * `a11y-label` that label as its whole description: TalkBack focuses the
- * node once and reads the label (plus `a11y-hint`) instead of each child.
+ * Marks a node `NodeView` hides from TalkBack (`a11y-hidden`, or outside an
+ * on-screen modal), for `Accessibility::focus()`. Declared outside Compose,
+ * so it is not important for accessibility and leaves the node visible to
+ * UI drivers.
+ */
+internal val A11yHidden = SemanticsPropertyKey<Unit>("NativeA11yHidden")
+
+/**
+ * Hides chrome drawn outside the node tree (the top app bar, the bottom
+ * bar) from TalkBack while an `a11y-modal` container is on screen, as
+ * `NodeView` hides the tree's own nodes. [node] is the tree node the
+ * chrome draws, if any: chrome that holds the modal stays reachable.
+ */
+@Composable
+fun Modifier.hiddenWhileA11yModal(node: NativeUINode?): Modifier {
+    val path = LocalA11yModalPath.current ?: return this
+    return if (node != null && node.id in path) this else clearAndSetSemantics { }
+}
+
+/** The Compose role for a wire role. Roles with no Compose twin map to null. */
+internal fun composeRole(role: String?): Role? = when (role) {
+    "button" -> Role.Button
+    "checkbox" -> Role.Checkbox
+    "switch" -> Role.Switch
+    "radio" -> Role.RadioButton
+    "tab" -> Role.Tab
+    "dropdown" -> Role.DropdownList
+    "image" -> Role.Image
+    else -> null
+}
+
+/**
+ * Tells TalkBack what a node composed from core elements is: its role,
+ * state, value, adjust gesture, custom actions, pane title and live
+ * region (see [NodeAccessibility.Spec]).
+ *
+ * A labelled core container (`pressable`, `column`, `row`, `stack`) is read
+ * as one element: its `a11y-label` (plus `a11y-hint`) replaces its
+ * children's text. An unlabelled control (a role, a range or actions)
+ * merges its children's text instead. A `radiogroup`, `tablist` or modal
+ * container keeps its children.
  *
  * Must sit INSIDE (after) `nodeGestures` in the chain. `clearAndSetSemantics`
  * clears the semantics of everything inside it, so placed before the
@@ -474,13 +548,91 @@ fun Modifier.nodeGestures(
  * children's text.
  */
 fun Modifier.nodeAccessibility(node: NativeUINode): Modifier {
-    val description = NodeAccessibility.description(
-        type = node.type,
-        label = node.props.getString("a11y_label"),
-        hint = node.props.getString("a11y_hint"),
-        hasMenu = node.props.getBool("has_menu"),
-    ) ?: return this
+    val spec = NodeAccessibility.spec(node.type, node.props, hasPress = node.onPress != 0) ?: return this
+    val nodeId = node.id
+    val pressId = node.onPress
 
-    return clearAndSetSemantics { contentDescription = description }
+    val properties: SemanticsPropertyReceiver.() -> Unit = {
+        spec.description?.let { contentDescription = it }
+        // A merging group's label is its text: Compose would move a content
+        // description to a child node of its own, read as a separate stop.
+        spec.groupLabel?.let {
+            if (spec.mergesChildren) text = AnnotatedString(it) else contentDescription = it
+        }
+
+        // A clickable already carries its role (see nodeGestures).
+        if (pressId == 0) composeRole(spec.role)?.let { role = it }
+        when (spec.role) {
+            "header" -> heading()
+            // A traversal group as well, so Compose places the group in the
+            // reading order: TalkBack stops on it once it has an error to say,
+            // and Compose orders only traversal groups and the nodes it
+            // counts as focusable, which a group of controls is not.
+            "radiogroup", "tablist" -> {
+                selectableGroup()
+                isTraversalGroup = true
+            }
+        }
+
+        spec.toggle?.let {
+            toggleableState = when (it) {
+                NodeAccessibility.Toggle.On -> ToggleableState.On
+                NodeAccessibility.Toggle.Off -> ToggleableState.Off
+                NodeAccessibility.Toggle.Indeterminate -> ToggleableState.Indeterminate
+            }
+        }
+        spec.selected?.let { selected = it }
+        spec.stateDescription?.let { stateDescription = it }
+        if (spec.disabled) disabled()
+
+        // Expanded rows offer the opposite action, which taps the row:
+        // TalkBack reads the state from which of the two is present.
+        if (spec.expanded != null && pressId != 0) {
+            val toggle = { NativeElementBridge.sendPressEvent(pressId, nodeId); true }
+            if (spec.expanded) collapse(action = toggle) else expand(action = toggle)
+        }
+
+        when {
+            spec.indeterminate -> progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+            spec.range != null -> {
+                val range = spec.range
+                progressBarRangeInfo = ProgressBarRangeInfo(range.now, range.min..range.max)
+                if (spec.incrementId != 0 || spec.decrementId != 0) {
+                    setProgress { target ->
+                        val callbackId = NodeAccessibility.adjustment(spec, target) ?: return@setProgress false
+                        NativeElementBridge.sendPressEvent(callbackId, nodeId)
+                        true
+                    }
+                }
+            }
+        }
+
+        if (spec.actions.isNotEmpty()) {
+            customActions = spec.actions.map { action ->
+                CustomAccessibilityAction(action.label) {
+                    NativeElementBridge.sendPressEvent(action.callbackId, nodeId)
+                    true
+                }
+            }
+        }
+
+        if (spec.modal) isTraversalGroup = true
+        spec.paneTitle?.let { paneTitle = it }
+        if (spec.dismissId != 0) {
+            dismiss {
+                NativeElementBridge.sendPressEvent(spec.dismissId, nodeId)
+                true
+            }
+        }
+
+        when (spec.live) {
+            "polite" -> liveRegion = LiveRegionMode.Polite
+            "assertive" -> liveRegion = LiveRegionMode.Assertive
+        }
+    }
+
+    return when {
+        spec.description != null -> clearAndSetSemantics(properties)
+        else -> semantics(mergeDescendants = spec.mergesChildren, properties = properties)
+    }
 }
-

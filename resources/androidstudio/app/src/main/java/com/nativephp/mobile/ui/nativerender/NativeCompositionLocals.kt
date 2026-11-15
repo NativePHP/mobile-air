@@ -25,6 +25,19 @@ val LocalAvailableHeight = compositionLocalOf { 844f }
 val LocalBackgroundLayerPresent = compositionLocalOf { false }
 
 /**
+ * Node ids TalkBack must skip while an `a11y-modal` container is on screen
+ * (see [NodeAccessibility.hiddenByModal]). Provided per screen by
+ * `NativeUIContent`; empty when no overlay is shown.
+ */
+val LocalA11yHiddenByModal = compositionLocalOf { emptySet<Int>() }
+
+/**
+ * The ids of the `a11y-modal` container on screen and of its ancestors
+ * (see [LocalA11yHiddenByModal]); null when none is shown.
+ */
+val LocalA11yModalPath = compositionLocalOf<Set<Int>?> { null }
+
+/**
  * Scopes needed to place a shared element (`ref`) into a morph.
  *
  * `Modifier.sharedBounds` is declared on `SharedTransitionScope` and needs the
