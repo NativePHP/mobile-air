@@ -236,23 +236,35 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         val pressOpacityProp = node.props.getFloat("press-opacity", 0f)
         val pressTy = node.props.getFloat("press-translate-y", 0f)
         val hasPressFeedback = hasPress && (pressScale > 0f || pressOpacityProp > 0f || pressTy != 0f)
-        val interactionSource = if (hasPressFeedback) remember { MutableInteractionSource() } else null
 
         var pressAnimScale = 1f
         var pressAnimAlpha = 1f
         var pressAnimTy = 0f
 
-        if (hasPressFeedback && interactionSource != null) {
-            val isPressed by interactionSource.collectIsPressedAsState()
-            val springSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+        // A node keeps its id and type, and so its Compose state, when only
+        // its press feedback changes between renders. The compiler emits no
+        // group around a conditional block like this one, so switching it on
+        // or off shifted every remembered slot after it and crashed with a
+        // ClassCastException. key() always emits a group, so the press state
+        // is added or dropped as a unit and the rest of the node keeps its
+        // state.
+        val interactionSource = key(hasPressFeedback) {
+            if (hasPressFeedback) {
+                val source = remember { MutableInteractionSource() }
+                val isPressed by source.collectIsPressedAsState()
+                val springSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
 
-            val targetScale = if (isPressed && pressScale > 0f) pressScale else 1f
-            val targetOpacity = if (isPressed && pressOpacityProp > 0f) pressOpacityProp else 1f
-            val targetTy = if (isPressed) pressTy else 0f
+                val targetScale = if (isPressed && pressScale > 0f) pressScale else 1f
+                val targetOpacity = if (isPressed && pressOpacityProp > 0f) pressOpacityProp else 1f
+                val targetTy = if (isPressed) pressTy else 0f
 
-            pressAnimScale = animateFloatAsState(targetScale, springSpec, label = "press_scale").value
-            pressAnimAlpha = animateFloatAsState(targetOpacity, springSpec, label = "press_opacity").value
-            pressAnimTy = animateFloatAsState(targetTy, springSpec, label = "press_ty").value
+                pressAnimScale = animateFloatAsState(targetScale, springSpec, label = "press_scale").value
+                pressAnimAlpha = animateFloatAsState(targetOpacity, springSpec, label = "press_opacity").value
+                pressAnimTy = animateFloatAsState(targetTy, springSpec, label = "press_ty").value
+                source
+            } else {
+                null
+            }
         }
 
         // ── Modifier chain ───────────────────────────────────────────
