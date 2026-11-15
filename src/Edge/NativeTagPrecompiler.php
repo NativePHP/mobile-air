@@ -352,7 +352,7 @@ class NativeTagPrecompiler
         // Kept for backwards compatibility; prefer `native:model` going forward.
         $value = preg_replace_callback(
             '/@model=["\']([^"\']+)["\']/',
-            fn ($m) => ':value="data_get(get_defined_vars(), \''.$m[1].'\')" _change="__syncProperty(\''.$m[1].'\')" sync-mode="live"',
+            fn ($m) => $this->compileNativeModel($m[1], ''),
             $value
         );
 
@@ -598,12 +598,40 @@ class NativeTagPrecompiler
             // `.live` or anything unknown falls through to syncMode=live.
         }
 
-        $out = ':value="data_get(get_defined_vars(), \''.$prop.'\')" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
+        $out = ':value="'.$this->compileModelRead($prop).'" _change="__syncProperty(\''.$prop.'\')" sync-mode="'.$syncMode.'"';
         if ($debounceMs > 0) {
             $out .= ' debounce-ms="'.$debounceMs.'"';
         }
 
         return $out;
+    }
+
+    /**
+     * The PHP expression a model binding reads its value from: the view
+     * variable itself (`name` → `$name`), or a path into it, read the way
+     * ComponentState::set() writes it (`profile.name` →
+     * `data_get($profile, 'name')`).
+     *
+     * The root is read directly, so a binding to a variable the view
+     * doesn't have fails like `{{ $usrname }}` does, with "Undefined
+     * variable $usrname". Such a binding could never be written either:
+     * ComponentState::set() ignores a root that isn't a public property.
+     * A missing key below the root reads as null, because the first
+     * write creates it.
+     *
+     * A root that isn't a variable name, such as one built with `{{ }}`,
+     * can't be read directly and keeps the lookup through the view's
+     * variables.
+     */
+    private function compileModelRead(string $path): string
+    {
+        [$root, $rest] = array_pad(explode('.', $path, 2), 2, null);
+
+        if ($root === 'this' || preg_match('/^[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*$/', $root) !== 1) {
+            return 'data_get(get_defined_vars(), '.var_export($path, true).')';
+        }
+
+        return $rest === null ? '$'.$root : 'data_get($'.$root.', '.var_export($rest, true).')';
     }
 
     private function compileSelfClosing(string $tag, string $rawAttrs): string
