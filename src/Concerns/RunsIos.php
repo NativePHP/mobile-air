@@ -4,6 +4,7 @@ namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Native\Mobile\Support\IosProductName;
 
 use function Laravel\Prompts\error;
 use function Laravel\Prompts\note;
@@ -371,17 +372,18 @@ trait RunsIos
         $installFailed = false;
         $isRelease = $this->option('build') === 'release';
         $configuration = $isRelease ? 'Release' : 'Debug';
+        $app = "build/Build/Products/{$configuration}-iphoneos/".IosProductName::resolve().'.app';
 
-        $this->fixProductBundleName($basePath, "build/Build/Products/{$configuration}-iphoneos/NativePHP.app", resign: true);
+        $this->fixProductBundleName($basePath, $app, resign: true);
 
-        $this->components->task('Deploying app to device', function () use ($basePath, $target, $verbose, &$installFailed, $configuration) {
+        $this->components->task('Deploying app to device', function () use ($basePath, $target, $verbose, &$installFailed, $app) {
             $installResult = Process::path($basePath)
                 ->timeout(300)
                 ->tty($verbose && ! $this->option('no-tty'))
                 ->run([
                     'xcrun', 'devicectl', 'device', 'install', 'app',
                     '--device', $target,
-                    "build/Build/Products/{$configuration}-iphoneos/NativePHP.app",
+                    $app,
                 ], function ($type, $output) use ($verbose) {
                     file_put_contents($this->iosLogPath, $output, FILE_APPEND);
 
@@ -501,13 +503,15 @@ trait RunsIos
 
     /**
      * Xcode's generated Info.plist pins CFBundleName to PRODUCT_NAME
-     * ("NativePHP") and, with GENERATE_INFOPLIST_FILE=YES, that generated
-     * value overrides a CFBundleName entry in the source Info.plist. System
-     * surfaces that read CFBundleName — most visibly the
-     * ASWebAuthenticationSession consent alert ("X" Wants to Use "site" to
-     * Sign In) — therefore introduce every app as "NativePHP". Patch the
-     * BUILT product's plist and re-sign it with the identity that already
-     * signed it, so the installed app carries the real app name.
+     * ("NativePHP-simulator" on the simulator target, the ASCII-only
+     * IosProductName on the device target) and, with
+     * GENERATE_INFOPLIST_FILE=YES, that generated value overrides a
+     * CFBundleName entry in the source Info.plist. System surfaces that read
+     * CFBundleName — most visibly the ASWebAuthenticationSession consent
+     * alert ("X" Wants to Use "site" to Sign In) — would otherwise not show
+     * the app's real name. Patch the BUILT product's plist and re-sign it
+     * with the identity that already signed it, so the installed app
+     * carries the real app name.
      */
     private function fixProductBundleName(string $basePath, string $appRelativePath, bool $resign = false): void
     {

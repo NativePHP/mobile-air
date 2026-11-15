@@ -22,6 +22,7 @@ use Native\Mobile\Plugins\PluginSecretsValidator;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleFileManager;
+use Native\Mobile\Support\IosProductName;
 
 use function Laravel\Prompts\error;
 
@@ -435,7 +436,51 @@ class BuildIosAppCommand extends Command
 
             $this->updateDisplayName($name);
             $this->updateBundleIdForTarget($bundleId);
+            $this->updateProductName(IosProductName::resolve());
         });
+    }
+
+    /**
+     * Name the app target's product (the .app bundle and its executable)
+     * after the app instead of the "NativePHP" target. The Swift module stays
+     * NativePHP, so plugin code, scene delegate class names and the tests'
+     * `@testable import NativePHP` are unaffected.
+     */
+    private function updateProductName(string $productName): void
+    {
+        $projectPath = $this->xcodeProjectPath.'/project.pbxproj';
+        $pbxproj = File::get($projectPath);
+
+        if (! preg_match('/Build configuration list for PBXNativeTarget "NativePHP" \*\/ = \{\s*isa = XCConfigurationList;\s*buildConfigurations = \((.*?)\);/s', $pbxproj, $list)) {
+            return;
+        }
+
+        preg_match_all('/[0-9A-F]{24}/', $list[1], $ids);
+
+        foreach ($ids[0] as $id) {
+            $pbxproj = preg_replace_callback(
+                '/\t\t'.$id.' \/\* [^*]+ \*\/ = \{\n\t\t\tisa = XCBuildConfiguration;.*?\n\t\t\};/s',
+                function (array $configuration) use ($productName) {
+                    $settings = preg_replace('/^(\t+)PRODUCT_NAME = .*;$/m', "\$1PRODUCT_NAME = \"{$productName}\";", $configuration[0]);
+
+                    if (! str_contains($settings, 'PRODUCT_MODULE_NAME = ')) {
+                        $settings = preg_replace('/^(\t+)(PRODUCT_NAME = .*;)$/m', "\$1PRODUCT_MODULE_NAME = NativePHP;\n\$1\$2", $settings);
+                    }
+
+                    return $settings;
+                },
+                $pbxproj,
+            );
+        }
+
+        // The unit tests load into the app, so they point at its executable.
+        $pbxproj = preg_replace(
+            '/TEST_HOST = "\$\(BUILT_PRODUCTS_DIR\)\/.*";/',
+            "TEST_HOST = \"\$(BUILT_PRODUCTS_DIR)/{$productName}.app/\$(BUNDLE_EXECUTABLE_FOLDER_PATH)/{$productName}\";",
+            $pbxproj,
+        );
+
+        File::put($projectPath, $pbxproj);
     }
 
     private function updateDisplayName(string $name): void

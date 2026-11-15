@@ -314,13 +314,13 @@ trait PackagesIos
             return null;
         }
 
-        $archiveAppPath = $archivePath.'/Products/Applications/NativePHP.app';
-        if (! is_dir($archiveAppPath)) {
+        $archiveAppPath = $this->archivedAppPath($archivePath);
+        if (! $archiveAppPath) {
             return null;
         }
 
         $payloadDir = $exportPath.'/Payload';
-        $appBundleDestination = $payloadDir.'/NativePHP.app';
+        $appBundleDestination = $payloadDir.'/'.basename($archiveAppPath);
 
         if (! mkdir($payloadDir, 0755, true)) {
             return null;
@@ -338,9 +338,10 @@ trait PackagesIos
             return null;
         }
 
-        $ipaPath = $exportPath.'/NativePHP.ipa';
+        $ipaName = basename($archiveAppPath, '.app').'.ipa';
+        $ipaPath = $exportPath.'/'.$ipaName;
         $zipResult = Process::path($exportPath)->run([
-            'zip', '-r', '-q', 'NativePHP.ipa', 'Payload',
+            'zip', '-r', '-q', $ipaName, 'Payload',
         ]);
 
         if (! $zipResult->successful()) {
@@ -915,10 +916,11 @@ trait PackagesIos
 
     public function testAppStoreUpload(?string $ipaPath = null): void
     {
-        $ipaPath = $ipaPath ?: base_path('nativephp/ios/build/export/NativePHP.ipa');
+        $exportPath = base_path('nativephp/ios/build/export');
+        $ipaPath = $ipaPath ?: (glob($exportPath.'/*.ipa')[0] ?? null);
 
-        if (! file_exists($ipaPath)) {
-            \Laravel\Prompts\error("IPA not found at: {$ipaPath}");
+        if (! $ipaPath || ! file_exists($ipaPath)) {
+            \Laravel\Prompts\error('IPA not found in: '.($ipaPath ?: $exportPath));
 
             return;
         }
@@ -933,9 +935,9 @@ trait PackagesIos
      */
     protected function verifyAndFixArchiveCodeSignature(string $archivePath): bool
     {
-        $appBundlePath = $archivePath.'/Products/Applications/NativePHP.app';
+        $appBundlePath = $this->archivedAppPath($archivePath);
 
-        if (! is_dir($appBundlePath)) {
+        if (! $appBundlePath) {
             return false;
         }
 
@@ -1314,13 +1316,18 @@ trait PackagesIos
      */
     protected function configureAppSettings(string $archivePath): bool
     {
-        $infoPlistPath = $archivePath.'/Products/Applications/NativePHP.app/Info.plist';
+        $appBundlePath = $this->archivedAppPath($archivePath);
+        $infoPlistPath = $appBundlePath.'/Info.plist';
 
-        if (! file_exists($infoPlistPath)) {
+        if (! $appBundlePath || ! file_exists($infoPlistPath)) {
             return false;
         }
 
         if (! $this->setExportCompliance($infoPlistPath)) {
+            return false;
+        }
+
+        if (! $this->setBundleName($infoPlistPath)) {
             return false;
         }
 
@@ -1329,6 +1336,31 @@ trait PackagesIos
         }
 
         return true;
+    }
+
+    /**
+     * The app in an archive. Its name follows the product name the archive
+     * was built with, which was NativePHP.app before nativephp.ios.product_name.
+     */
+    protected function archivedAppPath(string $archivePath): ?string
+    {
+        return glob($archivePath.'/Products/Applications/*.app', GLOB_ONLYDIR)[0] ?? null;
+    }
+
+    /**
+     * Give the archived app the real app name as CFBundleName, as
+     * `native:run` does: Xcode sets it to the product name, which keeps only
+     * ASCII letters, digits and a few separators.
+     */
+    protected function setBundleName(string $infoPlistPath): bool
+    {
+        $name = (string) config('app.name');
+
+        if ($name === '') {
+            return true;
+        }
+
+        return Process::run(['plutil', '-replace', 'CFBundleName', '-string', $name, $infoPlistPath])->successful();
     }
 
     /**

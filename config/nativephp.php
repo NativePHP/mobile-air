@@ -311,6 +311,21 @@ return [
     */
     'fps_overlay' => env('NATIVEPHP_FPS_OVERLAY', false),
 
+    'ios' => [
+        /*
+        |--------------------------------------------------------------------------
+        | Product Name
+        |--------------------------------------------------------------------------
+        |
+        | The name of the iOS app bundle and its executable ("My App.app"), which
+        | crash reports, dSYMs and App Store Connect show. Defaults to APP_NAME.
+        | Letters are reduced to ASCII and anything other than letters, digits,
+        | spaces, dots, dashes and underscores is dropped.
+        |
+        */
+        'product_name' => env('NATIVEPHP_IOS_PRODUCT_NAME'),
+    ],
+
     'android' => [
         'gradle_jdk_path' => env('NATIVEPHP_GRADLE_PATH'),
 
