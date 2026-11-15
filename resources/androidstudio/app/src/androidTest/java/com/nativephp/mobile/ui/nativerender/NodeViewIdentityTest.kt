@@ -30,6 +30,36 @@ class NodeViewIdentityTest {
         composeRule.waitForIdle()
     }
 
+    @Test
+    fun nodeThatGainsPressFeedbackKeepsComposing() {
+        assertPressFeedbackFlipComposes(from = 0f, to = 0.9f)
+    }
+
+    @Test
+    fun nodeThatLosesPressFeedbackKeepsComposing() {
+        assertPressFeedbackFlipComposes(from = 0.9f, to = 0f)
+    }
+
+    // Same id, same type, only press-scale changes, so key(node.id, node.type)
+    // keeps the node's Compose state across the re-render.
+    private fun assertPressFeedbackFlipComposes(from: Float, to: Float) {
+        lateinit var pressScale: MutableState<Float>
+
+        composeRule.setContent {
+            pressScale = remember { mutableStateOf(from) }
+
+            FlexContainer(
+                childNodes = listOf(node(id = 1, type = "pressable", pressScale = pressScale.value)),
+                content = {},
+            )
+        }
+
+        composeRule.runOnIdle {
+            pressScale.value = to
+        }
+        composeRule.waitForIdle()
+    }
+
     private fun initialChildren(): List<NativeUINode> = listOf(
         node(id = 1, type = "text"),
         node(id = 2, type = "text"),
