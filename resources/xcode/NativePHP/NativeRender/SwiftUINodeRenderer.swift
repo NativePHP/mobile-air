@@ -777,6 +777,9 @@ private struct NodeGestureModifier: ViewModifier {
         // PressDownUpModifier in ViewClickHandlers.swift).
         let pressDownId = node.props.getInt("on_press_down")
         let pressUpId = node.props.getInt("on_press_up")
+        // `disabled` stops every handler without changing the view's
+        // structure, so toggling it doesn't rebuild the node.
+        let enabled = !node.props.getBool("disabled")
 
         content
             .contentShape(Rectangle())
@@ -788,6 +791,7 @@ private struct NodeGestureModifier: ViewModifier {
                 $0.onTapGesture(count: 2) {
                     // Reuses the Press event type — the callback id alone routes
                     // to the @doubleTap handler, and Press dispatch passes no args.
+                    guard enabled else { return }
                     KeyboardFocusPolicy.dispatchPress {
                         NativeElementBridge.sendPressEvent(doubleTapId, nodeId: nodeId)
                     }
@@ -795,6 +799,7 @@ private struct NodeGestureModifier: ViewModifier {
             }
             .nodeModifier(if: pressId != 0) {
                 $0.onTapGesture {
+                    guard enabled else { return }
                     KeyboardFocusPolicy.dispatchPress {
                         NativeElementBridge.sendPressEvent(pressId, nodeId: nodeId)
                     }
@@ -802,80 +807,14 @@ private struct NodeGestureModifier: ViewModifier {
             }
             .nodeModifier(if: longPressId != 0) {
                 $0.onLongPressGesture(minimumDuration: 0.5) {
+                    guard enabled else { return }
                     KeyboardFocusPolicy.dispatchPress {
                         NativeElementBridge.sendLongPressEvent(longPressId, nodeId: nodeId)
                     }
                 }
             }
             .nodeModifier(if: pressDownId != 0 || pressUpId != 0) {
-                $0.modifier(PressDownUpModifier(downId: pressDownId, upId: pressUpId, nodeId: nodeId))
-            }
-    }
-}
-
-// MARK: - Accessibility Modifier
-
-/// How a core layout node (`pressable`, `column`, `row`, `stack`) appears to
-/// VoiceOver. These types draw no control of their own, so without this
-/// their `a11y-label` / `a11y-hint` never reached the screen reader, and a
-/// pressable read as loose text fragments with no button trait. Mirrors
-/// Android's `NodeAccessibility`.
-enum NodeAccessibility {
-    /// Core containers whose renderers never read `a11y_label` themselves.
-    static let containerTypes: Set<String> = ["pressable", "column", "row", "stack"]
-
-    /// A `pressable` with a tap handler is a button. A pressable with a
-    /// `:menu` is a SwiftUI `Menu`, which is a button already and owns the
-    /// tap, so it is left to its renderer.
-    static func isButton(_ node: NativeUINode) -> Bool {
-        node.type == "pressable" && node.onPress != 0 && !node.props.getBool("has_menu")
-    }
-
-    static func applies(to node: NativeUINode) -> Bool {
-        guard containerTypes.contains(node.type), !node.props.getBool("has_menu") else { return false }
-
-        return !node.props.getString("a11y_label").isEmpty || isButton(node)
-    }
-}
-
-/// With an `a11y-label`, the node becomes one element read as that label
-/// (children ignored), plus `a11y-hint`. Without one, a tappable pressable
-/// combines its children into one element, as SwiftUI's `Button` does with
-/// its label. A tappable pressable gets the button trait, and any node here
-/// with `@press` activates it the same way a tap does.
-private struct NodeAccessibilityModifier: ViewModifier {
-    let node: NativeUINode
-
-    func body(content: Content) -> some View {
-        let label = node.props.getString("a11y_label")
-        let hint = node.props.getString("a11y_hint")
-        let isButton = NodeAccessibility.isButton(node)
-        let nodeId = node.id
-        let pressId = node.onPress
-
-        content
-            .nodeModifier(if: label.isEmpty) {
-                $0.accessibilityElement(children: .combine)
-            }
-            .nodeModifier(if: !label.isEmpty) {
-                $0.accessibilityElement(children: .ignore)
-                    .accessibilityLabel(Text(label))
-            }
-            .nodeModifier(if: !hint.isEmpty) {
-                $0.accessibilityHint(Text(hint))
-            }
-            .nodeModifier(if: isButton) {
-                $0.accessibilityAddTraits(.isButton)
-            }
-            // Explicit activation, so a double-tap fires `@press` rather than
-            // a synthesized tap at the element's centre, which could land on
-            // a child that is now hidden from VoiceOver.
-            .nodeModifier(if: pressId != 0) {
-                $0.accessibilityAction {
-                    KeyboardFocusPolicy.dispatchPress {
-                        NativeElementBridge.sendPressEvent(pressId, nodeId: nodeId)
-                    }
-                }
+                $0.modifier(PressDownUpModifier(downId: enabled ? pressDownId : 0, upId: enabled ? pressUpId : 0, nodeId: nodeId))
             }
     }
 }
