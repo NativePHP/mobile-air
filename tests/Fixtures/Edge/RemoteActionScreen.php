@@ -3,7 +3,7 @@
 namespace Tests\Fixtures\Edge;
 
 use Illuminate\View\View;
-use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\NativeComponent;
 
@@ -27,13 +27,13 @@ class RemoteActionScreen extends NativeComponent
         return parent::callAction($method, $args, $source);
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function celebrate(string $who, int $times = 1): void
     {
         $this->ran[] = "celebrate:{$who}:{$times}";
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function plainValues(?string $label, float $amount, bool|int $flag, array $tags, mixed ...$rest): void
     {
         $this->ran[] = 'plainValues:'.json_encode([$label, $amount, $flag, $tags, $rest]);
@@ -46,21 +46,21 @@ class RemoteActionScreen extends NativeComponent
     }
 
     /** Marked, but a lifecycle hook by name, so the guard refuses it. */
-    #[NativeAction]
+    #[ClientAction]
     public function hydrateRange(): void
     {
         $this->ran[] = 'hydrateRange';
     }
 
     /** Marked, but a class-typed parameter would mean binding or injection. */
-    #[NativeAction]
+    #[ClientAction]
     public function withObject(\stdClass $thing): void
     {
         $this->ran[] = 'withObject';
     }
 
     /** Optional, so only the parameter's type can refuse it. */
-    #[NativeAction]
+    #[ClientAction]
     public function withOptionalObject(?\stdClass $thing = null): void
     {
         $this->ran[] = 'withOptionalObject';
@@ -71,25 +71,25 @@ class RemoteActionScreen extends NativeComponent
      * shortcut, so a remote call reaching it must still go through
      * callAction().
      */
-    #[NativeAction]
+    #[ClientAction]
     public function exitToWeb(string $uri): void
     {
         $this->ran[] = 'exitToWeb:'.$uri;
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function withCallable(callable $fn): void
     {
         $this->ran[] = 'withCallable';
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function byReference(&$value): void
     {
         $this->ran[] = 'byReference';
     }
 
-    #[NativeAction]
+    #[ClientAction]
     protected function hidden(): void
     {
         $this->ran[] = 'hidden';

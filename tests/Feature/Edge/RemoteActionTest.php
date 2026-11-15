@@ -12,7 +12,7 @@ use Tests\Fixtures\Edge\RemoteActionScreen;
 /**
  * A call whose method name and arguments were chosen outside the app, for
  * example by a server (ActionSource::Remote). It may only reach a public
- * #[NativeAction] method that passes the usual callable guard, with
+ * #[ClientAction] method that passes the usual callable guard, with
  * plain-value arguments passed as they are.
  */
 beforeEach(function () {
@@ -24,7 +24,7 @@ function remoteCall(TestableComponent $screen, string $method, array $args = [])
     return $screen->instance()->__invokeInteraction($method, $args, ActionSource::Remote);
 }
 
-it('runs a #[NativeAction] method with the args as sent', function () {
+it('runs a #[ClientAction] method with the args as sent', function () {
     $screen = Native::test(RemoteActionScreen::class);
 
     remoteCall($screen, 'celebrate', ['ana', 3]);
@@ -59,7 +59,7 @@ it('sends a remote call through callAction even when its name is an interaction 
 });
 
 dataset('methods a remote call may not reach', [
-    'public but not #[NativeAction]' => ['unmarked', [], RemoteActionNotAllowedException::class],
+    'public but not #[ClientAction]' => ['unmarked', [], RemoteActionNotAllowedException::class],
     'NativeComponent\'s dispatch' => ['dispatch', ['x'], ComponentMethodNotFoundException::class],
     'NativeComponent\'s navigate' => ['navigate', ['/admin'], ComponentMethodNotFoundException::class],
     'a lifecycle hook, even marked' => ['hydrateRange', [], DirectlyCallingLifecycleHooksNotAllowedException::class],

@@ -56,7 +56,7 @@ enum ActionSource: string
     /**
      * A call whose method name and arguments were chosen outside the app,
      * for example by a server. On top of the callable guard the method must
-     * carry `#[NativeAction]` and take only plain-value parameters, and its
+     * carry `#[ClientAction]` and take only plain-value parameters, and its
      * arguments are passed as they came, with no container injection or
      * model / enum binding. See ComponentMethodInvoker::assertRemoteCallable().
      */
