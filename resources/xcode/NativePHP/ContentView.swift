@@ -71,7 +71,10 @@ struct ContentView: View {
                             // out must stop reporting frames — the store
                             // captured them at the swap and is flying from
                             // them right now.
-                            .environment(\.heroIsOutgoing, screen.isOutgoing)
+                            .environment(\.heroIsOutgoing, screen.isOutgoing || screen.swipeRole == .backdrop)
+                            // Follows an edge swipe back from a stack
+                            // session's root to the tabs kept beneath it.
+                            .modifier(RootBackSwipeModifier(role: screen.swipeRole))
                             // Each new screen sits above the previous one
                             // (keys increment), so slides cover in push
                             // order and a fade has a defined front/back.
@@ -178,20 +181,36 @@ struct ContentView: View {
         let id: Int
         let tree: NativeUITree
         let isOutgoing: Bool
+        var swipeRole: RootBackSwipeModifier.Role = .other
     }
 
-    /// Outgoing (held) screen first, current screen last. The outgoing
-    /// entry is present only during a transition window; the bridge clears
-    /// it ~0.6s after the swap.
+    /// Backdrop (the tabs kept beneath a stack session) first, then the
+    /// outgoing (held) screen, current screen last. The outgoing entry is
+    /// present only during a transition window; the bridge clears it ~1s
+    /// after the swap. Right after a push from tabs, the outgoing screen
+    /// and the backdrop are the same screen: it's listed once, as outgoing,
+    /// until the transition is over.
     private func activeScreens(currentTree: NativeUITree) -> [ActiveNativeScreen] {
         var screens: [ActiveNativeScreen] = []
-        if let out = nativeUIBridge.outgoingScreen, out.key != nativeUIBridge.screenKey {
+        let outgoing = nativeUIBridge.outgoingScreen.flatMap { $0.key != nativeUIBridge.screenKey ? $0 : nil }
+        if let backdrop = nativeUIBridge.backdropScreen,
+           backdrop.key != nativeUIBridge.screenKey,
+           backdrop.key != outgoing?.key {
+            screens.append(ActiveNativeScreen(
+                id: backdrop.key,
+                tree: backdrop.tree,
+                isOutgoing: false,
+                swipeRole: .backdrop
+            ))
+        }
+        if let out = outgoing {
             screens.append(ActiveNativeScreen(id: out.key, tree: out.tree, isOutgoing: true))
         }
         screens.append(ActiveNativeScreen(
             id: nativeUIBridge.screenKey,
             tree: currentTree,
-            isOutgoing: false
+            isOutgoing: false,
+            swipeRole: .current
         ))
         return screens
     }

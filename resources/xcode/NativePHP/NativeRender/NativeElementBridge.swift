@@ -1,6 +1,7 @@
 
 import Foundation
 import UIKit // needed for UIScreen.main, UIApplication
+import SwiftUI // Transaction, for completing a root back swipe
 import os
 import Bridge // C prototypes: nphp_get_format_version / nphp_get_runtime_flags (Phase 0 format check)
 
@@ -482,6 +483,30 @@ final class NativeElementBridge {
                 let wasActive = bridge.isActive
                 bridge.isActive = true
 
+                // An edge swipe from a stack session's root already slid the
+                // stack off and revealed the tabs kept beneath it, then sent
+                // the back. This is PHP's publish of that level: make the
+                // revealed view the current screen, as it is, with no
+                // transition and no remount.
+                let swipe = RootBackSwipe.shared
+                if isNav, !nativeChromeContinuation, swipe.isAwaitingPop,
+                   let backdrop = bridge.backdropScreen,
+                   backdrop.uri == newUri,
+                   backdrop.depth == finalTree.root.props.getInt("stack_depth", default: 0) {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        HeroFlightStore.shared.cancelAll()
+                        bridge.outgoingScreen = nil
+                        bridge.backdropScreen = nil
+                        bridge.screenKey = backdrop.key
+                        bridge.currentTree = finalTree
+                        swipe.finish()
+                    }
+                    if bridge.isReloading { bridge.isReloading = false }
+                    return
+                }
+
                 // Router-level swap between two native screens: two-layer
                 // swap. The old screen is NOT removed — it's reclassified as
                 // `outgoingScreen` so ContentView keeps it mounted (same
@@ -510,6 +535,29 @@ final class NativeElementBridge {
                 }
 
                 if isNav && !nativeChromeContinuation {
+                    // Any other navigation ends a swipe in progress.
+                    if swipe.isActive { swipe.finish() }
+
+                    // Keep the tabs screen beneath a stack pushed from it
+                    // (see `NativeUIBridge.backdropScreen`), and only that:
+                    // PHP's router must have it exactly one level below
+                    // the stack's root, or a back from the root lands
+                    // somewhere else (e.g. after a replace()).
+                    let oldRoot = bridge.currentTree?.root
+                    let oldDepth = oldRoot?.props.getInt("stack_depth", default: 0) ?? 0
+                    let newDepth = finalTree.root.props.getInt("stack_depth", default: 0)
+                    if wasActive, isFreshStackMount, let oldTree = bridge.currentTree,
+                       oldRoot?.type == "native_root_tabs", oldDepth > 0, newDepth == oldDepth + 1 {
+                        bridge.backdropScreen = NativeUIBridge.BackdropScreen(
+                            tree: oldTree,
+                            key: bridge.screenKey,
+                            uri: oldTree.root.props.getString("current_uri", default: ""),
+                            depth: oldDepth
+                        )
+                    } else {
+                        bridge.backdropScreen = nil
+                    }
+
                     if wasActive, let oldTree = bridge.currentTree {
                         let outgoingKey = bridge.screenKey
                         bridge.outgoingScreen = NativeUIBridge.OutgoingScreen(
@@ -550,7 +598,7 @@ final class NativeElementBridge {
                     } else {
                         HeroFlightStore.shared.cancelAll()
                     }
-                    bridge.screenKey += 1
+                    bridge.screenKey = bridge.nextScreenKey()
                 }
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
                 bridge.currentTree = finalTree
