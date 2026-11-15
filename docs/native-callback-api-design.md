@@ -366,17 +366,19 @@ Both now resolve callbacks by `(id, eventClass)`.
 
 ### Finding 2 — `$this` access, and the static-vs-regular dichotomy
 
-Because `fireNativeCallback()` runs *on the live component instance*, it rebinds the callback to
-`$this` (`Closure::bind($cb, $this, static::class)`) before invoking. So `then()`/`catch()`
+`fireNativeCallback()` rebinds the callback to the live instance of the component that registered
+it before invoking. `NativeCallbacks::register()` records that owner (its class and its place in the
+screen's tree), so a closure written in a nested child component runs on that child, not on the screen
+that owns the runloop. A closure no component registered is bound to the screen. So `then()`/`catch()`
 closures can mutate the live component directly — `$this->images[] = …` — exactly like a `#[On]`
-handler, and the component re-renders right after.
+handler, and the screen re-renders right after.
 
 The catch: a closure that uses `$this` **cannot be made durable**. PHP forbids unbinding `$this`
 from a closure that uses it (`Closure::bind(..., null)` returns `null`), and the bound component
 isn't serializable. So `register()` detects an instance-bound closure (`getClosureThis() !== null`)
 and quietly skips the durable copy. This yields a clean, teachable rule:
 
-| You write | Gets `$this` (live component) | Survives an app kill |
+| You write | Gets `$this` (the live component that registered it) | Survives an app kill |
 |---|---|---|
 | `function (...) { $this->… }` | ✅ | ❌ in-memory only |
 | `static function (...) { … }` | ❌ | ✅ durable side-effect |

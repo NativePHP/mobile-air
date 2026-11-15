@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\SerializableClosure\SerializableClosure;
+use Native\Mobile\Edge\NativeComponent;
 use Throwable;
 
 /**
@@ -36,6 +37,11 @@ use Throwable;
  *
  * Callbacks are correlated by the `id` the Pending* builder already passes to
  * native and that comes back on the result event.
+ *
+ * Each callback also records the component that registered it, when it has
+ * one, so it fires on that component rather than on whichever screen runs the
+ * loop the result arrives in. A child component's closure sets the child's
+ * state, not the screen's.
  */
 class NativeCallbacks
 {
@@ -45,6 +51,18 @@ class NativeCallbacks
      * @var array<string, array<string, Closure|array|string>>
      */
     protected static array $memory = [];
+
+    /**
+     * id => [ eventClass => owner ] for each callback a component registered:
+     * the component a closure is bound to, or the one a
+     * [$component, 'method'] pair calls. The owner is its class and its
+     * scope (its place in its screen's tree, '' for a screen), not the
+     * instance, so the fire path finds the live component in its place,
+     * and the record is plain data a durable copy could carry.
+     *
+     * @var array<string, array<string, array{class: class-string<NativeComponent>, scope: string}>>
+     */
+    protected static array $owners = [];
 
     /** How long a pending callback may wait for its result before it's considered abandoned. */
     protected static int $ttlMinutes = 5;
@@ -71,6 +89,17 @@ class NativeCallbacks
     {
         // Tier 1: always available for this process, no serialization constraints.
         static::$memory[$id][$eventClass] = $callback;
+
+        $owner = static::registeringComponent($callback);
+
+        if ($owner !== null) {
+            static::$owners[$id][$eventClass] = [
+                'class' => $owner::class,
+                'scope' => $owner->nativeCallbackScope(),
+            ];
+        } else {
+            unset(static::$owners[$id][$eventClass]);
+        }
 
         if (! $durable) {
             return;
@@ -204,24 +233,54 @@ class NativeCallbacks
      * lifecycle bounce). A given native operation — a photo, a gallery pick — is
      * modal and single-in-flight, so one pending callback for the event class is
      * unambiguous. Returns [id, callback] or null when there are zero matches.
-     * If several are somehow pending, the most recent wins.
+     *
+     * $for: the screen about to fire the callback. When several are somehow
+     * pending, the most recent one that can run on that screen wins: one no
+     * component registered, or one whose owner is mounted in the screen's
+     * tree. Only when none can does the most recent of all win, so a callback
+     * owned by a component that has since gone does not take a result from
+     * one that is still on screen.
      *
      * @return array{0: string, 1: Closure|array|string}|null
      */
-    public static function resolveByEvent(string $eventClass): ?array
+    public static function resolveByEvent(string $eventClass, ?NativeComponent $for = null): ?array
     {
         $matchId = null;
+        $liveId = null;
+
         foreach (static::$memory as $id => $byEvent) {
-            if (isset($byEvent[$eventClass])) {
-                $matchId = $id; // keep scanning — last match is the most recent
+            if (! isset($byEvent[$eventClass])) {
+                continue;
+            }
+
+            $matchId = $id; // keep scanning — last match is the most recent
+
+            $owner = static::$owners[$id][$eventClass] ?? null;
+
+            if ($for !== null && ($owner === null || $for->liveCallbackOwner($owner) !== null)) {
+                $liveId = $id;
             }
         }
+
+        $matchId = $liveId ?? $matchId;
 
         if ($matchId === null) {
             return null;
         }
 
         return [$matchId, static::$memory[$matchId][$eventClass]];
+    }
+
+    /**
+     * The component that registered a pending callback, or null when none
+     * did (a static closure, an invokable class, a closure from outside any
+     * component).
+     *
+     * @return array{class: class-string<NativeComponent>, scope: string}|null
+     */
+    public static function owner(string $id, string $eventClass): ?array
+    {
+        return static::$owners[$id][$eventClass] ?? null;
     }
 
     /**
@@ -240,7 +299,7 @@ class NativeCallbacks
             Cache::forget(static::key($id, $eventClass));
         }
 
-        unset(static::$memory[$id]);
+        unset(static::$memory[$id], static::$owners[$id]);
     }
 
     public static function has(string $id, string $eventClass): bool
@@ -259,7 +318,23 @@ class NativeCallbacks
     public static function flush(): void
     {
         static::$memory = [];
+        static::$owners = [];
         static::$warned = [];
+    }
+
+    /**
+     * The component a callback belongs to: the one a closure was written in
+     * (PHP binds it there), or the one a [$component, 'method'] pair calls.
+     */
+    protected static function registeringComponent(Closure|array|string $callback): ?NativeComponent
+    {
+        $owner = match (true) {
+            $callback instanceof Closure => (new \ReflectionFunction($callback))->getClosureThis(),
+            is_array($callback) => $callback[0] ?? null,
+            default => null,
+        };
+
+        return $owner instanceof NativeComponent ? $owner : null;
     }
 
     protected static function key(string $id, string $eventClass): string

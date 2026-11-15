@@ -6,10 +6,13 @@ use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\TextInput;
 use Native\Mobile\Edge\Exceptions\ComponentSlotNotSupportedException;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Events\Camera\PhotoTaken;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\BadgeChild;
 use Tests\Fixtures\Edge\NestedHostScreen;
+use Tests\Fixtures\Edge\PhotoChild;
+use Tests\Fixtures\Edge\PhotoHostScreen;
 use Tests\Fixtures\Edge\ProgrammaticChild;
 use Tests\Fixtures\Edge\ProgrammaticHostScreen;
 use Tests\Fixtures\Edge\SlotHostScreen;
@@ -29,6 +32,7 @@ beforeEach(function () {
         'user-card-child' => UserCardChild::class,
         'badge-child' => BadgeChild::class,
         'programmatic-child' => ProgrammaticChild::class,
+        'photo-child' => PhotoChild::class,
     ]);
 
     UserCardChild::$events = [];
@@ -263,4 +267,32 @@ it('dispatches a globally-marked native event once, not once per component', fun
         ->emitNative(AppearanceChanged::class, ['mode' => 'dark']);
 
     expect($seen)->toBe(['dark']);
+});
+
+// ── Native callbacks ────────────────────────────────
+
+it('runs a fluent native callback on the child component that registered it', function () {
+    $screen = Native::test(PhotoHostScreen::class)
+        ->tap('photo-b')
+        ->emitNative(PhotoTaken::class, ['path' => '/tmp/b.jpg', 'id' => 'photo-b'])
+        ->assertSee('Photo b: /tmp/b.jpg')
+        ->assertSee('Photo a: none');
+
+    // The screen has no $photo, so a callback bound to it would have
+    // written a dynamic property there instead.
+    expect(get_object_vars($screen->instance()))->not->toHaveKey('photo');
+});
+
+it('gives an id-less result to a pending callback whose owner is still mounted', function () {
+    $screen = Native::test(PhotoHostScreen::class)
+        ->tap('photo-a')
+        ->tap('photo-b')
+        ->set('labels', ['a']); // b, the most recent registration, unmounts
+
+    // Some native paths drop the id; the fallback must not hand the result
+    // to b's callback just because it registered last.
+    $screen->emitNative(PhotoTaken::class, ['path' => '/tmp/a.jpg'])
+        ->assertSee('Photo a: /tmp/a.jpg');
+
+    expect(get_object_vars($screen->instance()))->not->toHaveKey('photo');
 });

@@ -2119,10 +2119,8 @@ abstract class NativeComponent
         // (e.g. Camera::getPhoto()->photoTaken(...)). Independent of #[On] — it must
         // run even when the component declares no listener for this event.
         //
-        // Screen-level only: NativeCallbacks is a global registry keyed by
-        // id + event class with no record of the component that registered the
-        // callback, so firing it per component would run a one-shot callback
-        // once per component in the tree.
+        // Fired once, from the screen: the callback is one-shot, and it runs
+        // on the component that registered it, wherever that sits in the tree.
         $callbackFired = $this->fireNativeCallback($eventName, is_array($payload) ? $payload : []);
 
         // System-level events tagged BroadcastsGlobally are ALSO pushed through
@@ -2598,23 +2596,14 @@ abstract class NativeComponent
         $callback = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass) : null;
 
         if ($callback === null) {
-            [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
+            [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass, for: $this) ?? [null, null];
         }
 
         if ($callback === null) {
             return false;
         }
 
-        if (is_string($callback) && class_exists($callback)) {
-            $callback = app($callback);
-        }
-
-        // Bind the closure to this live component so then()/catch() can use
-        // $this (e.g. $this->images[] = ...). Static closures can't be bound, so
-        // they keep running without $this.
-        if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
-            $callback = \Closure::bind($callback, $this, static::class);
-        }
+        $callback = $this->callableForOwner($callback, NativeCallbacks::owner($id, $eventClass));
 
         try {
             call_user_func($callback, $this->makeEventInstance($eventClass, $payload));
@@ -2624,6 +2613,75 @@ abstract class NativeComponent
         }
 
         return true;
+    }
+
+    /**
+     * The callable a fluent callback runs as. An invokable class is resolved
+     * from the container. A closure, or a [$component, 'method'] pair, that a
+     * component registered runs on that component's live instance in this
+     * tree, so a child's photoTaken(fn () => $this->photo = ...) sets the
+     * child's state, not the screen's. When no component in this tree stands
+     * in the owner's place (it was unmounted), the callback keeps the
+     * instance it was registered on. A closure no component registered is
+     * bound to this screen, as before. A static closure runs without $this.
+     *
+     * @param  array{class: string, scope: string}|null  $owner
+     */
+    private function callableForOwner(\Closure|array|string $callback, ?array $owner): callable
+    {
+        if (is_string($callback) && class_exists($callback)) {
+            return app($callback);
+        }
+
+        $target = $owner === null ? $this : $this->liveCallbackOwner($owner);
+
+        if ($target === null) {
+            return $callback;
+        }
+
+        if (is_array($callback)) {
+            return $owner === null ? $callback : [$target, $callback[1]];
+        }
+
+        // Bind the closure so then()/catch() can use $this (e.g.
+        // $this->images[] = ...). Static closures can't be bound.
+        if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
+            return \Closure::bind($callback, $target, $target::class);
+        }
+
+        return $callback;
+    }
+
+    /**
+     * @internal The component in this screen's tree that stands for the owner
+     * of a fluent callback ({@see NativeCallbacks::owner()}): the one mounted
+     * at the owner's scope, when it is of the owner's class. That is the
+     * registering instance while it stays mounted, and its replacement once
+     * it has been unmounted and mounted again in the same place. Null when
+     * no component there matches.
+     *
+     * @param  array{class: string, scope: string}  $owner
+     */
+    public function liveCallbackOwner(array $owner): ?NativeComponent
+    {
+        foreach ($this->componentTree() as $component) {
+            if ($component::class === $owner['class'] && $component->nativeCallbackScope() === $owner['scope']) {
+                return $component;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @internal This component's place in its screen's tree: '' for a screen,
+     * the `parent>child` identities of its CallbackRegistry for a nested
+     * component. The stable name {@see NativeCallbacks} records for the
+     * owner of a fluent callback.
+     */
+    public function nativeCallbackScope(): string
+    {
+        return isset($this->nativeCallbacks) ? $this->nativeCallbacks->scope() : '';
     }
 
     /**
@@ -2681,15 +2739,7 @@ abstract class NativeComponent
                 return;
             }
 
-            if (is_string($callback) && class_exists($callback)) {
-                $callback = app($callback);
-            }
-
-            // Bind the closure to this live component so finished()/failed() can
-            // mutate state via $this. Static closures run without $this.
-            if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
-                $callback = \Closure::bind($callback, $this, static::class);
-            }
+            $callback = $this->callableForOwner($callback, NativeCallbacks::owner($id, $eventClass));
 
             if ($failed) {
                 $callback(new AsyncTaskException(
