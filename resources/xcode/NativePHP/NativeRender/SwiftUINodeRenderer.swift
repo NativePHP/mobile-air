@@ -334,7 +334,7 @@ private struct KeyboardDismissTap: UIGestureRecognizerRepresentable {
 /// The every-tap half of `dismissesKeyboardOnTap()`. A SwiftUI gesture that
 /// recognises alongside its children stops UIKit-backed ones (text fields
 /// included) from getting their taps, so this is a plain UIKit recognizer on
-/// the window, like `EscapeHatchGesture`: it never cancels or delays a touch
+/// the window: it never cancels or delays a touch
 /// and recognises alongside everything.
 ///
 /// It only acts on taps inside a screen that asked for it: the tapped view
