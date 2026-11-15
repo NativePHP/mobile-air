@@ -1,8 +1,11 @@
 <?php
 
 use Illuminate\Validation\ValidationException;
+use Native\Mobile\Edge\Concerns\ValidatesInput;
+use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\FieldErrors;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
 use Tests\Fixtures\Edge\ErrorProbeElement;
@@ -106,4 +109,35 @@ it('keeps a message thrown from an updated*() hook during native:model sync', fu
     $test->input('email', 'ada@example.com');
 
     expect(probeErrors($test)[1])->toBeNull();
+});
+
+it('validateOnly() applies a wildcard rule to one array item', function () {
+    $screen = new class extends NativeComponent
+    {
+        use ValidatesInput;
+
+        public array $items = [['name' => ''], ['name' => 'Bob']];
+
+        protected function rules(): array
+        {
+            return ['items' => 'array', 'items.*' => 'array', 'items.*.name' => 'required'];
+        }
+
+        protected function validationAttributes(): array
+        {
+            return ['items.*.name' => 'item name'];
+        }
+
+        public function render(): Element
+        {
+            return new Element('column');
+        }
+    };
+
+    expect(fn () => $screen->validateOnly('items.0.name'))->toThrow(ValidationException::class)
+        ->and($screen->getErrorBag()->toArray())->toBe(['items.0.name' => ['The item name field is required.']]);
+
+    // `items.*` covers one segment, so it doesn't apply to `items.1.name`.
+    expect($screen->validateOnly('items.1.name'))->toBe(['items' => [1 => ['name' => 'Bob']]])
+        ->and($screen->getErrorBag()->keys())->toBe(['items.0.name']);
 });

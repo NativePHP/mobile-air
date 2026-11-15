@@ -604,9 +604,16 @@ class NativeServiceProvider extends PackageServiceProvider
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
                 \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? config('native-ui.theme.light.destructive', '#FF0000');
                 \$__nativeErrorDarkColor = isset(\$__nativeErrorArgs[1]) ? null : config('native-ui.theme.dark.destructive');
-                if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                \$__nativeErrorMessage = match (true) {
+                    ! isset(\$errors) => null,
+                    is_array(\$errors) => \$errors[\$__nativeErrorField] ?? null,
+                    \$errors instanceof \\Illuminate\\Support\\ViewErrorBag,
+                    \$errors instanceof \\Illuminate\\Contracts\\Support\\MessageBag => \$errors->first(\$__nativeErrorField),
+                    default => null,
+                };
+                if (!empty(\$__nativeErrorMessage)) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
-                        'text' => \$errors[\$__nativeErrorField],
+                        'text' => \$__nativeErrorMessage,
                         'color' => \$__nativeErrorColor,
                         'dark' => ['color' => \$__nativeErrorDarkColor],
                         'fontSize' => 12,

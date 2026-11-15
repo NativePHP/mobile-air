@@ -1,5 +1,7 @@
 <?php
 
+use Illuminate\Support\MessageBag;
+use Illuminate\Support\ViewErrorBag;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
@@ -396,3 +398,23 @@ BLADE);
     expect($errorNode['props'])->not->toHaveKey('dark_color');
     expect($errorNode['props']['font_size'])->toBe(12.0);
 });
+
+it('reads the error from a ValidatesInput error bag', function (Closure $errors) {
+    $viewPath = __DIR__.'/views/test-error-bag.blade.php';
+    file_put_contents($viewPath, <<<'BLADE'
+<native:column>
+    @nativeError('name')
+    @nativeError('email')
+</native:column>
+BLADE);
+
+    NativeElementCollector::reset();
+    view('test-error-bag', ['errors' => $errors()])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['children'])->toHaveCount(1)
+        ->and($tree['children'][0]['props']['text'])->toBe('Name is required');
+})->with([
+    'view error bag' => fn () => (new ViewErrorBag)->put('default', new MessageBag(['name' => ['Name is required', 'Too short']])),
+    'message bag' => fn () => new MessageBag(['name' => ['Name is required', 'Too short']]),
+]);
