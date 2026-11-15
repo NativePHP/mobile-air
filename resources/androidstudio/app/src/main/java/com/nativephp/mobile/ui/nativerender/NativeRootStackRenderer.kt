@@ -296,10 +296,11 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     scrollBehavior = scrollBehavior,
                 )
             }
-            // Search field stacked under a titled bar (iOS-parity). When
-            // there's no title, the field already lives in the bar's title
-            // slot above, so this is skipped.
-            if (hasSearch && hasTitle) {
+            // Search field stacked under a titled bar (iOS-parity), including
+            // a custom title view. When there's no title of any kind, the
+            // field already lives in the bar's title slot above, so this is
+            // skipped.
+            if (hasSearch && (hasTitle || titleNode != null)) {
                 // M3 "search bar below a title" pattern: a full-width filled
                 // pill (https://m3.material.io/components/search/guidelines).
                 InlineNavSearchField(

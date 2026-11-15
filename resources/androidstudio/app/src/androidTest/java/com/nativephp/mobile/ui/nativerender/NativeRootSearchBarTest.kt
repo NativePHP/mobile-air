@@ -8,28 +8,35 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * A top-bar search field on a screen that also has a bottom nav arrives
- * folded onto `native_root_tabs` as `nav_search_*` (#469).
+ * The top-bar search field: `search_*` on `native_root_stack`, and folded
+ * onto `native_root_tabs` as `nav_search_*` when the screen also has a
+ * bottom nav (#469).
  */
 @RunWith(AndroidJUnit4::class)
-class NativeRootTabsSearchBarTest {
+class NativeRootSearchBarTest {
     @get:Rule
     val composeRule = createComposeRule()
 
+    @Before
+    fun setUp() {
+        NavigationCoordinator.reset()
+    }
+
     @Test
-    fun searchFieldTakesTheTitleSlotWhenTheBarHasNoTitle() {
+    fun tabsSearchFieldTakesTheTitleSlotWhenTheBarHasNoTitle() {
         render(tabsNode())
 
         composeRule.onNodeWithText(PLACEHOLDER).assertIsDisplayed()
     }
 
     @Test
-    fun searchFieldSitsUnderATitledBar() {
+    fun tabsSearchFieldSitsUnderATitledBar() {
         render(tabsNode(title = TITLE))
 
         composeRule.onNodeWithText(TITLE).assertIsDisplayed()
@@ -37,6 +44,30 @@ class NativeRootTabsSearchBarTest {
         val titleBottom = composeRule.onNodeWithText(TITLE).getUnclippedBoundsInRoot().bottom
         val fieldTop = composeRule.onNodeWithText(PLACEHOLDER).getUnclippedBoundsInRoot().top
         assertTrue(fieldTop >= titleBottom)
+    }
+
+    @Test
+    fun tabsSearchFieldSitsUnderACustomTitleView() {
+        render(tabsNode(withTitleView = true))
+
+        composeRule.onNodeWithText(PLACEHOLDER).assertIsDisplayed()
+    }
+
+    @Test
+    fun stackSearchFieldSitsUnderACustomTitleView() {
+        composeRule.setContent {
+            MaterialTheme {
+                NativeRootStackRenderer(
+                    node(
+                        type = "native_root_stack",
+                        props = mapOf("current_uri" to "/home", "search_placeholder" to PLACEHOLDER),
+                        children = listOf(node(type = "top_bar_title")),
+                    )
+                )
+            }
+        }
+
+        composeRule.onNodeWithText(PLACEHOLDER).assertIsDisplayed()
     }
 
     @Test
@@ -59,7 +90,11 @@ class NativeRootTabsSearchBarTest {
         }
     }
 
-    private fun tabsNode(title: String = "", withSearchTab: Boolean = false): NativeUINode {
+    private fun tabsNode(
+        title: String = "",
+        withTitleView: Boolean = false,
+        withSearchTab: Boolean = false,
+    ): NativeUINode {
         val tabs = mutableListOf(
             node(type = "bottom_nav_item", props = mapOf("id" to "home", "label" to "Home", "url" to "/home", "active" to true)),
             node(type = "bottom_nav_item", props = mapOf("id" to "contacts", "label" to "Contacts", "url" to "/contacts")),
@@ -76,7 +111,8 @@ class NativeRootTabsSearchBarTest {
         // The PHP side sets this only when a search-role tab exists; dynamic
         // mode keeps that tab visible with no items.
         if (withSearchTab) props["nav_search_mode"] = "dynamic"
-        return node(type = "native_root_tabs", props = props, children = tabs)
+        val titleView = if (withTitleView) listOf(node(type = "top_bar_title")) else emptyList()
+        return node(type = "native_root_tabs", props = props, children = tabs + titleView)
     }
 
     private fun node(
