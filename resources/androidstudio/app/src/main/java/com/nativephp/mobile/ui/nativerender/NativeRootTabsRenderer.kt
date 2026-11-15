@@ -53,9 +53,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -213,6 +215,25 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // it sits under the bar, as on the stack path.
     val searchInTitleSlot = hasInlineSearch && titleNode == null &&
         navTitle.isEmpty() && navSubtitle.isEmpty()
+
+    // Inline search text per stack level (see InlineNavSearchField). PHP
+    // keeps a pushed-over screen alive and shows it again on back, so its
+    // query outlives the push. A level's query goes when PHP pops or
+    // replaces that level, and a tab change replaces the whole stack.
+    val stackDepth = node.props.getInt("stack_depth", 0)
+    val searchLevel = "$stackDepth|$currentUri"
+    val searchQueries = remember { mutableStateMapOf<String, String>() }
+    val searchLevels = remember { HashMap<Int, String>() }
+    var searchLevelsTabId by remember { mutableStateOf(activeTabId) }
+    LaunchedEffect(activeTabId, searchLevel) {
+        if (activeTabId != searchLevelsTabId) {
+            searchLevels.clear()
+            searchLevelsTabId = activeTabId
+        }
+        searchLevels.keys.removeAll { it > stackDepth }
+        searchLevels[stackDepth] = searchLevel
+        searchQueries.keys.retainAll(searchLevels.values.toSet())
+    }
     val reservesNavigationBarSlot = NativeRootHostRegistry.reservesNavigationBarSlot(node)
 
     // `nav_display_mode` / `nav_scroll_behavior` map the same way the stack
@@ -358,19 +379,16 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         },
         topBar = {
             if (hasNavBar && !hideNavBar && !isOnSearchTab) {
-                // One field per screen: switching tabs or navigating within
-                // a tab starts an empty query, like iOS's per-tab
-                // `.searchable`. Republishes of the same screen keep it.
                 val searchField: @Composable (Modifier) -> Unit = { fieldModifier ->
-                    key(activeTabId, currentUri) {
-                        InlineNavSearchField(
-                            placeholder = searchPlaceholder,
-                            callbackId = searchOnQueryCb,
-                            nodeId = node.id,
-                            debounceMs = searchDebounceMs,
-                            modifier = fieldModifier,
-                        )
-                    }
+                    InlineNavSearchField(
+                        placeholder = searchPlaceholder,
+                        callbackId = searchOnQueryCb,
+                        nodeId = node.id,
+                        debounceMs = searchDebounceMs,
+                        queries = searchQueries,
+                        level = searchLevel,
+                        modifier = fieldModifier,
+                    )
                 }
                 val titleContent: @Composable () -> Unit = {
                     if (titleNode != null) {
@@ -976,17 +994,23 @@ private fun androidSearchableText(item: NativeUINode): String? {
 }
 
 /**
- * Inline search field placed in a `TopAppBar` title slot when a
- * stack-only chrome screen carries `search_placeholder` /
- * `search_on_query` props (set via `NavBarOptions::searchBar()`).
- * Used by `NativeRootStackRenderer` for the legacy in-NavBar search
- * pattern; the new tab-based search experience uses
+ * Inline search field drawn in or under the `TopAppBar` when a chrome
+ * screen carries `search_placeholder` / `search_on_query` props (set via
+ * `NavBarOptions::searchBar()`), folded to `nav_search_*` on the tabs
+ * root. Used by `NativeRootStackRenderer`, and by this renderer when the
+ * layout has no search-role tab; a search-role tab uses
  * `AndroidSearchTabRoot` instead.
  *
  * Debounce semantics mirror iOS's `SearchableNavBarModifier`: changes
  * are coalesced over `debounceMs` ms before firing the bridge event.
  * `LaunchedEffect(text)` cancels the in-flight delay on the next
  * keystroke.
+ *
+ * The text lives in `queries` under `level`, the stack level showing
+ * the field, so going back to a level shows the query PHP still holds
+ * for it, as iOS keeps each level's `.searchable` text. Returning to a
+ * level doesn't resend its query. The renderer drops a level's entry
+ * once PHP's stack no longer holds that level.
  */
 @Composable
 internal fun InlineNavSearchField(
@@ -994,9 +1018,11 @@ internal fun InlineNavSearchField(
     callbackId: Int,
     nodeId: Int,
     debounceMs: Int,
+    queries: SnapshotStateMap<String, String>,
+    level: String,
     modifier: Modifier = Modifier,
-) {
-    var text by remember { mutableStateOf("") }
+) = key(level) {
+    val text = queries[level] ?: ""
     var hasInteracted by remember { mutableStateOf(false) }
 
     LaunchedEffect(text) {
@@ -1020,7 +1046,7 @@ internal fun InlineNavSearchField(
         )
         BasicTextField(
             value = text,
-            onValueChange = { text = it },
+            onValueChange = { queries[level] = it },
             modifier = Modifier
                 .padding(start = 8.dp)
                 .fillMaxWidth(),
