@@ -978,12 +978,17 @@ abstract class Element
         }
 
         // A #[Memo] child's root, unchanged since it was built. Put back in
-        // the same place (same registry, positional id, key path and index),
-        // its walk gives the same ids and hashes as last time; when the native
-        // side still holds that subtree (its hash is what we recorded for it
-        // last frame) and none of its ids is taken, answer with the REUSE
-        // marker the walk would end in, without walking it.
-        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F{$nextId}\x1F{$parentKeyPath}\x1F{$indexInParent}";
+        // the same place (same registry, positional id, key path, and its key,
+        // or its index when it has none), its walk gives the same ids and
+        // hashes as last time; when the native side still holds that subtree
+        // (its hash is what we recorded for it last frame) and none of its ids
+        // is taken, answer with the REUSE marker the walk would end in,
+        // without walking it. A keyed root's ids come from parent/key, and so
+        // do its descendants', so its index doesn't matter: a row moved by an
+        // insert before it still answers without a walk. Nothing under a key
+        // takes a positional id either, so the nextId restored below is the
+        // one it came in with.
+        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F{$nextId}\x1F{$parentKeyPath}\x1F".($this->key !== null ? "k\x1F{$this->key}" : $indexInParent);
         $last = $this->lastWalk;
 
         if ($last !== null
