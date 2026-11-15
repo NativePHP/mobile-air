@@ -340,6 +340,25 @@ class FakeBridge implements GatedBridge
         return $this;
     }
 
+    /**
+     * Assert `Accessibility::announce()` was called, with this message when
+     * one is given.
+     */
+    public function assertAnnounced(?string $message = null, ?bool $assertive = null): static
+    {
+        return $this->assertCalled('Accessibility.Announce', fn (array $params) => ($message === null || ($params['message'] ?? null) === $message)
+            && ($assertive === null || ($params['assertive'] ?? false) === $assertive));
+    }
+
+    /**
+     * Assert `Accessibility::focus()` moved the screen reader, to the
+     * element with this ref when one is given.
+     */
+    public function assertFocused(?string $ref = null): static
+    {
+        return $this->assertCalled('Accessibility.Focus', fn (array $params) => $ref === null || ($params['ref'] ?? null) === $ref);
+    }
+
     public function assertNothingCalled(): static
     {
         Assert::assertEmpty(
