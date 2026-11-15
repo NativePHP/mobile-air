@@ -88,4 +88,26 @@ struct NativeElementBridgeFrameTests {
         #expect(queue.drain().map(\.nodeCount) == [1, 2, 3])
         #expect(queue.isEmpty)
     }
+
+    @Test func theMainThreadTakesOnlyTheNewestFrame() throws {
+        func settled(_ id: UInt32, fresh: Bool = false) throws -> NativeElementBridge.Settled {
+            let tree = try #require(Self.read([Self.node(id)], previous: nil))
+            return .init(finalTree: tree, nativeChromeContinuation: false, isFreshStackMount: fresh)
+        }
+
+        _ = NativeElementBridge.takeForMain()
+
+        // Only the first frame asks for a main-queue block.
+        #expect(NativeElementBridge.offerToMain(try settled(1, fresh: true), isNav: true))
+        #expect(!NativeElementBridge.offerToMain(try settled(2), isNav: false))
+        #expect(!NativeElementBridge.offerToMain(try settled(3), isNav: false))
+
+        // The block gets the newest tree, still flagged as the navigation
+        // and fresh stack mount the first frame was.
+        let frame = try #require(NativeElementBridge.takeForMain())
+        #expect(frame.settled.finalTree.root.id == 3)
+        #expect(frame.isNav)
+        #expect(frame.settled.isFreshStackMount)
+        #expect(NativeElementBridge.takeForMain() == nil)
+    }
 }
