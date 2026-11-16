@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Vite;
 use Native\Mobile\Commands\BuildIosAppCommand;
+use Native\Mobile\Commands\CacheBootstrapCommand;
 use Native\Mobile\Commands\CheckBuildNumberCommand;
 use Native\Mobile\Commands\CredentialsCommand;
 use Native\Mobile\Commands\DebugCommand;
@@ -60,6 +61,7 @@ use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
 use Native\Mobile\Plugins\PluginRegistry;
+use Native\Mobile\Support\BootstrapCache;
 use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Native\Mobile\Support\PathHelper;
@@ -84,6 +86,7 @@ class NativeServiceProvider extends PackageServiceProvider
             ->hasCommands([
                 PackageCommand::class,
                 BuildIosAppCommand::class,
+                CacheBootstrapCommand::class,
                 CheckBuildNumberCommand::class,
                 CredentialsCommand::class,
                 DebugCommand::class,
@@ -135,6 +138,7 @@ class NativeServiceProvider extends PackageServiceProvider
         // event that PHP fires reaches the live screen through it.
         GlobalEventDispatcher::install($this->app);
 
+        $this->useDeviceBootstrapCache();
         $this->useDeviceAppKey();
         $this->publishPluginsServiceProvider();
         $this->registerCoreFacades();
@@ -172,6 +176,20 @@ class NativeServiceProvider extends PackageServiceProvider
                 DeviceAppKey::scrubCachedConfig($this->app->getCachedConfigPath());
             }
         });
+    }
+
+    /**
+     * The config cache native:cache-bootstrap built on this device describes
+     * the paths and environment it was built under. Bring it up to date with
+     * this process before anything reads it.
+     */
+    protected function useDeviceBootstrapCache(): void
+    {
+        if (! config('nativephp-internal.running')) {
+            return;
+        }
+
+        BootstrapCache::apply($this->app);
     }
 
     protected function publishPluginsServiceProvider(): void

@@ -48,9 +48,19 @@ class DeviceAppKey
             return;
         }
 
-        $config['app']['key'] = null;
-        $config['app']['previous_keys'] = [];
+        file_put_contents($path, '<?php return '.var_export(static::scrub($config), true).';'.PHP_EOL);
+    }
 
-        file_put_contents($path, '<?php return '.var_export($config, true).';'.PHP_EOL);
+    /**
+     * The same config with the encryption keys taken out.
+     */
+    public static function scrub(array $config): array
+    {
+        if (isset($config['app']) && is_array($config['app'])) {
+            $config['app']['key'] = null;
+            $config['app']['previous_keys'] = [];
+        }
+
+        return $config;
     }
 }

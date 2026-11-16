@@ -1149,6 +1149,12 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                             }
 
                             // If persistent mode, reboot interpreter to pick up new class definitions
+                            // The changed files may include config or listeners,
+                            // which a bootstrap cache would otherwise keep serving.
+                            if (::laravelEnv.isInitialized) {
+                                laravelEnv.clearBootstrapCache()
+                            }
+
                             if (phpBridge.isPersistentMode()) {
                                 val rebootStart = System.currentTimeMillis()
                                 Log.d("HotReload", "HMR#$gen rebooting persistent runtime...")

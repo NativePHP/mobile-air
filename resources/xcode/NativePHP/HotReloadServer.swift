@@ -164,6 +164,10 @@ class HotReloadCoordinator {
             // Embedded php-mode webviews own TSRM contexts with the same
             // hazard; `PersistentPHPRuntime.shutdown()` suspends those itself
             // (see `WebviewPHPRuntime.suspendAllForRuntimeReboot`).
+            // The changed files may include config or listeners, which a
+            // bootstrap cache would otherwise keep serving.
+            AppUpdateManager.shared.clearBootstrapCache()
+
             if PersistentPHPRuntime.shared.isBooted {
                 PHPQueueWorker.shared.stopAndWait()
                 // Same reason as the queue worker: the async slots' live TSRM
