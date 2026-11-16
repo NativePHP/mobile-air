@@ -17,6 +17,14 @@ class PluginConflictException extends RuntimeException
             $plugins = implode(' and ', $conflict['plugins']);
             if ($conflict['type'] === 'namespace') {
                 $messages[] = "Namespace '{$conflict['value']}' is used by both {$plugins}";
+            } elseif ($conflict['type'] === 'manifest_attribute') {
+                $values = [];
+                foreach ($conflict['values'] ?? [] as $plugin => $value) {
+                    $values[] = "    {$plugin} → {$value}";
+                }
+
+                $messages[] = "Manifest attribute {$conflict['value']} is set to different values by {$plugins}:\n".
+                    implode("\n", $values);
             } else {
                 $messages[] = "Bridge function '{$conflict['value']}' is registered by both {$plugins}";
             }
