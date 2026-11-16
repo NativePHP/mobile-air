@@ -6,6 +6,7 @@ use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
+use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,7 @@ use Native\Mobile\Commands\PluginMakeHookCommand;
 use Native\Mobile\Commands\PluginRegisterCommand;
 use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
+use Native\Mobile\Commands\QueueIdleCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunAsyncTaskCommand;
@@ -61,6 +63,7 @@ use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
 use Native\Mobile\Support\PathHelper;
+use Native\Mobile\Support\QueueWorkerSignal;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -87,6 +90,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 InstallCommand::class,
                 RunCommand::class,
                 RunAsyncTaskCommand::class,
+                QueueIdleCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,
@@ -207,6 +211,11 @@ class NativeServiceProvider extends PackageServiceProvider
             ThermalStateChanged::class,
             fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
+
+        // The device queue worker stays off until a job is pushed. This tells
+        // native to boot it, and leaves a marker so jobs still queued when the
+        // app closes are picked up at the next launch.
+        Event::listen(JobQueued::class, [QueueWorkerSignal::class, 'jobQueued']);
     }
 
     protected function registerCoreFacades(): void

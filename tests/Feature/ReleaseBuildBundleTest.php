@@ -173,6 +173,8 @@ class ReleaseBuildBundleTest extends TestCase
 
         $this->assertSame('1.0.0', $meta['version']);
         $this->assertSame(1, $meta['version_code']);
+        $this->assertSame(2, $meta['async_max_slots']);
+        $this->assertSame(60, $meta['async_idle_timeout']);
     }
 
     public function test_ios_bundle_meta_writes_version_code_as_an_int(): void
@@ -190,6 +192,24 @@ class ReleaseBuildBundleTest extends TestCase
 
         $this->assertSame('1.0.0b1', trim(File::get(dirname($zipPath).'/bundled.version')));
         $this->assertSame(1, $meta['version_code']);
+    }
+
+    public function test_ios_bundle_meta_carries_the_async_pool_config_for_native(): void
+    {
+        config(['nativephp.async' => ['max_slots' => 9, 'idle_timeout' => 15]]);
+
+        $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
+        File::ensureDirectoryExists(dirname($zipPath));
+
+        $command = app(BuildIosAppCommand::class);
+        $write = new \ReflectionMethod($command, 'createBundledVersionFile');
+        $write->invoke($command, $zipPath);
+
+        $meta = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        // Clamped to the C lane's ceiling of four.
+        $this->assertSame(4, $meta['async_max_slots']);
+        $this->assertSame(15, $meta['async_idle_timeout']);
     }
 
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void

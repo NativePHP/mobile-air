@@ -1,10 +1,11 @@
 package com.nativephp.mobile.bridge
 
+import android.content.Context
 import android.util.Log
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
+import org.json.JSONObject
+import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
 
 /**
  * Runs dispatched async tasks immediately on a small pool of background PHP
@@ -14,23 +15,35 @@ import java.util.concurrent.TimeUnit
  *   - It does NOT poll `queue:work` and never touches the standard queue. Task
  *     ids arrive directly via the `AsyncTask.Dispatch` bridge function and are
  *     run right away.
- *   - It is CONCURRENT — `poolSize` threads, so a screen can run several
+ *   - It is CONCURRENT — up to `maxSlots` threads, so a screen can run several
  *     background tasks at once — where the queue worker is a single thread.
  *
- * Each pool thread boots its own thread-local PHP context lazily (on its first
- * task, so idle apps pay nothing) and reuses it for subsequent tasks. The task
- * payload and result travel via the PHP-side temp-file transport plus the
- * `AsyncTask.Complete` bridge function, which wakes the UI runloop.
+ * Threads start on demand, each booting its own thread-local PHP context (a
+ * full Laravel boot) before taking its first task. None run at launch. The
+ * first dispatch starts one, and another starts only while more tasks are
+ * waiting than threads are free, up to `maxSlots`. A thread with no task for
+ * `idleTimeoutSeconds` shuts its context down and exits. Both come from
+ * bundle_meta.json (`config('nativephp.async')`).
+ *
+ * All threads take from one shared queue, so a task goes to whichever thread
+ * frees up first. The task payload and result travel via the PHP-side
+ * temp-file transport plus the `AsyncTask.Complete` bridge function, which
+ * wakes the UI runloop.
  *
  * iOS twin: `AsyncTaskExecutor.swift`.
  */
 class AsyncTaskExecutor(
     private val phpBridge: PHPBridge,
-    private val poolSize: Int = DEFAULT_POOL_SIZE,
+    maxSlots: Int = DEFAULT_MAX_SLOTS,
+    idleTimeoutSeconds: Int = DEFAULT_IDLE_TIMEOUT_SECONDS,
 ) {
     companion object {
         private const val TAG = "AsyncTaskExecutor"
-        private const val DEFAULT_POOL_SIZE = 4
+
+        /** Matches the iOS C lane's ASYNC_PHP_MAX_SLOTS, the ceiling on both platforms. */
+        private const val HARD_MAX_SLOTS = 4
+        private const val DEFAULT_MAX_SLOTS = 2
+        private const val DEFAULT_IDLE_TIMEOUT_SECONDS = 60
 
         /**
          * How long stop() waits for the pool to drain before giving up on it.
@@ -61,7 +74,26 @@ class AsyncTaskExecutor(
          */
         val onLaneThread: Boolean
             get() = laneThread.get() == true
+
+        /** An executor sized by the `async_*` keys in bundle_meta.json. */
+        fun fromBundleMeta(context: Context, phpBridge: PHPBridge): AsyncTaskExecutor {
+            val meta = try {
+                context.assets.open("bundle_meta.json").bufferedReader().use { JSONObject(it.readText()) }
+            } catch (e: Exception) {
+                null
+            }
+
+            return AsyncTaskExecutor(
+                phpBridge,
+                maxSlots = meta?.optInt("async_max_slots", DEFAULT_MAX_SLOTS) ?: DEFAULT_MAX_SLOTS,
+                idleTimeoutSeconds = meta?.optInt("async_idle_timeout", DEFAULT_IDLE_TIMEOUT_SECONDS)
+                    ?: DEFAULT_IDLE_TIMEOUT_SECONDS,
+            )
+        }
     }
+
+    private val maxSlots = maxSlots.coerceIn(1, HARD_MAX_SLOTS)
+    private val idleTimeoutMs = idleTimeoutSeconds.coerceAtLeast(0) * 1000L
 
     /**
      * The completion to post if a task outruns its deadline. PHP builds it at
@@ -74,8 +106,22 @@ class AsyncTaskExecutor(
         val payloadJson: String,
     )
 
-    private val queue = LinkedBlockingQueue<String>()
+    /** Guards [queue], [threads], [live] and [busy]; threads wait on it for work. */
+    private val lock = Object()
+
+    /** Tasks waiting for a thread, oldest first. */
+    private val queue = ArrayDeque<String>()
+
+    /** Every thread started, including ones that have since exited. */
     private val threads = mutableListOf<Thread>()
+
+    /** Threads that are booting or booted and have not exited. */
+    private var live = 0
+
+    /** Threads running a task right now. */
+    private var busy = 0
+
+    private var nextThreadIndex = 0
 
     /** Dispatched-but-not-yet-finished tasks that carry a deadline. */
     private val inFlight = ConcurrentHashMap<String, Watchdog>()
@@ -92,21 +138,13 @@ class AsyncTaskExecutor(
         }
         running = true
 
-        repeat(poolSize) { index ->
-            Thread({ workerLoop(index) }, "nativephp-async-$index").apply {
-                isDaemon = true
-                threads.add(this)
-                start()
-            }
-        }
-
         watchdogThread = Thread({ watchdogLoop() }, "nativephp-async-watchdog").apply {
             isDaemon = true
             start()
         }
 
         shared = this
-        Log.i(TAG, "Async executor started ($poolSize threads)")
+        Log.i(TAG, "Async executor ready (0/$maxSlots threads, boot on first task, idle timeout ${idleTimeoutMs / 1000}s)")
     }
 
     /**
@@ -115,8 +153,8 @@ class AsyncTaskExecutor(
      * A non-zero [timeoutSeconds] arms the watchdog: if the deadline passes with
      * nothing delivered, [timeoutEvent]/[timeoutPayloadJson] are posted into the
      * UI runloop so `->failed()` fires instead of the UI waiting forever. The
-     * deadline covers queue time as well as run time — from the user's point of
-     * view the wait started when they tapped.
+     * deadline covers queue and boot time as well as run time — from the user's
+     * point of view the wait started when they tapped.
      *
      * Returns false when the task was NOT accepted, so the bridge function can
      * tell PHP and the dispatch can fail loudly at the call site.
@@ -141,46 +179,96 @@ class AsyncTaskExecutor(
             )
         }
 
-        val waiting = queue.size
-        if (!queue.offer(taskId)) {
-            inFlight.remove(taskId)
-            Log.e(TAG, "dispatch($taskId) rejected — queue full")
-            return false
+        val waiting: Int
+        val spawn: Boolean
+        synchronized(lock) {
+            waiting = queue.size
+            queue.addLast(taskId)
+
+            // Free threads (idle or still booting) will take queued tasks. Start
+            // another only when the queue outnumbers them and there is room.
+            spawn = queue.size > live - busy && live < maxSlots
+            if (spawn) {
+                live++
+            }
+            lock.notify()
         }
 
-        // Never silently over-subscribe: surface when tasks are queueing behind
-        // a saturated pool so the concurrency ceiling is visible in the logs.
-        if (waiting >= poolSize) {
-            Log.i(TAG, "async task $taskId queued behind $waiting others (pool=$poolSize)")
+        if (spawn) {
+            startThread()
+        } else if (waiting >= live - busy) {
+            // Never silently over-subscribe: surface when tasks are queueing
+            // behind a saturated pool so the concurrency ceiling is visible.
+            Log.i(TAG, "async task $taskId queued behind $waiting others (pool=$live, max=$maxSlots)")
         }
 
         return true
     }
 
+    /** Start one pool thread. The caller has already counted it in [live]. */
+    private fun startThread() {
+        synchronized(lock) {
+            // Threads that shut down after sitting idle are done with.
+            threads.removeAll { !it.isAlive }
+            val index = nextThreadIndex++
+            val thread = Thread({ workerLoop(index) }, "nativephp-async-$index").apply { isDaemon = true }
+            threads.add(thread)
+            thread.start()
+        }
+    }
+
     private fun workerLoop(index: Int) {
         laneThread.set(true)
 
-        var booted = false
+        val started = System.currentTimeMillis()
+        val booted = running && phpBridge.bootAsyncContext()
 
-        while (running) {
-            val taskId = try {
-                queue.poll(1, TimeUnit.SECONDS)
-            } catch (e: InterruptedException) {
-                continue
-            } ?: continue
-
-            if (!booted) {
-                booted = phpBridge.bootAsyncContext()
-                if (!booted) {
-                    Log.e(TAG, "async context boot failed on thread $index; requeueing $taskId")
-                    queue.offer(taskId)
-                    try {
-                        Thread.sleep(500)
-                    } catch (_: InterruptedException) {
-                    }
-                    continue
+        if (!booted) {
+            val stranded = mutableListOf<String>()
+            synchronized(lock) {
+                live--
+                // Nothing else can run the waiting tasks: fail them now rather
+                // than at their deadline.
+                if (live == 0) {
+                    stranded.addAll(queue)
+                    queue.clear()
                 }
             }
+            if (running) {
+                Log.e(TAG, "async context boot failed on thread $index")
+                stranded.forEach { failNow(it) }
+            }
+            return
+        }
+
+        Log.i(TAG, "async thread $index booted in ${System.currentTimeMillis() - started} ms")
+
+        var idleSince = System.currentTimeMillis()
+
+        while (true) {
+            val taskId: String = synchronized(lock) {
+                var next: String? = null
+                while (running) {
+                    next = queue.pollFirst()
+                    if (next != null) break
+
+                    val waitMs = if (idleTimeoutMs > 0) idleTimeoutMs - (System.currentTimeMillis() - idleSince) else 0L
+                    if (idleTimeoutMs > 0 && waitMs <= 0) break
+
+                    try {
+                        lock.wait(if (idleTimeoutMs > 0) waitMs else 0L)
+                    } catch (e: InterruptedException) {
+                        // stop() interrupts; the loop condition sees it.
+                    }
+                }
+
+                if (next == null) {
+                    live--
+                } else {
+                    busy++
+                }
+                next
+            } ?: break
 
             try {
                 phpBridge.runAsyncTask(taskId)
@@ -190,15 +278,37 @@ class AsyncTaskExecutor(
                 // The run is over either way — disarm the watchdog. A completion
                 // (or a native-level failure) has already been posted from PHP.
                 inFlight.remove(taskId)
+                synchronized(lock) { busy-- }
+                idleSince = System.currentTimeMillis()
             }
         }
 
-        if (booted) {
-            try {
-                phpBridge.shutdownAsyncContext()
-            } catch (e: Exception) {
-                Log.w(TAG, "async context shutdown failed on thread $index", e)
-            }
+        if (running) {
+            Log.i(TAG, "async thread $index idle for ${idleTimeoutMs / 1000}s; shutting its context down")
+        }
+
+        try {
+            phpBridge.shutdownAsyncContext()
+        } catch (e: Exception) {
+            Log.w(TAG, "async context shutdown failed on thread $index", e)
+        }
+    }
+
+    /**
+     * Post the failure PHP built for a task that can never run. Without a
+     * watchdog there is no failure to post, so it is only logged.
+     */
+    private fun failNow(taskId: String) {
+        val watchdog = inFlight.remove(taskId)
+        if (watchdog == null) {
+            Log.w(TAG, "async task $taskId dropped — no context could boot")
+            return
+        }
+        Log.w(TAG, "async task $taskId failed — no context could boot")
+        try {
+            NativeElementBridge.sendNativeEvent(watchdog.event, watchdog.payloadJson)
+        } catch (e: Exception) {
+            Log.e(TAG, "failed to post failure for $taskId", e)
         }
     }
 
@@ -260,23 +370,30 @@ class AsyncTaskExecutor(
 
         // Queued-but-unstarted tasks will never run now; drop them rather than
         // letting a worker pick one up on its way out.
-        val abandoned = mutableListOf<String>()
-        queue.drainTo(abandoned)
+        val abandoned: List<String>
+        val pool: List<Thread>
+        synchronized(lock) {
+            abandoned = queue.toList()
+            queue.clear()
+            pool = threads.toList()
+            threads.clear()
+            lock.notifyAll()
+        }
         if (abandoned.isNotEmpty()) {
             Log.w(TAG, "${abandoned.size} queued async task(s) dropped on stop")
             abandoned.forEach { inFlight.remove(it) }
         }
 
         watchdogThread?.interrupt()
-        threads.forEach { it.interrupt() }
+        pool.forEach { it.interrupt() }
 
         // Interrupting a thread parked in a native run does nothing — it only
-        // unsticks the queue poll — so the join deadline is what actually bounds
-        // this. Shared budget across the pool, not per thread.
+        // unsticks the wait for work — so the join deadline is what actually
+        // bounds this. Shared budget across the pool, not per thread.
         val deadline = System.currentTimeMillis() + STOP_TIMEOUT_MS
         var clean = true
 
-        for (thread in threads + listOfNotNull(watchdogThread)) {
+        for (thread in pool + listOfNotNull(watchdogThread)) {
             val remaining = deadline - System.currentTimeMillis()
             if (remaining > 0) {
                 try {
@@ -292,7 +409,6 @@ class AsyncTaskExecutor(
             }
         }
 
-        threads.clear()
         watchdogThread = null
         inFlight.clear()
 

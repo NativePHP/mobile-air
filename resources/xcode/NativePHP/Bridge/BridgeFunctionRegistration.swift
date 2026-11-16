@@ -11,6 +11,10 @@ func registerBridgeFunctions() {
     registry.register("AsyncTask.Dispatch", function: AsyncFunctions.Dispatch())
     registry.register("AsyncTask.Complete", function: AsyncFunctions.Complete())
 
+    // QueueWorker.Wake: a job was pushed, so boot the queue worker (or have it
+    // poll now). Android twin: bridge/functions/QueueWorkerFunctions.kt.
+    registry.register("QueueWorker.Wake", function: QueueWorkerFunctions.Wake())
+
     // Event.*: wakes the native screen loop for BroadcastsGlobally events fired
     // on other PHP threads. Android twin: bridge/functions/EventFunctions.kt.
     registry.register("Event.Broadcast", function: EventFunctions.Broadcast())
