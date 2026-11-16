@@ -115,7 +115,7 @@ final class WebviewPHPRuntime {
             let body = request.bodyBytes ?? Data()
 
             let start = CFAbsoluteTimeGetCurrent()
-            NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] --> \(request.method) \(uri)")
+            NativeLog.debug("[NativePHP] [WEBVIEW:\(state.handle)] --> \(request.method) \(uri)")
 
             var outLen = 0
             let resultPtr = body.withUnsafeBytes { bodyBuffer in
@@ -139,7 +139,7 @@ final class WebviewPHPRuntime {
             let response = Data(bytesNoCopy: resultPtr, count: outLen, deallocator: .free)
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            NSLog("%@", "[NativePHP] [WEBVIEW:\(state.handle)] <-- \(PHPRawResponse.statusLine(of: response)) (\(String(format: "%.1f", elapsed))ms)")
+            NativeLog.debug("[NativePHP] [WEBVIEW:\(state.handle)] <-- \(PHPRawResponse.statusLine(of: response)) (\(String(format: "%.1f", elapsed))ms)")
 
             completion(response)
         }
@@ -180,7 +180,11 @@ final class WebviewPHPRuntime {
         // Leave the door open on failure — the next request retries rather
         // than leaving the webview permanently dead.
         state.needsBoot = state.handle < 0
-        print("[NativePHP] webview runtime: boot \(state.handle >= 0 ? "OK (slot \(state.handle))" : "FAILED (\(state.handle))")")
+        if state.handle >= 0 {
+            NativeLog.perf("[NativePHP] webview runtime: boot OK (slot \(state.handle))")
+        } else {
+            NativeLog.error("[NativePHP] webview runtime: boot FAILED (\(state.handle))")
+        }
     }
 
     private static func releaseAsync(state: State, queue: DispatchQueue) {
@@ -190,7 +194,7 @@ final class WebviewPHPRuntime {
             state.needsBoot = false
             if state.handle >= 0 {
                 _webview_php_stop(state.handle)
-                print("[NativePHP] webview runtime: slot \(state.handle) released")
+                NativeLog.debug("[NativePHP] webview runtime: slot \(state.handle) released")
                 state.handle = -1
             }
         }
@@ -257,7 +261,7 @@ final class WebviewPHPRuntime {
 
         guard !runtimes.isEmpty else { return }
 
-        NSLog("%@", "[NativePHP] webview runtime: suspending \(runtimes.count) context(s) for runtime reboot")
+        NativeLog.debug("[NativePHP] webview runtime: suspending \(runtimes.count) context(s) for runtime reboot")
 
         let group = DispatchGroup()
         for runtime in runtimes {
@@ -269,7 +273,7 @@ final class WebviewPHPRuntime {
         // out means we are about to reboot with a live context attached, so
         // say so loudly: that is the crash this whole path prevents.
         if group.wait(timeout: .now() + 5) == .timedOut {
-            NSLog("%@", "[NativePHP] ⚠️ webview runtime: suspend timed out — rebooting with a live context still attached")
+            NativeLog.error("[NativePHP] ⚠️ webview runtime: suspend timed out — rebooting with a live context still attached")
         }
     }
 
@@ -282,7 +286,7 @@ final class WebviewPHPRuntime {
         guard rebootInFlight else { return }
         rebootInFlight = false
         rebootCondition.broadcast()
-        NSLog("%@", "[NativePHP] webview runtime: reboot window closed — contexts re-boot on next request")
+        NativeLog.debug("[NativePHP] webview runtime: reboot window closed — contexts re-boot on next request")
     }
 
     /// Park the calling lane while a persistent-runtime reboot is in flight.
@@ -309,7 +313,7 @@ final class WebviewPHPRuntime {
             guard !state.released else { return }
             if state.handle >= 0 {
                 _webview_php_stop(state.handle)
-                print("[NativePHP] webview runtime: slot \(state.handle) suspended for runtime reboot")
+                NativeLog.debug("[NativePHP] webview runtime: slot \(state.handle) suspended for runtime reboot")
                 state.handle = -1
             }
             state.needsBoot = true

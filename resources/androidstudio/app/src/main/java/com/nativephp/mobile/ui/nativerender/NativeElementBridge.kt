@@ -8,6 +8,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Element Runtime bridge — direct JNI push architecture.
@@ -204,11 +205,8 @@ class NativeElementBridge private constructor() {
                     versionMismatch = true
                 } else {
                     runtimeFlags = nativeGetRuntimeFlags()
-                    Log.i(
-                        TAG,
-                        "postTreeUpdate: first publish — format_version=$producerVersion " +
-                            "runtime_flags=0x${"%08x".format(runtimeFlags)}"
-                    )
+                    NativeLog.i(TAG) { "postTreeUpdate: first publish — format_version=$producerVersion " +
+                            "runtime_flags=0x${"%08x".format(runtimeFlags)}" }
                 }
                 versionChecked = true
             }
@@ -228,7 +226,7 @@ class NativeElementBridge private constructor() {
 
                 val nodeCount = nativeGetNodeCount()
                 if (nodeCount == 0) {
-                    Log.w(TAG, "postTreeUpdate: nodeCount=0, skipping")
+                    NativeLog.d(TAG) { "postTreeUpdate: nodeCount=0, skipping" }
                     return
                 }
 
@@ -264,7 +262,7 @@ class NativeElementBridge private constructor() {
                 val navTransition = if (isNav) NativeUIBridge.pendingTransition.value else null
 
                 val t1 = System.nanoTime()
-                Log.d(TAG, "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread")
+                NativeLog.d(TAG) { "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread" }
 
                 // Ensure shadow thread is running (self-healing if it was stopped)
                 if (shadowThread == null || shadowThread?.isAlive != true) {
@@ -291,7 +289,7 @@ class NativeElementBridge private constructor() {
          * parses the tree, diffs against previous, posts to main thread.
          */
         private fun shadowThreadLoop() {
-            Log.d(TAG, "Shadow thread started")
+            NativeLog.d(TAG) { "Shadow thread started" }
             while (shadowRunning) {
                 val taken = pendingFrames.take()
                 if (taken == null) {
@@ -395,7 +393,7 @@ class NativeElementBridge private constructor() {
                             }
                         }
 
-                        Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation")
+                        NativeLog.d(TAG) { "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation" }
 
                         val isNav = update.isNav
                         mainHandler.post {
@@ -422,7 +420,7 @@ class NativeElementBridge private constructor() {
                                 NativeUIBridge.isReloading.value = false
                                 preserveTreeOnStop = false
                             }
-                            Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
+                            NativeLog.d(TAG) { "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}" }
                         }
                     } else {
                         Log.e(TAG, "Shadow: failed to parse tree (nodeCount=${update.nodeCount})")
@@ -431,7 +429,7 @@ class NativeElementBridge private constructor() {
                     Log.e(TAG, "Shadow thread processing failed: ${e.message}", e)
                 }
             }
-            Log.d(TAG, "Shadow thread stopped")
+            NativeLog.d(TAG) { "Shadow thread stopped" }
         }
 
         /**
@@ -469,7 +467,7 @@ class NativeElementBridge private constructor() {
 
         /** Reset state for new hot-reload cycle */
         fun startWatching() {
-            Log.d(TAG, "startWatching() — resetting state, starting shadow thread")
+            NativeLog.d(TAG) { "startWatching() — resetting state, starting shadow thread" }
 
             // Stop existing shadow thread before starting a new one
             val oldThread = shadowThread
@@ -863,7 +861,7 @@ class NativeElementBridge private constructor() {
 
         fun sendHotReloadEvent() {
             val ready = nativeElementIsReady()
-            Log.d(TAG, "sendHotReloadEvent: elementReady=$ready")
+            NativeLog.d(TAG) { "sendHotReloadEvent: elementReady=$ready" }
             if (!ready) {
                 Log.e(TAG, "sendHotReloadEvent: element NOT ready — event will be dropped")
             }

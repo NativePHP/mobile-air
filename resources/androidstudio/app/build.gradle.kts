@@ -125,6 +125,8 @@ android {
 
     buildFeatures {
         compose = true
+        // NativeLog gates debug logging on BuildConfig.DEBUG
+        buildConfig = true
     }
 
     externalNativeBuild {

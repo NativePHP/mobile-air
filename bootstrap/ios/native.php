@@ -65,7 +65,10 @@ try {
     $totalMs = round(($_timing['terminate'] - $_timing['start']) * 1000, 1);
 
     // Log timing (shows in Xcode console)
-    error_log("PerfTiming: PHP autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+    require_once __DIR__.'/../shared/perf-timing.php';
+    if (nativephp_perf_timing_enabled($app ?? null)) {
+        error_log("PerfTiming: PHP autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+    }
 
     // Raw HTTP/1.1, as the persistent and webview lanes write it: status line,
     // headers, a blank line, then the body byte for byte with an exact

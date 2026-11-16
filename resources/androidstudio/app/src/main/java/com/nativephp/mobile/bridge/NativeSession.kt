@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import java.io.File
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Runs a native session: the one persistent-runtime dispatch of a native
@@ -58,7 +59,9 @@ object NativeSession {
             }
 
             val output = String(response, 0, minOf(response.size, 8 * 1024), Charsets.UTF_8).trim()
-            Log.e(TAG, "PHP stopped part-way through the native session at $uri: $output")
+            // PHP output can carry user data, so release logs only its size
+            Log.e(TAG, "PHP stopped part-way through the native session at ${uri.substringBefore('?')} (${response.size} bytes of output)")
+            NativeLog.d(TAG) { output }
 
             if (!mayRestart()) {
                 Log.e(TAG, "The native session died $MAX_RESTARTS times in ${RESTART_WINDOW_MS / 1000}s, not restarting it again")
@@ -69,7 +72,7 @@ object NativeSession {
             rebootRuntime()
 
             uri = LaravelEnvironment.getStartURL(context)
-            Log.i(TAG, "Restarting the native session at $uri")
+            NativeLog.i(TAG) { "Restarting the native session at $uri" }
         }
     }
 

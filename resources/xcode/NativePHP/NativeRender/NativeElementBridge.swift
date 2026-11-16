@@ -172,14 +172,14 @@ final class NativeElementBridge {
     static func registerRegion(_ region: UnsafeMutableRawPointer) {
         regionPtr = region
         startWatching()
-        print("NativeElementBridge: region registered at \(region)")
+        NativeLog.debug("NativeElementBridge: region registered at \(region)")
     }
 
     static func unregisterRegion() {
         regionPtr = nil
         cachedTypeTable = nil
         previousTree = nil
-        print("NativeElementBridge: region unregistered")
+        NativeLog.debug("NativeElementBridge: region unregistered")
     }
 
     // MARK: - Post Tree Update from Region
@@ -189,7 +189,7 @@ final class NativeElementBridge {
     /// then hands off to the existing tree parser on the shadow queue.
     static func postTreeUpdateFromRegion() {
         guard let ptr = regionPtr else {
-            print("NativeElementBridge: postTreeUpdateFromRegion — no region registered")
+            NativeLog.debug("NativeElementBridge: postTreeUpdateFromRegion — no region registered")
             return
         }
 
@@ -199,14 +199,14 @@ final class NativeElementBridge {
         if !versionChecked {
             let producerVersion = nphp_get_format_version()
             if producerVersion != expectedFormatVersion {
-                print("NativeElementBridge: FORMAT VERSION MISMATCH — reader expects " +
+                NativeLog.fault("NativeElementBridge: FORMAT VERSION MISMATCH — reader expects " +
                       "\(expectedFormatVersion) but PHP extension reports \(producerVersion). " +
                       "Rebuild libphp.a and this reader from matching sources " +
                       "(REFACTOR-native-ui-performance.md §5.4). Dropping all tree updates.")
                 versionMismatch = true
             } else {
                 runtimeFlags = nphp_get_runtime_flags()
-                print(String(format: "NativeElementBridge: first publish — format_version=%u runtime_flags=0x%08x",
+                NativeLog.debug(String(format: "NativeElementBridge: first publish — format_version=%u runtime_flags=0x%08x",
                              producerVersion, runtimeFlags))
             }
             versionChecked = true
@@ -217,7 +217,7 @@ final class NativeElementBridge {
 
         let magic = raw.load(fromByteOffset: RegionOffset.magic, as: UInt32.self)
         guard magic == elementMagic else {
-            print("NativeElementBridge: bad magic 0x\(String(magic, radix: 16))")
+            NativeLog.fault("NativeElementBridge: bad magic 0x\(String(magic, radix: 16))")
             return
         }
 
@@ -238,14 +238,14 @@ final class NativeElementBridge {
         let propSize = Int(propSize32)
 
         guard nodeCount > 0, flatSize > 0, let flatBuf = flatBufPtr else {
-            print("NativeElementBridge: empty tree (nodes=\(nodeCount) flat=\(flatSize))")
+            NativeLog.debug("NativeElementBridge: empty tree (nodes=\(nodeCount) flat=\(flatSize))")
             return
         }
 
         // Read type table from the region
         let typeTable = readTypeTable(from: raw)
 
-        print("NativeElementBridge: postTreeUpdateFromRegion nodes=\(nodeCount) flat=\(flatSize) prop=\(propSize) types=\(typeTable.count)")
+        NativeLog.debug("NativeElementBridge: postTreeUpdateFromRegion nodes=\(nodeCount) flat=\(flatSize) prop=\(propSize) types=\(typeTable.count)")
 
         postTreeUpdate(
             flatPtr: UnsafeRawPointer(flatBuf), flatSize: flatSize,
@@ -834,7 +834,7 @@ final class NativeElementBridge {
 
         let perNode = flatData.count / nodeCount
         guard perNode >= nodeSize else {
-            print("NativeElementBridge: ERROR node size \(perNode) < \(nodeSize) — rebuild PHP binaries with \(nodeSize)-byte struct (flat=\(flatData.count) nodes=\(nodeCount))")
+            NativeLog.fault("NativeElementBridge: ERROR node size \(perNode) < \(nodeSize) — rebuild PHP binaries with \(nodeSize)-byte struct (flat=\(flatData.count) nodes=\(nodeCount))")
             return nil
         }
         let stride = nodeSize

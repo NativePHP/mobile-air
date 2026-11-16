@@ -45,7 +45,7 @@ enum NativeIcon {
         let asset = assetFolder + bare
         let found: String? = UIImage(named: asset) != nil ? asset : nil
         if found == nil {
-            print("⚠️ Custom icon '\(bare)' has no \(asset) asset in this build, using the system icon")
+            NativeLog.debug("⚠️ Custom icon '\(bare)' has no \(asset) asset in this build, using the system icon")
         }
         assetNames[bare] = found
 

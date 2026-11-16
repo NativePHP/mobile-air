@@ -90,12 +90,12 @@ enum FileFunctions {
         let toReal = canonical(to)
 
         guard sourceRoots.contains(where: { isInside(fromReal, $0) }) else {
-            print("File op refused: source outside the allowed roots")
+            NativeLog.error("File op refused: source outside the allowed roots")
             return ["success": false, "error": "Source path is not allowed"]
         }
 
         guard isInside(toReal, storageAppRoot) else {
-            print("File op refused: destination outside app storage")
+            NativeLog.error("File op refused: destination outside app storage")
             return ["success": false, "error": "Destination path is not allowed"]
         }
 
@@ -106,7 +106,7 @@ enum FileFunctions {
         // does not traverse the final component (lstat), so refuse a symlink leaf.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: to),
            attrs[.type] as? FileAttributeType == .typeSymbolicLink {
-            print("File op refused: destination leaf is a symlink")
+            NativeLog.error("File op refused: destination leaf is a symlink")
             return ["success": false, "error": "Destination path is not allowed"]
         }
 
@@ -130,7 +130,7 @@ enum FileFunctions {
                 return refusal
             }
 
-            print("Move requested - from: '\(from)', to: '\(to)'")
+            NativeLog.debug("Move requested - from: '\(from)', to: '\(to)'")
 
             let fileManager = FileManager.default
             let sourceURL = URL(fileURLWithPath: from)
@@ -158,11 +158,11 @@ enum FileFunctions {
 
                 try fileManager.moveItem(at: sourceURL, to: destURL)
 
-                print("File moved successfully")
+                NativeLog.debug("File moved successfully")
                 return ["success": true]
 
             } catch {
-                print("Error moving file: \(error.localizedDescription)")
+                NativeLog.error("Error moving file: \(error.localizedDescription)")
                 return ["success": false, "error": error.localizedDescription]
             }
         }
@@ -185,7 +185,7 @@ enum FileFunctions {
                 return refusal
             }
 
-            print("Copy requested - from: '\(from)', to: '\(to)'")
+            NativeLog.debug("Copy requested - from: '\(from)', to: '\(to)'")
 
             let fileManager = FileManager.default
             let sourceURL = URL(fileURLWithPath: from)
@@ -213,11 +213,11 @@ enum FileFunctions {
 
                 try fileManager.copyItem(at: sourceURL, to: destURL)
 
-                print("File copied successfully")
+                NativeLog.debug("File copied successfully")
                 return ["success": true]
 
             } catch {
-                print("Error copying file: \(error.localizedDescription)")
+                NativeLog.error("Error copying file: \(error.localizedDescription)")
                 return ["success": false, "error": error.localizedDescription]
             }
         }

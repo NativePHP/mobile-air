@@ -7,6 +7,7 @@ import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Background queue worker that processes Laravel queue jobs.
@@ -103,10 +104,10 @@ class PHPQueueWorker(
         shared = this
 
         if (pendingMarker.isFile) {
-            Log.i(TAG, "Jobs may be queued from an earlier run; booting")
+            NativeLog.i(TAG) { "Jobs may be queued from an earlier run; booting" }
             wake()
         } else {
-            Log.i(TAG, "Idle until a job is queued")
+            NativeLog.i(TAG) { "Idle until a job is queued" }
         }
     }
 
@@ -129,7 +130,7 @@ class PHPQueueWorker(
                 start()
             }
         }
-        Log.i(TAG, "Queue worker thread launched")
+        NativeLog.i(TAG) { "Queue worker thread launched" }
     }
 
     private fun workerLoop() {
@@ -137,7 +138,7 @@ class PHPQueueWorker(
         // wake that lands while it shuts down starts another pass on this
         // thread, so two contexts never overlap in the C worker's globals.
         while (true) {
-            Log.i(TAG, "Queue worker starting (dedicated context)")
+            NativeLog.i(TAG) { "Queue worker starting (dedicated context)" }
             val started = System.currentTimeMillis()
 
             if (!phpBridge.bootWorkerRuntime()) {
@@ -149,8 +150,7 @@ class PHPQueueWorker(
                 return
             }
 
-            Log.i(TAG, "Worker runtime booted in ${System.currentTimeMillis() - started} ms, processing jobs")
-
+            NativeLog.perf(TAG) { "Worker runtime booted in ${System.currentTimeMillis() - started} ms, processing jobs" }
             val wakeAgainIn = processUntilIdle()
 
             phpBridge.shutdownWorkerRuntime()
@@ -167,11 +167,11 @@ class PHPQueueWorker(
             }
 
             if (!again) {
-                Log.i(TAG, "Queue worker stopped")
+                NativeLog.i(TAG) { "Queue worker stopped" }
                 return
             }
 
-            Log.i(TAG, "Woken while shutting down; booting again")
+            NativeLog.i(TAG) { "Woken while shutting down; booting again" }
             // Clear the interrupt wake() may have left on this thread.
             Thread.interrupted()
         }
@@ -197,7 +197,7 @@ class PHPQueueWorker(
             try {
                 val output = phpBridge.runWorkerArtisan("queue:work --once --quiet")
                 if (output.isNotEmpty() && output != "0") {
-                    Log.d(TAG, "Job output: ${output.take(200)}")
+                    NativeLog.d(TAG) { "Job output: ${output.take(200)}" }
                 }
 
                 // Shorter sleep if we just processed a job, longer if idle
@@ -212,7 +212,7 @@ class PHPQueueWorker(
                     val (pending, next) = idleStatus()
                     when {
                         pending == 0 -> {
-                            Log.i(TAG, "Queue empty; shutting down until a job is queued")
+                            NativeLog.i(TAG) { "Queue empty; shutting down until a job is queued" }
                             return null
                         }
                         pending == null -> {
@@ -221,15 +221,15 @@ class PHPQueueWorker(
                             return null
                         }
                         next != null && next * 1000 <= SLEEP_IDLE_MS -> {
-                            Log.i(TAG, "$pending job(s) still due; staying up")
+                            NativeLog.i(TAG) { "$pending job(s) still due; staying up" }
                             idleSince = System.currentTimeMillis()
                         }
                         next != null -> {
-                            Log.i(TAG, "$pending job(s) not due for ${next}s; shutting down until then")
+                            NativeLog.i(TAG) { "$pending job(s) not due for ${next}s; shutting down until then" }
                             return next
                         }
                         else -> {
-                            Log.i(TAG, "$pending job(s) left with no due time; checking again in ${UNKNOWN_DUE_RECHECK_S}s")
+                            NativeLog.i(TAG) { "$pending job(s) left with no due time; checking again in ${UNKNOWN_DUE_RECHECK_S}s" }
                             return UNKNOWN_DUE_RECHECK_S
                         }
                     }
@@ -269,7 +269,7 @@ class PHPQueueWorker(
     private fun armDueTimer(seconds: Long) {
         dueTimer?.cancel(false)
         dueTimer = timers.schedule({
-            Log.i(TAG, "A delayed job is due; waking")
+            NativeLog.i(TAG) { "A delayed job is due; waking" }
             wake()
         }, seconds.coerceAtLeast(1), TimeUnit.SECONDS)
     }
@@ -290,7 +290,7 @@ class PHPQueueWorker(
             shared = null
         }
 
-        Log.i(TAG, "Stopping worker...")
+        NativeLog.i(TAG) { "Stopping worker..." }
         thread?.interrupt()
 
         try {
@@ -300,7 +300,7 @@ class PHPQueueWorker(
         }
 
         timers.shutdownNow()
-        Log.i(TAG, "Worker stopped")
+        NativeLog.i(TAG) { "Worker stopped" }
     }
 
     fun isRunning(): Boolean = synchronized(lock) { workerThread != null }

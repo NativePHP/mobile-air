@@ -14,8 +14,15 @@
 
 // Define Android logging macros first
 #define LOG_TAG "PHP-Native"
-#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__))
 #define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__))
+// Debug-only chatter. CMake defines NDEBUG for Release/RelWithDebInfo, which
+// the Gradle release variant builds, so these compile away there. Keep LOGE
+// for real failures.
+#ifdef NDEBUG
+#define LOGD(...) ((void) 0)
+#else
+#define LOGD(...) ((void) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__))
+#endif
 
 JavaVM *g_jvm = NULL;
 jobject g_bridge_instance = NULL;
@@ -292,7 +299,7 @@ void jni_output_callback(const char *output) {
 int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum op, sapi_headers_struct *sapi_headers) {
     // PHP passes an uninitialised header for header_remove() with no arguments.
     if (op == SAPI_HEADER_DELETE_ALL) {
-        LOGI("SAPI header: remove all");
+        LOGD("SAPI header: remove all");
         return 0;
     }
 
@@ -300,7 +307,7 @@ int android_header_handler(sapi_header_struct *sapi_header, sapi_header_op_enum 
     // and logcat leaves the device in bug reports and crash tools.
     const char *colon = memchr(sapi_header->header, ':', sapi_header->header_len);
     int name_len = (int) (colon ? (size_t) (colon - sapi_header->header) : sapi_header->header_len);
-    LOGI("SAPI header: %.*s", name_len, sapi_header->header);
+    LOGD("SAPI header: %.*s", name_len, sapi_header->header);
     return 0;
 }
 
@@ -530,9 +537,9 @@ static jstring bridge_bytes_to_jstring(JNIEnv *env, jbyteArray bytes) {
 char* run_php_request_len(const char* scriptPath, const char* method, const char* uri,
                           const char* body, size_t body_len, const char* contentType,
                           size_t *out_len) {
-    LOGI("run_php_request: waiting for mutex (uri=%s)", uri);
+    LOGD("run_php_request: waiting for mutex (uri=%s)", uri);
     pthread_mutex_lock(&g_php_request_mutex);
-    LOGI("run_php_request: mutex acquired (uri=%s)", uri);
+    LOGD("run_php_request: mutex acquired (uri=%s)", uri);
 
     clear_collected_output();
 
@@ -636,7 +643,7 @@ char* run_php_request_len(const char* scriptPath, const char* method, const char
     safe_php_embed_shutdown();
     php_initialized = 0;
 
-    LOGI("run_php_request: releasing mutex (uri=%s)", uri);
+    LOGD("run_php_request: releasing mutex (uri=%s)", uri);
     pthread_mutex_unlock(&g_php_request_mutex);
 
     *out_len = response_len;
@@ -687,13 +694,13 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
     pthread_mutex_lock(&g_php_request_mutex);
 
     if (persistent_initialized) {
-        LOGI("persistent_boot: already initialized, skipping");
+        LOGD("persistent_boot: already initialized, skipping");
         pthread_mutex_unlock(&g_php_request_mutex);
         return 0;
     }
 
     const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
-    LOGI("persistent_boot: initializing with bootstrap=%s", bootstrapPath);
+    LOGD("persistent_boot: initializing with bootstrap=%s", bootstrapPath);
 
     clear_collected_output();
 
@@ -765,7 +772,7 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
 
     persistent_initialized = 1;
     set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
-    LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
+    LOGD("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
     pthread_mutex_unlock(&g_php_request_mutex);
@@ -814,7 +821,7 @@ static jbyteArray persistent_dispatch_core(JNIEnv *env,
         return bridge_text_response(env, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime not initialized.");
     }
 
-    LOGI("persistent_dispatch: %s %s (body %zu bytes)", method, uri, body_len);
+    LOGD("persistent_dispatch: %s %s (body %zu bytes)", method, uri, body_len);
 
     clear_collected_output();
 
@@ -945,7 +952,7 @@ JNIEXPORT jstring JNICALL native_persistent_artisan(JNIEnv *env, jobject thiz, j
     }
 
     const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
-    LOGI("persistent_artisan: %s", command);
+    LOGD("persistent_artisan: %s", command);
 
     clear_collected_output();
 
@@ -982,12 +989,12 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_php_request_mutex);
 
     if (!persistent_initialized) {
-        LOGI("persistent_shutdown: not initialized, nothing to do");
+        LOGD("persistent_shutdown: not initialized, nothing to do");
         pthread_mutex_unlock(&g_php_request_mutex);
         return;
     }
 
-    LOGI("persistent_shutdown: shutting down persistent interpreter");
+    LOGD("persistent_shutdown: shutting down persistent interpreter");
 
     // A native session that died part-way (a fatal error) never shut its
     // element region down. The extension's module shutdown would then free
@@ -1013,7 +1020,7 @@ JNIEXPORT void JNICALL native_persistent_shutdown(JNIEnv *env, jobject thiz) {
     // a subsequent persistent_boot can transition IN_PROGRESS cleanly.
     set_persistent_boot_state(PERSISTENT_BOOT_NEVER_STARTED);
 
-    LOGI("persistent_shutdown: done");
+    LOGD("persistent_shutdown: done");
     pthread_mutex_unlock(&g_php_request_mutex);
 }
 
@@ -1059,7 +1066,7 @@ JNIEXPORT void JNICALL native_set_request_info(JNIEnv *env, jobject thiz,
 
 JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, jstring jcommand) {
     const char *command = (*env)->GetStringUTFChars(env, jcommand, NULL);
-    LOGI("runArtisanCommand: %s", command);
+    LOGD("runArtisanCommand: %s", command);
 
     // Lock ephemeral mutex to prevent background workers from starting
     // ephemeral runtime while artisan commands are running (and vice versa).
@@ -1097,7 +1104,7 @@ JNIEXPORT jstring JNICALL native_run_artisan_command(JNIEnv *env, jobject thiz, 
     if (artisan_hot_path) {
         // Hot path: a PHP runtime is already live on another thread. Allocate a
         // thread-local TSRM context instead of re-running global startup.
-        LOGI("runArtisanCommand: hot path — attaching to existing TSRM");
+        LOGD("runArtisanCommand: hot path — attaching to existing TSRM");
         ts_resource(0);
         setup_embed_module();
         if (php_embed_module.startup(&php_embed_module) == FAILURE) {
@@ -1303,7 +1310,7 @@ JNIEXPORT void JNICALL native_runtime_init(JNIEnv *env, jobject thiz) {
         (*env)->DeleteGlobalRef(env, g_bridge_instance);
     }
     g_bridge_instance = (*env)->NewGlobalRef(env, thiz);
-    LOGI("PHP bridge initialized");
+    LOGD("PHP bridge initialized");
 }
 
 JNIEXPORT void JNICALL native_runtime_shutdown(JNIEnv *env, jobject thiz) {
@@ -1311,7 +1318,7 @@ JNIEXPORT void JNICALL native_runtime_shutdown(JNIEnv *env, jobject thiz) {
         (*env)->DeleteGlobalRef(env, g_bridge_instance);
         g_bridge_instance = NULL;
     }
-    LOGI("PHP bridge shut down");
+    LOGD("PHP bridge shut down");
 }
 
 JNIEXPORT jstring JNICALL native_get_laravel_public_path(JNIEnv *env, jobject thiz) {
@@ -1392,7 +1399,7 @@ JNIEXPORT jstring JNICALL native_execute_script(JNIEnv *env, jobject thiz, jstri
  * Allocates a new TSRM context for this thread and starts a request.
  */
 static int worker_embed_init(void) {
-    LOGI("worker_embed_init: allocating TSRM context for worker thread");
+    LOGD("worker_embed_init: allocating TSRM context for worker thread");
 
     // Allocate thread-local TSRM storage for this thread
     ts_resource(0);
@@ -1414,7 +1421,7 @@ static int worker_embed_init(void) {
     }
 
 
-    LOGI("worker_embed_init: worker PHP context ready");
+    LOGD("worker_embed_init: worker PHP context ready");
     return SUCCESS;
 }
 
@@ -1423,10 +1430,10 @@ static int worker_embed_init(void) {
  * Only does request shutdown + thread cleanup. Does NOT call php_module_shutdown.
  */
 static void worker_embed_shutdown(void) {
-    LOGI("worker_embed_shutdown: cleaning up worker thread");
+    LOGD("worker_embed_shutdown: cleaning up worker thread");
     php_request_shutdown(NULL);
     ts_free_thread();
-    LOGI("worker_embed_shutdown: done");
+    LOGD("worker_embed_shutdown: done");
 }
 
 /**
@@ -1451,13 +1458,13 @@ JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBo
             return -1;
         }
 
-        LOGI("worker_boot: already initialized, skipping");
+        LOGD("worker_boot: already initialized, skipping");
         pthread_mutex_unlock(&g_worker_mutex);
         return 0;
     }
 
     const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
-    LOGI("worker_boot: initializing with bootstrap=%s", bootstrapPath);
+    LOGD("worker_boot: initializing with bootstrap=%s", bootstrapPath);
 
     clear_collected_output();
 
@@ -1487,7 +1494,7 @@ JNIEXPORT jint JNICALL native_worker_boot(JNIEnv *env, jobject thiz, jstring jBo
 
     worker_thread = pthread_self();
     worker_initialized = 1;
-    LOGI("worker_boot: worker PHP interpreter ready");
+    LOGD("worker_boot: worker PHP interpreter ready");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
     pthread_mutex_unlock(&g_worker_mutex);
@@ -1508,7 +1515,7 @@ JNIEXPORT jstring JNICALL native_worker_artisan(JNIEnv *env, jobject thiz, jstri
     }
 
     const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
-    LOGI("worker_artisan: %s", command);
+    LOGD("worker_artisan: %s", command);
 
     clear_collected_output();
 
@@ -1548,12 +1555,12 @@ JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_worker_mutex);
 
     if (!worker_initialized || !pthread_equal(worker_thread, pthread_self())) {
-        LOGI("worker_shutdown: not initialized on this thread, nothing to do");
+        LOGD("worker_shutdown: not initialized on this thread, nothing to do");
         pthread_mutex_unlock(&g_worker_mutex);
         return;
     }
 
-    LOGI("worker_shutdown: shutting down worker interpreter");
+    LOGD("worker_shutdown: shutting down worker interpreter");
 
     // Call Runtime::shutdown() to let PHP clean up
     zend_first_try {
@@ -1563,7 +1570,7 @@ JNIEXPORT void JNICALL native_worker_shutdown(JNIEnv *env, jobject thiz) {
     worker_embed_shutdown();
     worker_initialized = 0;
 
-    LOGI("worker_shutdown: done");
+    LOGD("worker_shutdown: done");
     pthread_mutex_unlock(&g_worker_mutex);
 }
 
@@ -1586,7 +1593,7 @@ static int ephemeral_embed_init(void) {
 
     if (php_initialized) {
         // Hot path: persistent runtime is alive, allocate a TSRM thread context
-        LOGI("ephemeral_embed_init: hot path — using existing TSRM");
+        LOGD("ephemeral_embed_init: hot path — using existing TSRM");
 
         ts_resource(0);
         setup_embed_module();
@@ -1603,13 +1610,13 @@ static int ephemeral_embed_init(void) {
 
         ephemeral_cold_booted = 0;
 
-        LOGI("ephemeral_embed_init: hot path ready");
+        LOGD("ephemeral_embed_init: hot path ready");
         return SUCCESS;
     }
 
     // Cold path: WorkManager started the process after app was killed.
     // No persistent runtime exists — do a full php_embed_init().
-    LOGI("ephemeral_embed_init: cold path — full PHP bootstrap");
+    LOGD("ephemeral_embed_init: cold path — full PHP bootstrap");
 
     setenv("NATIVEPHP_RUNNING", "true", 1);
     setenv("APP_URL", "http://127.0.0.1", 1);
@@ -1626,33 +1633,33 @@ static int ephemeral_embed_init(void) {
     sapi_module.header_handler = android_header_handler;
     ephemeral_cold_booted = 1;
 
-    LOGI("ephemeral_embed_init: cold path ready");
+    LOGD("ephemeral_embed_init: cold path ready");
     return SUCCESS;
 }
 
 static void ephemeral_embed_shutdown(void) {
     if (ephemeral_cold_booted) {
-        LOGI("ephemeral_embed_shutdown: cold path — full php_embed_shutdown");
+        LOGD("ephemeral_embed_shutdown: cold path — full php_embed_shutdown");
         safe_php_embed_shutdown();
     } else {
-        LOGI("ephemeral_embed_shutdown: hot path — thread cleanup only");
+        LOGD("ephemeral_embed_shutdown: hot path — thread cleanup only");
         php_request_shutdown(NULL);
         ts_free_thread();
     }
-    LOGI("ephemeral_embed_shutdown: done");
+    LOGD("ephemeral_embed_shutdown: done");
 }
 
 JNIEXPORT jint JNICALL native_ephemeral_boot(JNIEnv *env, jobject thiz, jstring jBootstrapPath) {
     pthread_mutex_lock(&g_ephemeral_mutex);
 
     if (ephemeral_initialized) {
-        LOGI("ephemeral_boot: already initialized, skipping");
+        LOGD("ephemeral_boot: already initialized, skipping");
         pthread_mutex_unlock(&g_ephemeral_mutex);
         return 0;
     }
 
     const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
-    LOGI("ephemeral_boot: initializing with bootstrap=%s", bootstrapPath);
+    LOGD("ephemeral_boot: initializing with bootstrap=%s", bootstrapPath);
 
     clear_collected_output();
 
@@ -1676,7 +1683,7 @@ JNIEXPORT jint JNICALL native_ephemeral_boot(JNIEnv *env, jobject thiz, jstring 
     }
 
     ephemeral_initialized = 1;
-    LOGI("ephemeral_boot: ephemeral PHP interpreter ready");
+    LOGD("ephemeral_boot: ephemeral PHP interpreter ready");
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
     pthread_mutex_unlock(&g_ephemeral_mutex);
@@ -1693,7 +1700,7 @@ JNIEXPORT jstring JNICALL native_ephemeral_artisan(JNIEnv *env, jobject thiz, js
     }
 
     const char *command = (*env)->GetStringUTFChars(env, jCommand, NULL);
-    LOGI("ephemeral_artisan: %s", command);
+    LOGD("ephemeral_artisan: %s", command);
 
     clear_collected_output();
 
@@ -1726,12 +1733,12 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_ephemeral_mutex);
 
     if (!ephemeral_initialized) {
-        LOGI("ephemeral_shutdown: not initialized, nothing to do");
+        LOGD("ephemeral_shutdown: not initialized, nothing to do");
         pthread_mutex_unlock(&g_ephemeral_mutex);
         return;
     }
 
-    LOGI("ephemeral_shutdown: shutting down ephemeral interpreter");
+    LOGD("ephemeral_shutdown: shutting down ephemeral interpreter");
 
     zend_first_try {
         zend_eval_string("\\Native\\Mobile\\Runtime::shutdown();", NULL, "ephemeral_shutdown");
@@ -1740,7 +1747,7 @@ JNIEXPORT void JNICALL native_ephemeral_shutdown(JNIEnv *env, jobject thiz) {
     ephemeral_embed_shutdown();
     ephemeral_initialized = 0;
 
-    LOGI("ephemeral_shutdown: done");
+    LOGD("ephemeral_shutdown: done");
     pthread_mutex_unlock(&g_ephemeral_mutex);
 }
 
@@ -1831,7 +1838,7 @@ JNIEXPORT jint JNICALL native_async_boot(JNIEnv *env, jobject thiz, jstring jBoo
     }
 
     const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
-    LOGI("async_boot: booting context on async pool thread");
+    LOGD("async_boot: booting context on async pool thread");
 
     // Serialize boots across pool threads — module startup isn't reentrant.
     pthread_mutex_lock(&g_async_boot_mutex);
@@ -1867,7 +1874,7 @@ JNIEXPORT jint JNICALL native_async_boot(JNIEnv *env, jobject thiz, jstring jBoo
     pthread_mutex_unlock(&g_async_boot_mutex);
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
-    LOGI("async_boot: context ready");
+    LOGD("async_boot: context ready");
     return 0;
 }
 
@@ -1890,7 +1897,7 @@ JNIEXPORT jstring JNICALL native_async_run(JNIEnv *env, jobject thiz, jstring jT
         return (*env)->NewStringUTF(env, "");
     }
 
-    LOGI("async_run: task %s", taskId);
+    LOGD("async_run: task %s", taskId);
 
     clear_collected_output();
 
@@ -1926,7 +1933,7 @@ JNIEXPORT void JNICALL native_async_thread_shutdown(JNIEnv *env, jobject thiz) {
     } zend_end_try();
     async_embed_shutdown();
     set_async_thread_booted(0);
-    LOGI("async_thread_shutdown: done");
+    LOGD("async_thread_shutdown: done");
 }
 
 
@@ -1950,7 +1957,7 @@ JNIEXPORT jint JNICALL native_webview_php_boot(JNIEnv *env, jobject thiz, jstrin
     pthread_mutex_lock(&g_webview_boot_mutex);
 
     const char *bootstrapPath = (*env)->GetStringUTFChars(env, jBootstrapPath, NULL);
-    LOGI("webview_php_boot: booting dedicated context");
+    LOGD("webview_php_boot: booting dedicated context");
 
     clear_collected_output();
 
@@ -1975,7 +1982,7 @@ JNIEXPORT jint JNICALL native_webview_php_boot(JNIEnv *env, jobject thiz, jstrin
 
     (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
     pthread_mutex_unlock(&g_webview_boot_mutex);
-    LOGI("webview_php_boot: ready");
+    LOGD("webview_php_boot: ready");
     return 0;
 }
 
@@ -2077,7 +2084,7 @@ JNIEXPORT jstring JNICALL native_webview_php_request(JNIEnv *env, jobject thiz,
 }
 
 JNIEXPORT void JNICALL native_webview_php_shutdown(JNIEnv *env, jobject thiz) {
-    LOGI("webview_php_shutdown: tearing down dedicated context");
+    LOGD("webview_php_shutdown: tearing down dedicated context");
 
     zend_first_try {
         zend_eval_string(
@@ -2091,7 +2098,7 @@ JNIEXPORT void JNICALL native_webview_php_shutdown(JNIEnv *env, jobject thiz) {
     php_request_shutdown(NULL);
     ts_free_thread();
 
-    LOGI("webview_php_shutdown: done");
+    LOGD("webview_php_shutdown: done");
 }
 
 static JNINativeMethod gMethods[] = {

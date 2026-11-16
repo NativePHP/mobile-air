@@ -3,10 +3,10 @@ package com.nativephp.mobile.ui
 import android.content.Context
 import android.os.Build
 import android.os.PowerManager
-import android.util.Log
 import com.nativephp.mobile.bridge.functions.DeviceFunctions
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import org.json.JSONObject
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * App-wide thermal-state watcher.
@@ -87,7 +87,7 @@ object ThermalStateMonitor {
             return
         }
         lastState = state
-        Log.d(TAG, "Thermal state $previous → $state")
+        NativeLog.d(TAG) { "Thermal state $previous → $state" }
         NativeElementBridge.sendNativeEvent(
             EVENT,
             JSONObject()

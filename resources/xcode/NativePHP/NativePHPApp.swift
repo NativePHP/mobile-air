@@ -55,7 +55,7 @@ struct NativePHPApp: App {
     /// Performs heavy initialization work after the splash view is visible.
     /// This runs on a background thread to avoid blocking the main thread.
     private func performDeferredInitialization() {
-        NSLog("[NativePHP] Deferred initialization starting")
+        NativeLog.perf("[NativePHP] Deferred initialization starting")
 
         // 1–3. Prepare, extract and boot PHP, or wait for a boot that work
         // without a screen (an App Intent, a background task) already started.
@@ -164,44 +164,44 @@ struct NativePHPApp: App {
     /// Steps 1–3 of startup. Runs once per process, through bootRuntime().
     private func bootPHP() -> Bool {
         // 1. Initialize PHP environment (env vars, php.ini, database)
-        NSLog("[NativePHP] preparePhpEnvironment START")
+        NativeLog.debug("[NativePHP] preparePhpEnvironment START")
         _ = preparePhpEnvironment()
-        NSLog("[NativePHP] preparePhpEnvironment DONE")
+        NativeLog.debug("[NativePHP] preparePhpEnvironment DONE")
 
         // 2. Ensure app is extracted from bundle if needed
-        NSLog("[NativePHP] ensureAppExists START")
+        NativeLog.debug("[NativePHP] ensureAppExists START")
         let didExtract = AppUpdateManager.shared.ensureAppExists()
-        NSLog("[NativePHP] ensureAppExists DONE (didExtract=\(didExtract))")
+        NativeLog.debug("[NativePHP] ensureAppExists DONE (didExtract=\(didExtract))")
 
         // 3. Boot persistent PHP runtime (one-time Laravel boot) — unless classic mode
         let runtimeMode = Self.getRuntimeMode()
-        NSLog("[NativePHP] Runtime mode: \(runtimeMode)")
+        NativeLog.debug("[NativePHP] Runtime mode: \(runtimeMode)")
 
         let booted: Bool
         if runtimeMode == "classic" {
-            NSLog("[NativePHP] Classic mode configured — skipping persistent runtime boot")
+            NativeLog.debug("[NativePHP] Classic mode configured — skipping persistent runtime boot")
             booted = false
             createStorageLink()
         } else {
-            NSLog("[NativePHP] PersistentPHPRuntime.boot() START")
+            NativeLog.debug("[NativePHP] PersistentPHPRuntime.boot() START")
             booted = PersistentPHPRuntime.shared.boot()
-            NSLog("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
+            NativeLog.perf("[NativePHP] PersistentPHPRuntime.boot() DONE, booted=\(booted)")
 
             if booted {
                 // Only run artisan commands when app was extracted or updated.
                 // Migrate already ran in ensureAppExists, once per extraction.
                 if didExtract {
-                    NSLog("[NativePHP] artisan storage:link START")
+                    NativeLog.debug("[NativePHP] artisan storage:link START")
                     _ = PersistentPHPRuntime.shared.artisan(command: "storage:link")
-                    NSLog("[NativePHP] artisan storage:link DONE")
+                    NativeLog.debug("[NativePHP] artisan storage:link DONE")
                 } else {
-                    NSLog("[NativePHP] Skipping artisan commands — no extraction needed")
+                    NativeLog.debug("[NativePHP] Skipping artisan commands — no extraction needed")
                 }
 
                 // Execute plugin post-boot callbacks
                 NativePHPPluginRegistry.shared.executeOnAppReady()
             } else {
-                NSLog("[NativePHP] persistent boot failed, falling back to classic mode")
+                NativeLog.error("[NativePHP] persistent boot failed, falling back to classic mode")
                 createStorageLink()
             }
         }
@@ -223,7 +223,7 @@ struct NativePHPApp: App {
         switch boot.plan {
         case .nativeDirect:
             DispatchQueue.main.async {
-                NSLog("TRACE[15]: native-direct boot — WebView withheld")
+                NativeLog.debug("TRACE[15]: native-direct boot — WebView withheld")
                 BootState.shared.webViewAllowed = false
                 // Forget the link this boot opens before PHP counts as ready,
                 // or the replay would push its screen a second time.
@@ -239,7 +239,7 @@ struct NativePHPApp: App {
             startFirstContentWatchdog()
         case .webLegacy:
             DispatchQueue.main.async {
-                NSLog("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
+                NativeLog.debug("TRACE[15]: markPhpReady + markReadyToLoad + markInitialized on main thread")
                 DeepLinkRouter.shared.markPhpReady()
                 AppState.shared.markReadyToLoad()
                 AppState.shared.markInitialized()
@@ -269,16 +269,16 @@ struct NativePHPApp: App {
         //    when a job is pushed (or one was left queued last run), and the
         //    async pool boots a slot on the first AsyncTask::dispatch().
         if booted {
-            NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
+            NativeLog.debug("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
 
-            NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
+            NativeLog.debug("[NativePHP] AsyncTaskExecutor.start() (deferred)")
             AsyncTaskExecutor.shared.start()
         } else {
-            NSLog("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
+            NativeLog.error("[NativePHP] Queue worker NOT started — persistent runtime boot failed")
         }
 
-        NSLog("[NativePHP] Deferred initialization completed")
+        NativeLog.perf("[NativePHP] Deferred initialization completed")
     }
 
     /// Picks how the first screen boots and which route it opens.
@@ -322,7 +322,7 @@ struct NativePHPApp: App {
         DispatchQueue.global(qos: .userInitiated).async {
             // URIs go through %@, never into NSLog's format string: a deep
             // link's query can hold %s, and enough of them crash the app.
-            NSLog("%@", "[NativeBoot] 🚀 Direct native dispatch: \(uri)")
+            NativeLog.debug("[NativeBoot] 🚀 Direct native dispatch: \(uri)")
             let raw = NativeSession.run(uri: uri)
             handleNativeSessionExit(raw)
         }
@@ -339,7 +339,7 @@ struct NativePHPApp: App {
             .components(separatedBy: ":").dropFirst().joined(separator: ":")
             .trimmingCharacters(in: .whitespaces)
 
-        NSLog("%@", "[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
+        NativeLog.debug("[NativeBoot] Native session exited: status=\(status) location=\(location ?? "nil")")
 
         if (300...399).contains(status), let location, !location.isEmpty {
             // Keep the query, and keep both it and the path percent-encoded so
@@ -350,7 +350,7 @@ struct NativePHPApp: App {
                 ? (URL(string: location).map { url in url.path(percentEncoded: true) + (url.query.map { "?" + $0 } ?? "") } ?? "/")
                 : location
             DispatchQueue.main.async {
-                NSLog("%@", "[NativeBoot] ⇄ EXIT_WEB → \(path)")
+                NativeLog.debug("[NativeBoot] ⇄ EXIT_WEB → \(path)")
                 BootState.shared.allowWebView(loading: path)
                 // Drop the native branch explicitly. The usual clearers can't
                 // run here: didCommit needs the WebView to load, but the
@@ -372,7 +372,7 @@ struct NativePHPApp: App {
     private func startFirstContentWatchdog() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             if !AppState.shared.isInitialized {
-                NSLog("[NativeBoot] ⏰ No content 10s after native boot — falling back to WebView")
+                NativeLog.error("[NativeBoot] ⏰ No content 10s after native boot — falling back to WebView")
                 BootState.shared.allowWebView(loading: nil)
                 AppState.shared.markInitialized()
             }
@@ -512,7 +512,7 @@ struct NativePHPApp: App {
 
             try phpIni.write(to: path, atomically: true, encoding: .utf8)
         } catch {
-            print("Couldn't create php.ini")
+            NativeLog.error("Couldn't create php.ini")
         }
 
         return supportDir.appendingPathComponent("php.ini").path(percentEncoded: false)
@@ -602,9 +602,9 @@ struct NativePHPApp: App {
         let appPath = AppUpdateManager.shared.getAppPath()
         let phpFilePath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
 
-        print()
-        print("=== FORWARDING REQUEST TO LARAVEL ===")
-        print()
+        NativeLog.debug()
+        NativeLog.debug("=== FORWARDING REQUEST TO LARAVEL ===")
+        NativeLog.debug()
 
         let query = request.query ?? ""
         var uri = request.uri
@@ -633,7 +633,7 @@ struct NativePHPApp: App {
             // Convert Swift strings to C strings
             guard let cKey = formattedKey.cString(using: .utf8),
                   let cValue = value.cString(using: .utf8) else {
-                print("Failed to convert \(header) or its value to C string.")
+                NativeLog.debug("Failed to convert \(header) or its value to C string.")
                 continue
             }
 
@@ -685,9 +685,9 @@ struct NativePHPApp: App {
         // Free argv strings
         argv.forEach { free($0) }
 
-        print()
-        print("=== LARAVEL FINISHED ===")
-        print()
+        NativeLog.debug()
+        NativeLog.debug("=== LARAVEL FINISHED ===")
+        NativeLog.debug()
 
         let response = classicOutput
         classicOutput = Data()
@@ -820,13 +820,13 @@ struct NativePHPApp: App {
         // Generate new APP_KEY if not found
         DebugLogger.shared.log("🔑 Generating new APP_KEY for first launch")
         guard let newKey = generateAppKey() else {
-            DebugLogger.shared.log("❌ Failed to generate APP_KEY")
+            NativeLog.error("❌ Failed to generate APP_KEY")
             return .failed
         }
 
         // Store in Keychain
         guard let keyData = newKey.data(using: .utf8) else {
-            DebugLogger.shared.log("❌ Failed to encode APP_KEY")
+            NativeLog.error("❌ Failed to encode APP_KEY")
             return .failed
         }
 
@@ -847,7 +847,7 @@ struct NativePHPApp: App {
             DebugLogger.shared.log("⚠️ Keychain locked while storing APP_KEY (errSecInteractionNotAllowed)")
             return .locked
         } else {
-            DebugLogger.shared.log("❌ Failed to store APP_KEY in Keychain: \(addStatus)")
+            NativeLog.error("❌ Failed to store APP_KEY in Keychain: \(addStatus)")
             return .failed
         }
     }
@@ -901,7 +901,7 @@ struct NativePHPApp: App {
     }
 
     func artisan(additionalArgs: [String] = []) -> String {
-        print("Running `php artisan \(additionalArgs.joined())`...")
+        NativeLog.debug("Running `php artisan \(additionalArgs.joined())`...")
 
         output = ""
 

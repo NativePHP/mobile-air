@@ -11,6 +11,7 @@ import com.nativephp.mobile.network.CapturedBody
 import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
 import kotlin.concurrent.withLock
+import com.nativephp.mobile.utils.NativeLog
 
 class PHPBridge(private val context: Context) {
     private var lastPostData: String? = null
@@ -144,7 +145,7 @@ class PHPBridge(private val context: Context) {
         if (!runtimeInitialized) {
             nativeRuntimeInit()
             runtimeInitialized = true
-            Log.i(TAG, "PHP runtime initialized (persistent)")
+            NativeLog.i(TAG) { "PHP runtime initialized (persistent)" }
         }
     }
 
@@ -273,7 +274,7 @@ class PHPBridge(private val context: Context) {
         // runtime. Reuse it — native PHP re-init in a used process is
         // exactly what SEGVs/hangs.
         if (persistentBooted) {
-            Log.i(TAG, "Persistent runtime already booted — reusing (process outlived its activity)")
+            NativeLog.perf(TAG) { "Persistent runtime already booted — reusing (process outlived its activity)" }
             WebviewPHPRuntime.resumeAfterRuntimeReboot()
             return true
         }
@@ -290,7 +291,7 @@ class PHPBridge(private val context: Context) {
             if (result == 0) {
                 persistentBooted = true
                 persistentMode = true
-                Log.i(TAG, "Persistent runtime booted in ${elapsed}ms")
+                NativeLog.perf(TAG) { "Persistent runtime booted in ${elapsed}ms" }
                 true
             } else {
                 Log.e(TAG, "Persistent runtime boot FAILED (code=$result) after ${elapsed}ms")
@@ -323,11 +324,11 @@ class PHPBridge(private val context: Context) {
      */
     fun parkPersistentRuntime() {
         if (!persistentBooted) return
-        Log.i(TAG, "Parking persistent runtime — asking runloop to exit")
+        NativeLog.i(TAG) { "Parking persistent runtime — asking runloop to exit" }
         try {
             com.nativephp.mobile.ui.nativerender.NativeElementBridge.sendShutdownEvent()
         } catch (t: Throwable) {
-            Log.d(TAG, "park wake skipped: ${t.javaClass.simpleName}")
+            NativeLog.d(TAG) { "park wake skipped: ${t.javaClass.simpleName}" }
         }
     }
 
@@ -363,13 +364,13 @@ class PHPBridge(private val context: Context) {
         } catch (t: Throwable) {
             // No element region (webview-only screen) or JNI unavailable —
             // the executor may already be free; fall through to the wait.
-            Log.d(TAG, "shutdown wake skipped: ${t.javaClass.simpleName}")
+            NativeLog.d(TAG) { "shutdown wake skipped: ${t.javaClass.simpleName}" }
         }
 
         val future = phpExecutor.submit<Unit> {
             nativePersistentShutdown()
             persistentBooted = false
-            Log.i(TAG, "Persistent runtime shut down")
+            NativeLog.i(TAG) { "Persistent runtime shut down" }
         }
         try {
             future.get(5, java.util.concurrent.TimeUnit.SECONDS)
@@ -403,7 +404,7 @@ class PHPBridge(private val context: Context) {
         ensureRuntimeInitialized()
         val result = nativeWorkerBoot(workerBootstrapScript)
         if (result == 0) {
-            Log.i(TAG, "Worker runtime booted")
+            NativeLog.i(TAG) { "Worker runtime booted" }
         } else {
             Log.e(TAG, "Worker runtime boot FAILED (code=$result)")
         }
@@ -423,7 +424,7 @@ class PHPBridge(private val context: Context) {
      */
     fun shutdownWorkerRuntime() {
         nativeWorkerShutdown()
-        Log.i(TAG, "Worker runtime shut down")
+        NativeLog.i(TAG) { "Worker runtime shut down" }
     }
 
     // ── Async task lane ─────────────────────────────
@@ -522,14 +523,14 @@ class PHPBridge(private val context: Context) {
 
             val processTime = System.currentTimeMillis() - processStart
             val mode = if (usePersistent) "PERSISTENT" else "CLASSIC"
-            Log.d("PerfTiming", "BRIDGE[$mode] [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms bytes=${processedOutput.size}")
+            NativeLog.perf("PerfTiming") { "BRIDGE[$mode] [${request.uri}] prep=${prepTime}ms jni=${jniTime}ms process=${processTime}ms bytes=${processedOutput.size}" }
 
             processedOutput
         }
 
         val result = future.get()
         val totalTime = System.currentTimeMillis() - requestStart
-        Log.d("PerfTiming", "BRIDGE_TOTAL [${request.uri}] ${totalTime}ms")
+        NativeLog.perf("PerfTiming") { "BRIDGE_TOTAL [${request.uri}] ${totalTime}ms" }
         return result
     }
 
@@ -544,7 +545,7 @@ class PHPBridge(private val context: Context) {
     // New function to store request data with a key
     fun storeRequestData(key: String, data: String) {
         requestDataMap[key] = data
-        Log.d(TAG, "Stored request data with key: $key (length=${data.length})")
+        NativeLog.d(TAG) { "Stored request data with key: $key (length=${data.length})" }
 
         // Also update last post data for backward compatibility
         lastPostData = data
@@ -578,7 +579,7 @@ class PHPBridge(private val context: Context) {
         // Remove old entries
         keysToRemove.forEach { requestDataMap.remove(it) }
         if (keysToRemove.isNotEmpty()) {
-            Log.d(TAG, "Cleaned up ${keysToRemove.size} old request entries")
+            NativeLog.d(TAG) { "Cleaned up ${keysToRemove.size} old request entries" }
         }
     }
 
@@ -587,7 +588,7 @@ class PHPBridge(private val context: Context) {
         val now = System.currentTimeMillis()
         evictPostBodies(now)
         postDataByKey[key] = StoredBody(body, now)
-        Log.d(TAG, "Stored POST body for key=$key (${body.size} bytes, type=${body.contentType.ifEmpty { "none" }})")
+        NativeLog.d(TAG) { "Stored POST body for key=$key (${body.size} bytes, type=${body.contentType.ifEmpty { "none" }})" }
     }
 
     /**
@@ -604,19 +605,19 @@ class PHPBridge(private val context: Context) {
                 Thread.sleep(5)
                 stored = postDataByKey.remove(key)
                 if (stored != null) {
-                    Log.d(TAG, "POST body for key=$key arrived after ${i * 5}ms wait")
+                    NativeLog.d(TAG) { "POST body for key=$key arrived after ${i * 5}ms wait" }
                     break
                 }
             }
         }
 
         if (stored == null) {
-            Log.w(TAG, "No POST body for key=$key after 50ms — request may have no body")
+            NativeLog.d(TAG) { "No POST body for key=$key after 50ms — request may have no body" }
             return null
         }
 
         postDataByKey.entries.removeIf { it.value === stored }
-        Log.d(TAG, "Consumed POST body for key=$key (${stored.body.size} bytes)")
+        NativeLog.d(TAG) { "Consumed POST body for key=$key (${stored.body.size} bytes)" }
         return stored.body
     }
 
@@ -709,7 +710,7 @@ class PHPBridge(private val context: Context) {
                 // mirror (no-op until a WebRenderer exists).
                 com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
                 com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                Log.d(TAG, "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
+                NativeLog.d(TAG) { "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}" }
             }
             com.nativephp.mobile.security.WebCookieMirror.flush()
         }
@@ -744,11 +745,11 @@ class PHPBridge(private val context: Context) {
 
     fun processRawPHPResponse(response: String): String {
         // Only the first line: the headers below it can carry Set-Cookie values
-        Log.d(TAG, "Response first line: ${response.substringBefore("\r\n").take(200)}")
+        NativeLog.d(TAG) { "Response first line: ${response.substringBefore("\r\n").take(200)}" }
 
         // Check for Set-Cookie headers regardless of response format
         if (response.contains("Set-Cookie:", ignoreCase = true)) {
-            Log.d(TAG, "Found Set-Cookie in raw response!")
+            NativeLog.d(TAG) { "Found Set-Cookie in raw response!" }
 
             // Extract all Set-Cookie lines
             val setCookieLines = response.split("\r\n")
@@ -763,14 +764,14 @@ class PHPBridge(private val context: Context) {
                     // native-only boot never loads the Chromium provider).
                     com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
                     com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
-                    Log.d(TAG, "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}")
+                    NativeLog.d(TAG) { "Stored cookie: ${com.nativephp.mobile.security.LogRedaction.cookieName(cookieValue)}" }
                 }
             }
 
             com.nativephp.mobile.security.WebCookieMirror.flush()
-            Log.d(TAG, "Flushed cookies after extraction")
+            NativeLog.d(TAG) { "Flushed cookies after extraction" }
         } else {
-            Log.d(TAG, "No Set-Cookie headers found in the response")
+            NativeLog.d(TAG) { "No Set-Cookie headers found in the response" }
         }
 
         // Continue with your existing logic for different response types

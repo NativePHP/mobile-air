@@ -35,7 +35,7 @@ function androidKotlinLogLines(): array
 
     foreach (androidKotlinSources() as $file => $source) {
         foreach (explode("\n", $source) as $number => $line) {
-            if (preg_match('/\bLog\.[vdiwe]\(/', $line)) {
+            if (preg_match('/\b(?:Log\.[vdiwe]|NativeLog\.\w+)\(/', $line)) {
                 $lines[] = basename($file).':'.($number + 1).': '.trim($line);
             }
         }
@@ -80,11 +80,11 @@ it('logs only the name of each header PHP sends', function () {
 
     expect($source)
         ->not->toContain('"SAPI header: %s"')
-        ->toContain('LOGI("SAPI header: %.*s", name_len, sapi_header->header);');
+        ->toContain('LOGD("SAPI header: %.*s", name_len, sapi_header->header);');
 });
 
 it('never logs cookie values from the native request setup', function () {
-    preg_match_all('/\bLOG[IE]\((.*?)\);/s', file_get_contents(androidAppPath('src/main/cpp/PHP.c')), $calls);
+    preg_match_all('/\bLOG[DIE]\((.*?)\);/s', file_get_contents(androidAppPath('src/main/cpp/PHP.c')), $calls);
 
     foreach ($calls[1] as $arguments) {
         expect($arguments)

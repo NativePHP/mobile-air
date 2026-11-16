@@ -47,7 +47,7 @@ it('only traces NativePHPCan and NativePHPCall through LOGT', function (string $
 ]);
 
 it('never passes bridge parameters or results to an always-on log', function () {
-    preg_match_all('/\bLOG[IE]\((.*?)\);/s', bridgeJniSource(), $calls);
+    preg_match_all('/\bLOG[DIE]\((.*?)\);/s', bridgeJniSource(), $calls);
 
     foreach ($calls[1] as $arguments) {
         expect($arguments)

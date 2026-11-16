@@ -1,9 +1,9 @@
 package com.nativephp.mobile.ui
 
 import android.content.Context
-import android.util.Log
 import org.json.JSONObject
 import java.io.File
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Decides how the first screen boots: direct JNI dispatch into the native
@@ -29,19 +29,19 @@ object BootPlanner {
 
         // Explicit escape hatch: NATIVEPHP_BOOT_MODE=web at build time.
         if (meta?.optString("entry_mode") == "web") {
-            Log.d(TAG, "entry_mode=web — forcing legacy WebView boot")
+            NativeLog.d(TAG) { "entry_mode=web — forcing legacy WebView boot" }
             return Entry.WEB_LEGACY
         }
 
         val patterns = freshestPatterns(context, meta)
         if (patterns == null) {
-            Log.d(TAG, "No native-route manifest — legacy WebView boot")
+            NativeLog.d(TAG) { "No native-route manifest — legacy WebView boot" }
             return Entry.WEB_LEGACY
         }
 
         val path = startPath.substringBefore('?').ifEmpty { "/" }
         val matched = patterns.any { matches(it, path) }
-        Log.d(TAG, "Boot plan for $path: ${if (matched) "NATIVE_DIRECT" else "WEB_LEGACY"} (${patterns.size} native patterns)")
+        NativeLog.d(TAG) { "Boot plan for $path: ${if (matched) "NATIVE_DIRECT" else "WEB_LEGACY"} (${patterns.size} native patterns)" }
         return if (matched) Entry.NATIVE_DIRECT else Entry.WEB_LEGACY
     }
 

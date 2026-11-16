@@ -67,7 +67,7 @@ class AppUpdateManager {
     /// Returns true if extraction or update was applied (artisan commands needed).
     @discardableResult
     func ensureAppExists() -> Bool {
-        print("📦 AppUpdateManager.ensureAppExists() starting")
+        NativeLog.debug("📦 AppUpdateManager.ensureAppExists() starting")
 
         var didExtract = false
 
@@ -86,7 +86,7 @@ class AppUpdateManager {
         // and do not apply a leftover pending OTA on top — otherwise developers
         // never see the PHP they just shipped. Versioned builds still apply pending.
         if isDebugBundle() {
-            print("🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
+            NativeLog.debug("🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
         } else if applyPendingUpdates() {
             clearCompiledCaches()
             didExtract = true
@@ -94,7 +94,7 @@ class AppUpdateManager {
         #endif
 
         appReady = true
-        print("✅ App is ready (didExtract=\(didExtract))")
+        NativeLog.debug("✅ App is ready (didExtract=\(didExtract))")
         return didExtract
     }
 
@@ -107,20 +107,20 @@ class AppUpdateManager {
         let marker = appPath + "/installed.version"
 
         if FileManager.default.fileExists(atPath: marker) {
-            print("📦 An app bundle has already been extracted");
+            NativeLog.debug("📦 An app bundle has already been extracted");
             return true
         }
 
-        print("📦 No app bundle extracted!");
+        NativeLog.debug("📦 No app bundle extracted!");
 
         return false
     }
 
     private func copyBundledApp() {
-        print("📦 Extracting bundled app to documents directory...")
+        NativeLog.debug("📦 Extracting bundled app to documents directory...")
 
         guard let bundleZipPath = Bundle.main.path(forResource: "app", ofType: "zip") else {
-            print("❌ No bundled app.zip found")
+            NativeLog.error("❌ No bundled app.zip found")
             return
         }
 
@@ -139,7 +139,7 @@ class AppUpdateManager {
             excludeFromBackup(appPath)
 
             try extractZipParallel(from: sourceURL, to: destinationURL)
-            print("✅ Bundled app extracted successfully")
+            NativeLog.debug("✅ Bundled app extracted successfully")
 
             // Create installed.version file after successful extraction
             createInstalledVersionFile()
@@ -147,7 +147,7 @@ class AppUpdateManager {
             // Run migrations and clear caches for newly extracted app
             runMigrationsAndClearCaches()
         } catch {
-            print("❌ Failed to extract bundled app: \(error)")
+            NativeLog.error("❌ Failed to extract bundled app: \(error)")
 
             // Never leave a half-extracted bundle behind. Without this, a partial app
             // (e.g. .env present but vendor files missing) survives on disk and the next
@@ -264,7 +264,7 @@ class AppUpdateManager {
 
     #if NATIVEPHP_OTA
     func installUpdate(from zipPath: String) -> Bool {
-        print("📦 Installing app update from: \(zipPath)")
+        NativeLog.debug("📦 Installing app update from: \(zipPath)")
 
         let extractPath = updatesPath + "/extracted_" + UUID().uuidString
         let envStashPath = updatesPath + "/.env.stash"
@@ -279,7 +279,7 @@ class AppUpdateManager {
                     try FileManager.default.removeItem(atPath: envStashPath)
                 }
                 try FileManager.default.copyItem(atPath: currentEnvPath, toPath: envStashPath)
-                print("📦 Stashed existing .env before pending update")
+                NativeLog.debug("📦 Stashed existing .env before pending update")
             }
 
             // Create extraction directory
@@ -292,14 +292,14 @@ class AppUpdateManager {
             do {
                 try FileManager.default.unzipItem(at: sourceURL, to: destinationURL)
             } catch {
-                print("❌ Failed to extract zip file: \(error)")
+                NativeLog.error("❌ Failed to extract zip file: \(error)")
                 try? FileManager.default.removeItem(atPath: envStashPath)
                 return false
             }
 
             // Verify extracted app has required structure
             guard isValidApp(at: extractPath) else {
-                print("❌ Invalid app structure in zip")
+                NativeLog.error("❌ Invalid app structure in zip")
                 try? FileManager.default.removeItem(atPath: extractPath)
                 try? FileManager.default.removeItem(atPath: envStashPath)
                 return false
@@ -331,7 +331,7 @@ class AppUpdateManager {
                 }
                 try FileManager.default.copyItem(atPath: envStashPath, toPath: newEnvPath)
                 try? FileManager.default.removeItem(atPath: envStashPath)
-                print("📦 Restored stashed .env over extracted payload")
+                NativeLog.debug("📦 Restored stashed .env over extracted payload")
             }
 
             restoreShellVersion()
@@ -341,7 +341,7 @@ class AppUpdateManager {
                 try? installedVersion.write(
                     toFile: appPath + "/installed.version", atomically: true, encoding: .utf8
                 )
-                print("📝 Kept shell identity across update: \(installedVersion.trimmingCharacters(in: .whitespacesAndNewlines))")
+                NativeLog.debug("📝 Kept shell identity across update: \(installedVersion.trimmingCharacters(in: .whitespacesAndNewlines))")
             } else {
                 createInstalledVersionFile()
             }
@@ -352,7 +352,7 @@ class AppUpdateManager {
                let json = try? JSONSerialization.jsonObject(with: manifest) as? [String: Any],
                let release = json["release_uuid"] as? String {
                 try? release.write(toFile: appPath + "/.ota_release", atomically: true, encoding: .utf8)
-                print("📌 Applied OTA release \(release)")
+                NativeLog.debug("📌 Applied OTA release \(release)")
             }
 
             // Run migrations and clear caches for updated app
@@ -366,11 +366,11 @@ class AppUpdateManager {
             // Keep only the latest backup
             cleanupOldBackups()
 
-            print("✅ App update installed successfully")
+            NativeLog.debug("✅ App update installed successfully")
             return true
 
         } catch {
-            print("❌ Failed to install update: \(error)")
+            NativeLog.error("❌ Failed to install update: \(error)")
 
             // Cleanup on failure
             try? FileManager.default.removeItem(atPath: extractPath)
@@ -392,14 +392,14 @@ class AppUpdateManager {
     /// launch. A slow boot beats running a payload we cannot identify.
     private func restoreShellVersion() {
         guard let meta = bundleMetadata() else {
-            print("⚠️ No bundle metadata — leaving the payload without a version")
+            NativeLog.error("⚠️ No bundle metadata — leaving the payload without a version")
             return
         }
 
         let envPath = appPath + "/.env"
 
         guard var env = try? String(contentsOfFile: envPath, encoding: .utf8) else {
-            print("⚠️ No .env in the payload to restore the version into")
+            NativeLog.error("⚠️ No .env in the payload to restore the version into")
             return
         }
 
@@ -431,9 +431,9 @@ class AppUpdateManager {
 
         do {
             try env.write(toFile: envPath, atomically: true, encoding: .utf8)
-            print("📝 Restored shell version \(meta.version)b\(meta.versionCode) into the payload's .env")
+            NativeLog.debug("📝 Restored shell version \(meta.version)b\(meta.versionCode) into the payload's .env")
         } catch {
-            print("❌ Could not restore the shell version: \(error)")
+            NativeLog.error("❌ Could not restore the shell version: \(error)")
         }
     }
 
@@ -461,7 +461,7 @@ class AppUpdateManager {
 
         if let out = try? JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys]) {
             try? out.write(to: URL(fileURLWithPath: manifestPath))
-            print("📌 Recorded release \(merged["release_uuid"] as? String ?? "?") from the server's answer")
+            NativeLog.debug("📌 Recorded release \(merged["release_uuid"] as? String ?? "?") from the server's answer")
         }
 
         try? FileManager.default.removeItem(atPath: pendingManifest)
@@ -507,7 +507,7 @@ class AppUpdateManager {
             }
         }
 
-        print("🧹 Cleared compiled caches after extraction")
+        NativeLog.debug("🧹 Cleared compiled caches after extraction")
     }
 
     #if NATIVEPHP_OTA
@@ -560,19 +560,19 @@ class AppUpdateManager {
     /// For the staleness comparison against the bundle, use `getInstalledVersionId()`.
     func getAppVersion() -> String? {
         if !FileManager.default.fileExists(atPath: appPath) {
-            print("❌ App directory doesn't exist - assuming DEBUG")
+            NativeLog.debug("❌ App directory doesn't exist - assuming DEBUG")
             return "DEBUG"
         }
 
         let envFile = appPath + "/.env"
         if FileManager.default.fileExists(atPath: envFile) {
             if let version = getVersionFromEnvFile(envFile) {
-                print("🔢 Got current version from .env: \(version)")
+                NativeLog.debug("🔢 Got current version from .env: \(version)")
                 return version
             }
         }
 
-        print("❌ .env file not found or no version - assume DEBUG")
+        NativeLog.debug("❌ .env file not found or no version - assume DEBUG")
         return "DEBUG"
     }
 
@@ -617,7 +617,7 @@ class AppUpdateManager {
             let envContent = try String(contentsOfFile: envFilePath, encoding: .utf8)
             return extractEnvValue(envContent, key: key)
         } catch {
-            print("❌ Error reading .env file: \(error)")
+            NativeLog.error("❌ Error reading .env file: \(error)")
             return nil
         }
     }
@@ -634,16 +634,16 @@ class AppUpdateManager {
                 return value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             }
         } catch {
-            print("❌ Error matching \(key) in .env: \(error)")
+            NativeLog.error("❌ Error matching \(key) in .env: \(error)")
         }
         return nil
     }
 
     private func shouldUpdateFromBundle() -> Bool {
         guard let bundledId = getBundledAppVersionFast() else {
-            print("⚠️ Could not read version from bundled.version file, falling back to ZIP extraction")
+            NativeLog.debug("⚠️ Could not read version from bundled.version file, falling back to ZIP extraction")
             guard let bundledId = getBundledAppVersion() else {
-                print("⚠️ Could not read version from bundled app.zip")
+                NativeLog.debug("⚠️ Could not read version from bundled app.zip")
                 return false
             }
             return shouldUpdateWithVersion(bundledId)
@@ -678,7 +678,7 @@ class AppUpdateManager {
         // DEBUG is what native:run ships. Always re-extract so developers see
         // PHP changes without bumping a version (same as Android).
         if isDebugIdentity(bundledId) {
-            print("🚧 DEBUG version detected, updating from bundle")
+            NativeLog.debug("🚧 DEBUG version detected, updating from bundle")
             return true
         }
 
@@ -686,17 +686,17 @@ class AppUpdateManager {
 
         // If composite identities differ, update from bundle
         if currentId != bundledId {
-            print("📦 Bundle id (\(bundledId)) differs from current (\(currentId ?? "none")), updating from bundle")
+            NativeLog.debug("📦 Bundle id (\(bundledId)) differs from current (\(currentId ?? "none")), updating from bundle")
             return true
         }
 
-        print("✅ App already up to date with bundle id (\(bundledId))")
+        NativeLog.debug("✅ App already up to date with bundle id (\(bundledId))")
         return false
     }
 
     private func getBundledAppVersion() -> String? {
         guard let bundlePath = Bundle.main.path(forResource: "app", ofType: "zip") else {
-            print("❌ No bundled app.zip found")
+            NativeLog.error("❌ No bundled app.zip found")
             return nil
         }
 
@@ -708,7 +708,7 @@ class AppUpdateManager {
 
         // Stream-read specific entries from ZIP without extracting everything
         guard let archive = Archive(url: sourceURL, accessMode: .read) else {
-            print("❌ Failed to open ZIP archive")
+            NativeLog.error("❌ Failed to open ZIP archive")
             return nil
         }
 
@@ -722,12 +722,12 @@ class AppUpdateManager {
                 if let envString = String(data: envContent, encoding: .utf8) {
                     if let version = extractEnvValue(envString, key: "NATIVEPHP_APP_VERSION") {
                         let versionCode = extractEnvValue(envString, key: "NATIVEPHP_APP_VERSION_CODE")
-                        print("✅ Read version id from .env without full extraction")
+                        NativeLog.debug("✅ Read version id from .env without full extraction")
                         return buildVersionId(version: version, versionCode: versionCode)
                     }
                 }
             } catch {
-                print("⚠️ Failed to read .env from ZIP: \(error)")
+                NativeLog.error("⚠️ Failed to read .env from ZIP: \(error)")
             }
         }
 
@@ -739,15 +739,15 @@ class AppUpdateManager {
                     versionContent.append(data)
                 }
                 if let versionString = String(data: versionContent, encoding: .utf8) {
-                    print("✅ Read version id from .version without full extraction")
+                    NativeLog.debug("✅ Read version id from .version without full extraction")
                     return versionString.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             } catch {
-                print("⚠️ Failed to read .version from ZIP: \(error)")
+                NativeLog.error("⚠️ Failed to read .version from ZIP: \(error)")
             }
         }
 
-        print("❌ No .env or .version found in ZIP")
+        NativeLog.error("❌ No .env or .version found in ZIP")
         return nil
     }
 
@@ -757,10 +757,10 @@ class AppUpdateManager {
 
         do {
             try data.write(to: URL(fileURLWithPath: updatePath))
-            print("📥 Update received: \(filename)")
+            NativeLog.debug("📥 Update received: \(filename)")
             return true
         } catch {
-            print("❌ Failed to save update: \(error)")
+            NativeLog.error("❌ Failed to save update: \(error)")
             return false
         }
     }
@@ -807,23 +807,23 @@ class AppUpdateManager {
     private func getBundledAppVersionFast() -> String? {
         if let meta = bundleMetadata() {
             let id = meta.version.uppercased() == "DEBUG" ? "DEBUG" : "\(meta.version)b\(meta.versionCode)"
-            print("🔢 Got bundled version from bundle_meta.json: \(id)")
+            NativeLog.debug("🔢 Got bundled version from bundle_meta.json: \(id)")
 
             return id
         }
 
         guard let bundlePath = Bundle.main.path(forResource: "bundled", ofType: "version") else {
-            print("❌ No bundle_meta.json or bundled.version file found")
+            NativeLog.error("❌ No bundle_meta.json or bundled.version file found")
             return nil
         }
 
         do {
             let version = try String(contentsOfFile: bundlePath, encoding: .utf8)
             let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
-            print("🔢 Got bundled version from bundled.version: \(trimmedVersion)")
+            NativeLog.debug("🔢 Got bundled version from bundled.version: \(trimmedVersion)")
             return trimmedVersion
         } catch {
-            print("❌ Error reading bundled.version file: \(error)")
+            NativeLog.error("❌ Error reading bundled.version file: \(error)")
             return nil
         }
     }
@@ -832,17 +832,17 @@ class AppUpdateManager {
         let installedVersionPath = documentsPath + "/app/installed.version"
 
         guard FileManager.default.fileExists(atPath: installedVersionPath) else {
-            print("❌ No installed.version file found")
+            NativeLog.debug("❌ No installed.version file found")
             return nil
         }
 
         do {
             let version = try String(contentsOfFile: installedVersionPath, encoding: .utf8)
             let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
-            print("🔢 Got installed version from installed.version: \(trimmedVersion)")
+            NativeLog.debug("🔢 Got installed version from installed.version: \(trimmedVersion)")
             return trimmedVersion
         } catch {
-            print("❌ Error reading installed.version file: \(error)")
+            NativeLog.error("❌ Error reading installed.version file: \(error)")
             return nil
         }
     }
@@ -856,23 +856,23 @@ class AppUpdateManager {
         // which never matched and re-extracted on every launch. The .env is
         // only a fallback for shells without bundle metadata.
         guard let id = getBundledAppVersionFast() ?? getInstalledVersionIdFromEnv() else {
-            print("⚠️ Could not determine app version id for installed.version file")
+            NativeLog.debug("⚠️ Could not determine app version id for installed.version file")
             return
         }
 
         do {
             try id.write(toFile: installedVersionPath, atomically: true, encoding: .utf8)
-            print("📝 Created installed.version file: \(id)")
+            NativeLog.debug("📝 Created installed.version file: \(id)")
         } catch {
-            print("❌ Failed to create installed.version file: \(error)")
+            NativeLog.error("❌ Failed to create installed.version file: \(error)")
         }
     }
 
     private func runMigrationsAndClearCaches() {
-        print("🔄 Running migrations and clearing caches...")
+        NativeLog.debug("🔄 Running migrations and clearing caches...")
 
         guard let app = NativePHPApp.shared else {
-            print("❌ NativePHPApp.shared not available")
+            NativeLog.error("❌ NativePHPApp.shared not available")
             return
         }
 
@@ -887,7 +887,7 @@ class AppUpdateManager {
         // Clear caches
         _ = app.artisan(additionalArgs: ["view:clear"])
 
-        print("✅ Migrations and cache clearing completed")
+        NativeLog.debug("✅ Migrations and cache clearing completed")
     }
 
 }

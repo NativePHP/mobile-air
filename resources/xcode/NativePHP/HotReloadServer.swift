@@ -85,7 +85,7 @@ class HotReloadCoordinator {
             guard let self, self.retriggerGeneration == generation else { return }
 
             guard attempt < 60 else {
-                print("⚠️ Hot reload retrigger gave up after 30s — PHP never left its event loop")
+                NativeLog.debug("⚠️ Hot reload retrigger gave up after 30s — PHP never left its event loop")
                 return
             }
 
@@ -314,17 +314,17 @@ class HotReloadServer {
                 switch state {
                 case .ready:
                     self.retryCount = 0
-                    print("🔥 Hot reload server listening on port \(self.port.rawValue)")
+                    NativeLog.debug("🔥 Hot reload server listening on port \(self.port.rawValue)")
                 case .failed(let error):
-                    print("❌ Hot reload server bind failed: \(error)")
+                    NativeLog.debug("❌ Hot reload server bind failed: \(error)")
                     self.listener?.cancel()
                     self.listener = nil
                     if self.retryCount < self.maxRetries {
                         self.retryCount += 1
-                        print("🔁 Retrying hot reload server bind (\(self.retryCount)/\(self.maxRetries)) in 1s…")
+                        NativeLog.debug("🔁 Retrying hot reload server bind (\(self.retryCount)/\(self.maxRetries)) in 1s…")
                         self.queue.asyncAfter(deadline: .now() + 1) { self.start() }
                     } else {
-                        print("⛔️ Hot reload server gave up binding port \(self.port.rawValue) — is another app instance still running?")
+                        NativeLog.debug("⛔️ Hot reload server gave up binding port \(self.port.rawValue) — is another app instance still running?")
                     }
                 default:
                     break
@@ -334,14 +334,14 @@ class HotReloadServer {
             self.listener = listener
             listener.start(queue: queue)
         } catch {
-            print("❌ Failed to start hot reload server: \(error)")
+            NativeLog.debug("❌ Failed to start hot reload server: \(error)")
         }
     }
     
     func stop() {
         listener?.cancel()
         listener = nil
-        print("🔥 Hot reload server stopped")
+        NativeLog.debug("🔥 Hot reload server stopped")
     }
     
     private func handleConnection(_ connection: NWConnection) {
@@ -371,14 +371,14 @@ class HotReloadServer {
             }
 
             guard !timedOut, command == HotReloadServer.reloadCommand else {
-                print("🙈 Ignored a connection to the hot reload port: not a reload request")
+                NativeLog.debug("🙈 Ignored a connection to the hot reload port: not a reload request")
                 return
             }
 
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .reloadWebViewNotification, object: nil)
             }
-            print("🔄 Hot reload triggered")
+            NativeLog.debug("🔄 Hot reload triggered")
         }
     }
 

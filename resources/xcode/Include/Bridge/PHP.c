@@ -10,6 +10,14 @@
 #include <time.h>
 #include <zend_exceptions.h>
 
+// Boot and lifecycle chatter goes through PHP_DEBUG_LOG, which is compiled out
+// of release builds. Failures stay on plain fprintf(stderr, ...).
+#if defined(DEBUG) && DEBUG
+#define PHP_DEBUG_LOG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define PHP_DEBUG_LOG(...) ((void)0)
+#endif
+
 // Classic-mode output callbacks. Only output from the thread that installed
 // the callback reaches it: every PHP thread (persistent, webview, worker,
 // async) shares ub_write, and their responses must never land in a classic
@@ -470,7 +478,7 @@ static void raise_persistent_memory_limit(void) {
 static void *php_worker_main(void *arg) {
     const char *bootstrapPath = (const char *)arg;
 
-    fprintf(stderr, "PHP-WORKER: thread started tid=%p, booting PHP...\n", (void *)pthread_self());
+    PHP_DEBUG_LOG("PHP-WORKER: thread started tid=%p, booting PHP...\n", (void *)pthread_self());
     fflush(stderr);
 
     // ── Boot PHP on this thread ──
@@ -493,7 +501,7 @@ static void *php_worker_main(void *arg) {
         return NULL;
     }
 
-    fprintf(stderr, "PHP-WORKER: php_embed_init SUCCESS\n");
+    PHP_DEBUG_LOG("PHP-WORKER: php_embed_init SUCCESS\n");
     fflush(stderr);
 
     sapi_module.header_handler = ios_header_handler;
@@ -507,7 +515,7 @@ static void *php_worker_main(void *arg) {
     } zend_end_try();
 
 
-    fprintf(stderr, "PHP-WORKER: bootstrap script executed\n");
+    PHP_DEBUG_LOG("PHP-WORKER: bootstrap script executed\n");
     fflush(stderr);
 
     // Save bootstrap output BEFORE clearing (contains error messages if boot failed)
@@ -516,7 +524,7 @@ static void *php_worker_main(void *arg) {
         char *raw = get_collected_output();
         if (raw && raw[0] != '\0') {
             bootstrap_output = strdup(raw);
-            fprintf(stderr, "PHP-WORKER: bootstrap output: %.500s\n", bootstrap_output);
+            PHP_DEBUG_LOG("PHP-WORKER: bootstrap output: %.500s\n", bootstrap_output);
             fflush(stderr);
         }
     }
@@ -539,7 +547,7 @@ static void *php_worker_main(void *arg) {
         free(bootstrap_output);
         // Clear any previous boot error
         if (persistent_boot_error) { free(persistent_boot_error); persistent_boot_error = NULL; }
-        fprintf(stderr, "PHP-WORKER: bootstrap complete, Runtime::isBooted() confirmed\n");
+        PHP_DEBUG_LOG("PHP-WORKER: bootstrap complete, Runtime::isBooted() confirmed\n");
         fflush(stderr);
     } else {
         // Store bootstrap output as boot error for Swift to retrieve
@@ -744,7 +752,7 @@ static void submit_and_wait(php_work_type_t type) {
 
 int persistent_php_boot(const char *bootstrapPath) {
     if (persistent_initialized) {
-        fprintf(stderr, "persistent_php_boot: already initialized, skipping\n");
+        PHP_DEBUG_LOG("persistent_php_boot: already initialized, skipping\n");
         fflush(stderr);
         return 0;
     }
@@ -755,7 +763,7 @@ int persistent_php_boot(const char *bootstrapPath) {
         return -3;
     }
 
-    fprintf(stderr, "persistent_php_boot: creating worker thread\n");
+    PHP_DEBUG_LOG("persistent_php_boot: creating worker thread\n");
     fflush(stderr);
 
     php_work_sem = dispatch_semaphore_create(0);
@@ -784,13 +792,13 @@ int persistent_php_boot(const char *bootstrapPath) {
 
     worker_thread_alive = 1;
 
-    fprintf(stderr, "persistent_php_boot: waiting for boot to complete...\n");
+    PHP_DEBUG_LOG("persistent_php_boot: waiting for boot to complete...\n");
     fflush(stderr);
 
     // Block until worker finishes booting
     dispatch_semaphore_wait(php_done_sem, DISPATCH_TIME_FOREVER);
 
-    fprintf(stderr, "persistent_php_boot: done, result=%d\n", php_work_int_result);
+    PHP_DEBUG_LOG("persistent_php_boot: done, result=%d\n", php_work_int_result);
     fflush(stderr);
 
     return php_work_int_result;
@@ -910,7 +918,7 @@ static char                 *worker_work_str_result = NULL;
 // php_embed_init() again (TSRM is already started by the persistent runtime).
 
 static int worker_embed_init(void) {
-    fprintf(stderr, "WORKER: allocating TSRM context\n");
+    PHP_DEBUG_LOG("WORKER: allocating TSRM context\n");
     fflush(stderr);
 
     // Allocate thread-local TSRM storage for this thread
@@ -934,17 +942,17 @@ static int worker_embed_init(void) {
         return FAILURE;
     }
 
-    fprintf(stderr, "WORKER: TSRM context ready\n");
+    PHP_DEBUG_LOG("WORKER: TSRM context ready\n");
     fflush(stderr);
     return SUCCESS;
 }
 
 static void worker_embed_shutdown(void) {
-    fprintf(stderr, "WORKER: cleaning up TSRM context\n");
+    PHP_DEBUG_LOG("WORKER: cleaning up TSRM context\n");
     fflush(stderr);
     php_request_shutdown(NULL);
     ts_free_thread();
-    fprintf(stderr, "WORKER: TSRM context freed\n");
+    PHP_DEBUG_LOG("WORKER: TSRM context freed\n");
     fflush(stderr);
 }
 
@@ -1002,7 +1010,7 @@ static void do_worker_shutdown(void) {
 static void *worker_thread_main(void *arg) {
     const char *bootstrapPath = (const char *)arg;
 
-    fprintf(stderr, "WORKER: thread started tid=%p\n", (void *)pthread_self());
+    PHP_DEBUG_LOG("WORKER: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
 
     clear_output_buffer();
@@ -1035,7 +1043,7 @@ static void *worker_thread_main(void *arg) {
     worker_initialized = 1;
     worker_work_int_result = 0;
 
-    fprintf(stderr, "WORKER: boot complete, entering work loop\n");
+    PHP_DEBUG_LOG("WORKER: boot complete, entering work loop\n");
     fflush(stderr);
 
     // Signal boot complete
@@ -1073,7 +1081,7 @@ int worker_php_boot(const char *bootstrapPath) {
         return -4;
     }
 
-    fprintf(stderr, "worker_php_boot: creating worker thread\n");
+    PHP_DEBUG_LOG("worker_php_boot: creating worker thread\n");
     fflush(stderr);
 
     worker_work_sem = dispatch_semaphore_create(0);
@@ -1098,7 +1106,7 @@ int worker_php_boot(const char *bootstrapPath) {
     // Block until worker finishes booting
     dispatch_semaphore_wait(worker_done_sem, DISPATCH_TIME_FOREVER);
 
-    fprintf(stderr, "worker_php_boot: done, result=%d\n", worker_work_int_result);
+    PHP_DEBUG_LOG("worker_php_boot: done, result=%d\n", worker_work_int_result);
     fflush(stderr);
 
     return worker_work_int_result;
@@ -1159,7 +1167,7 @@ static char                  *ephemeral_work_str_result = NULL;
 // ── Ephemeral TSRM init/shutdown ────────────────────
 
 static int ephemeral_embed_init(void) {
-    fprintf(stderr, "EPHEMERAL: allocating TSRM context\n");
+    PHP_DEBUG_LOG("EPHEMERAL: allocating TSRM context\n");
     fflush(stderr);
 
     ts_resource(0);
@@ -1177,17 +1185,17 @@ static int ephemeral_embed_init(void) {
         return FAILURE;
     }
 
-    fprintf(stderr, "EPHEMERAL: TSRM context ready\n");
+    PHP_DEBUG_LOG("EPHEMERAL: TSRM context ready\n");
     fflush(stderr);
     return SUCCESS;
 }
 
 static void ephemeral_embed_shutdown(void) {
-    fprintf(stderr, "EPHEMERAL: cleaning up TSRM context\n");
+    PHP_DEBUG_LOG("EPHEMERAL: cleaning up TSRM context\n");
     fflush(stderr);
     php_request_shutdown(NULL);
     ts_free_thread();
-    fprintf(stderr, "EPHEMERAL: TSRM context freed\n");
+    PHP_DEBUG_LOG("EPHEMERAL: TSRM context freed\n");
     fflush(stderr);
 }
 
@@ -1245,7 +1253,7 @@ static void do_ephemeral_shutdown(void) {
 static void *ephemeral_thread_main(void *arg) {
     const char *bootstrapPath = (const char *)arg;
 
-    fprintf(stderr, "EPHEMERAL: thread started tid=%p\n", (void *)pthread_self());
+    PHP_DEBUG_LOG("EPHEMERAL: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
 
     clear_output_buffer();
@@ -1278,7 +1286,7 @@ static void *ephemeral_thread_main(void *arg) {
     ephemeral_initialized = 1;
     ephemeral_work_int_result = 0;
 
-    fprintf(stderr, "EPHEMERAL: boot complete, entering work loop\n");
+    PHP_DEBUG_LOG("EPHEMERAL: boot complete, entering work loop\n");
     fflush(stderr);
 
     // Signal boot complete
@@ -1326,7 +1334,7 @@ int ephemeral_php_boot(const char *bootstrapPath) {
         return 0;
     }
 
-    fprintf(stderr, "ephemeral_php_boot: creating ephemeral thread\n");
+    PHP_DEBUG_LOG("ephemeral_php_boot: creating ephemeral thread\n");
     fflush(stderr);
 
     ephemeral_work_sem = dispatch_semaphore_create(0);
@@ -1355,7 +1363,7 @@ int ephemeral_php_boot(const char *bootstrapPath) {
     int result = ephemeral_work_int_result;
     pthread_mutex_unlock(&g_ephemeral_mutex);
 
-    fprintf(stderr, "ephemeral_php_boot: done, result=%d\n", result);
+    PHP_DEBUG_LOG("ephemeral_php_boot: done, result=%d\n", result);
     fflush(stderr);
 
     return result;
@@ -1513,7 +1521,7 @@ static void do_async_run(async_php_slot_t *slot) {
 static void *async_thread_main(void *arg) {
     async_php_slot_t *slot = (async_php_slot_t *)arg;
 
-    fprintf(stderr, "ASYNC-PHP: thread started tid=%p\n", (void *)pthread_self());
+    PHP_DEBUG_LOG("ASYNC-PHP: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
 
     async_lane_thread = 1;
@@ -1644,7 +1652,7 @@ int async_php_boot(const char *bootstrapPath) {
         return -3;
     }
 
-    fprintf(stderr, "async_php_boot: slot %d ready\n", handle);
+    PHP_DEBUG_LOG("async_php_boot: slot %d ready\n", handle);
     fflush(stderr);
     return handle;
 }
@@ -1780,7 +1788,7 @@ static void do_webview_dispatch(webview_php_slot_t *slot) {
 static void *webview_thread_main(void *arg) {
     webview_php_slot_t *slot = (webview_php_slot_t *)arg;
 
-    fprintf(stderr, "WEBVIEW-PHP: thread started tid=%p\n", (void *)pthread_self());
+    PHP_DEBUG_LOG("WEBVIEW-PHP: thread started tid=%p\n", (void *)pthread_self());
     fflush(stderr);
 
     clear_output_buffer();
@@ -1810,7 +1818,7 @@ static void *webview_thread_main(void *arg) {
     slot->initialized = 1;
     slot->boot_result = 0;
 
-    fprintf(stderr, "WEBVIEW-PHP: boot complete, entering work loop\n");
+    PHP_DEBUG_LOG("WEBVIEW-PHP: boot complete, entering work loop\n");
     fflush(stderr);
 
     dispatch_semaphore_signal(slot->done_sem);
@@ -1830,7 +1838,7 @@ static void *webview_thread_main(void *arg) {
                 } zend_end_try();
                 ephemeral_embed_shutdown();
                 slot->initialized = 0;
-                fprintf(stderr, "WEBVIEW-PHP: thread shut down\n");
+                PHP_DEBUG_LOG("WEBVIEW-PHP: thread shut down\n");
                 fflush(stderr);
                 dispatch_semaphore_signal(slot->done_sem);
                 return NULL;
@@ -1904,7 +1912,7 @@ int webview_php_start(const char *bootstrapPath) {
         return -3;
     }
 
-    fprintf(stderr, "webview_php_start: slot %d ready\n", handle);
+    PHP_DEBUG_LOG("webview_php_start: slot %d ready\n", handle);
     fflush(stderr);
     return handle;
 }
@@ -1989,6 +1997,6 @@ void webview_php_stop(int handle) {
     slot->in_use = 0;
     pthread_mutex_unlock(&webview_pool_mutex);
 
-    fprintf(stderr, "webview_php_stop: slot %d released\n", handle);
+    PHP_DEBUG_LOG("webview_php_stop: slot %d released\n", handle);
     fflush(stderr);
 }

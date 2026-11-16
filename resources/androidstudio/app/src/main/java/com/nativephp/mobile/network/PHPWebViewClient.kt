@@ -15,6 +15,7 @@ import com.nativephp.mobile.bridge.PHPBridge
 import com.nativephp.mobile.security.LaravelCookieStore
 import com.nativephp.mobile.security.LaravelSecurity
 import com.nativephp.mobile.security.LogRedaction
+import com.nativephp.mobile.utils.NativeLog
 
 
 /**
@@ -48,7 +49,7 @@ class PHPWebViewClient(
 
         // Remove query parameters for file lookup but keep them for logging
         val cleanPath = path.split("?")[0]
-        Log.d(TAG, "🗂️ Handling asset request: $path")
+        NativeLog.d(TAG) { "🗂️ Handling asset request: $path" }
 
         return try {
             // Get Laravel public path
@@ -63,7 +64,7 @@ class PHPWebViewClient(
             )
 
             // Log all paths we're trying
-            Log.d(TAG, "🔍 Checking paths: ${possiblePaths.joinToString()}")
+            NativeLog.d(TAG) { "🔍 Checking paths: ${possiblePaths.joinToString()}" }
 
             // Confine every candidate to public/. The path comes from the
             // request URL, and a `..` left in it (e.g. `/_assets/../.env`, or
@@ -82,7 +83,7 @@ class PHPWebViewClient(
             val assetFile = possiblePaths.firstOrNull { withinPublic(it) && File(it).exists() }?.let { File(it) }
 
             if (assetFile != null && assetFile.exists()) {
-                Log.d(TAG, "✅ Found asset at: ${assetFile.absolutePath}")
+                NativeLog.d(TAG) { "✅ Found asset at: ${assetFile.absolutePath}" }
 
                 // Determine MIME type
                 val mimeType = guessMimeType(cleanPath)
@@ -97,24 +98,24 @@ class PHPWebViewClient(
                 when {
                     // CSS files
                     cleanPath.endsWith(".css") -> {
-                        Log.d(TAG, "📋 Serving CSS file")
+                        NativeLog.d(TAG) { "📋 Serving CSS file" }
                         responseHeaders["Content-Type"] = "text/css"
                     }
                     // JavaScript files
                     cleanPath.endsWith(".js") -> {
-                        Log.d(TAG, "📋 Serving JavaScript file")
+                        NativeLog.d(TAG) { "📋 Serving JavaScript file" }
                         responseHeaders["Content-Type"] = "application/javascript"
                     }
                     // Font files
                     cleanPath.endsWith(".woff") || cleanPath.endsWith(".woff2") ||
                             cleanPath.endsWith(".ttf") || cleanPath.endsWith(".eot") -> {
-                        Log.d(TAG, "📋 Serving font file")
+                        NativeLog.d(TAG) { "📋 Serving font file" }
                         // Keep font MIME type from guessMimeType
                         responseHeaders["Access-Control-Allow-Origin"] = "*" // Allow cross-origin font loading
                     }
                 }
 
-                Log.d(TAG, "📋 Serving with MIME type: ${responseHeaders["Content-Type"]}")
+                NativeLog.d(TAG) { "📋 Serving with MIME type: ${responseHeaders["Content-Type"]}" }
                 responseHeaders["Content-Length"] = fileSize.toString()
 
                 // Use BufferedInputStream with 1MB buffer for efficient streaming (matching iOS)
@@ -132,7 +133,7 @@ class PHPWebViewClient(
                 )
             } else {
                 // If static file not found, try handling via PHP
-                Log.d(TAG, "🔄 Asset not found in filesystem, trying PHP handler")
+                NativeLog.d(TAG) { "🔄 Asset not found in filesystem, trying PHP handler" }
 
                 // Use PHP to handle the asset
                 val phpRequest = PHPRequest(
@@ -144,11 +145,11 @@ class PHPWebViewClient(
                 )
 
                 val response = parseRawResponse(phpBridge.handleLaravelRequestBytes(phpRequest))
-                Log.d(TAG, "RESPONSE HEADERS: ${LogRedaction.headers(response.headers)}")
+                NativeLog.d(TAG) { "RESPONSE HEADERS: ${LogRedaction.headers(response.headers)}" }
 
                 if (response.status == 200) {
                     val (mime, charset) = mimeAndCharset(response.headers["Content-Type"], guessMimeType(cleanPath))
-                    Log.d(TAG, "✅ Asset served via PHP: $mime (${response.bodyLength} bytes)")
+                    NativeLog.d(TAG) { "✅ Asset served via PHP: $mime (${response.bodyLength} bytes)" }
                     WebResourceResponse(
                         mime,
                         charset,
@@ -159,7 +160,7 @@ class PHPWebViewClient(
                     )
                 } else {
                     val statusCode = response.status
-                    Log.d(TAG, "❌ Asset not found via PHP: $path (Status: $statusCode)")
+                    NativeLog.d(TAG) { "❌ Asset not found via PHP: $path (Status: $statusCode)" }
                     errorResponse(404, "Asset not found: $path")
                 }
             }
@@ -206,7 +207,7 @@ class PHPWebViewClient(
         headers["Cookie"] = LaravelCookieStore.asCookieHeader()
         LaravelCookieStore.logAll()
 
-        Log.d(TAG, "📤 Final request headers: ${LogRedaction.headers(headers)}")
+        NativeLog.d(TAG) { "📤 Final request headers: ${LogRedaction.headers(headers)}" }
 
         val normalizedPath = when {
             path.startsWith("//") -> path.substring(1)
@@ -237,14 +238,14 @@ class PHPWebViewClient(
         val statusCode = response.status
 
         val parseTime = System.currentTimeMillis() - parseStart
-        Log.d("PerfTiming", "⏱️ WEBCLIENT [$path] prep=${prepTime}ms php=${phpTime}ms parse=${parseTime}ms")
+        NativeLog.perf("PerfTiming") { "⏱️ WEBCLIENT [$path] prep=${prepTime}ms php=${phpTime}ms parse=${parseTime}ms" }
 
         // ✅ Handle Set-Cookie headers (jar mirror is gated; parseResponse
         // already stored them in LaravelCookieStore)
         responseHeaders.entries
             .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
             .forEach { (_, value) ->
-                Log.d(TAG, "🍪 Setting cookie from response: ${LogRedaction.cookieName(value)}")
+                NativeLog.d(TAG) { "🍪 Setting cookie from response: ${LogRedaction.cookieName(value)}" }
                 com.nativephp.mobile.security.WebCookieMirror.set(value)
             }
 
@@ -288,7 +289,7 @@ class PHPWebViewClient(
                 val currentPath = request.url.path ?: "/"
                 val targetPath = redirectUri.path ?: "/"
 
-                Log.d(TAG, "🔄 Following redirect ${redirectCount + 1}/10 to $redirectUrl")
+                NativeLog.d(TAG) { "🔄 Following redirect ${redirectCount + 1}/10 to $redirectUrl" }
                 return handlePHPRequest(redirectRequest, null as CapturedBody?, redirectCount + 1)
             }
         }
@@ -367,7 +368,7 @@ class PHPWebViewClient(
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
                 ?: if (statusCode in 200..299) "OK" else "Error"
-            Log.d(TAG, "📋 Parsed status code: $statusCode")
+            NativeLog.d(TAG) { "📋 Parsed status code: $statusCode" }
         }
 
         for (line in headerLines.drop(1)) {
@@ -384,7 +385,7 @@ class PHPWebViewClient(
         }
 
         headers["X-PHP-Timing"]?.let { timing ->
-            Log.d("PerfTiming", "⏱️ PHP_TIMING $timing")
+            NativeLog.perf("PerfTiming") { "⏱️ PHP_TIMING $timing" }
         }
 
         return RawResponse(raw, statusCode, reason, headers, split + 4)
@@ -519,7 +520,7 @@ class PHPWebViewClient(
                 var bytes = (if (status >= 400) conn.errorStream else conn.inputStream)
                     ?.use { it.readBytes() } ?: ByteArray(0)
 
-                Log.d(TAG, "🛰️ [JUMP-FORWARD] $method $urlString → $status (${bytes.size} bytes)")
+                NativeLog.d(TAG) { "🛰️ [JUMP-FORWARD] $method $urlString → $status (${bytes.size} bytes)" }
 
                 val contentType = conn.contentType ?: guessMimeType(path)
 
@@ -584,18 +585,18 @@ class PHPWebViewClient(
      */
     private fun leaveForOffHostRedirect(request: WebResourceRequest, location: String): WebResourceResponse {
         if (!request.isForMainFrame) {
-            Log.d(TAG, "↪️ Not following a subresource redirect to another host: $location")
+            NativeLog.d(TAG) { "↪️ Not following a subresource redirect to another host: $location" }
             return errorResponse(502, "Redirect to another host")
         }
 
-        Log.d(TAG, "🌍 Redirect to another host, opening it outside the app: $location")
+        NativeLog.d(TAG) { "🌍 Redirect to another host, opening it outside the app: $location" }
         Handler(Looper.getMainLooper()).post {
             try {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(location))
                 intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 context.startActivity(intent)
             } catch (e: ActivityNotFoundException) {
-                Log.e(TAG, "No app can open $location")
+                Log.e(TAG, "No app can open an off-host redirect")
             }
         }
 

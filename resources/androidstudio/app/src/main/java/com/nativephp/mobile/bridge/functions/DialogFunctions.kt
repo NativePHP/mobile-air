@@ -13,6 +13,7 @@ import com.nativephp.mobile.utils.NativeActionCoordinator
 import com.google.android.material.snackbar.Snackbar
 import org.json.JSONArray
 import org.json.JSONObject
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Functions related to native alert dialogs
@@ -125,7 +126,7 @@ object DialogFunctions {
                 else -> Snackbar.LENGTH_LONG
             }
 
-            Log.d("Dialog.Toast", "Showing toast (Snackbar): $message")
+            NativeLog.d("Dialog.Toast") { "Showing toast (Snackbar): $message" }
 
             return try {
                 // Show snackbar on main thread
@@ -156,7 +157,7 @@ object DialogFunctions {
                         view.layoutParams = params
 
                         snackbar.show()
-                        Log.d("Dialog.Toast", "Snackbar displayed with bottom offset: ${bottomOffset}px")
+                        NativeLog.d("Dialog.Toast") { "Snackbar displayed with bottom offset: ${bottomOffset}px" }
                     } else {
                         Log.e("Dialog.Toast", "Could not find root view for Snackbar")
                     }

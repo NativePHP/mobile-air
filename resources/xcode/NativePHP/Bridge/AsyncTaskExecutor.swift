@@ -163,7 +163,7 @@ final class AsyncTaskExecutor {
         lock.lock()
         guard !running else {
             lock.unlock()
-            NSLog("AsyncTaskExecutor: already running")
+            NativeLog.debug("AsyncTaskExecutor: already running")
             return
         }
         bootstrapPath = AppUpdateManager.shared.getAppPath() + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
@@ -171,7 +171,7 @@ final class AsyncTaskExecutor {
         running = true
         lock.unlock()
 
-        NSLog("AsyncTaskExecutor: ready (lazy pool, max %d slots, idle timeout %ds)", poolSize, idleTimeout)
+        NativeLog.debug(String(format: "AsyncTaskExecutor: ready (lazy pool, max %d slots, idle timeout %ds)", poolSize, idleTimeout))
     }
 
     /// Enqueue a dispatched task id on a free slot. Returns immediately.
@@ -211,7 +211,7 @@ final class AsyncTaskExecutor {
 
         guard running else {
             lock.unlock()
-            NSLog("AsyncTaskExecutor: dispatch(%@) dropped — executor not running", taskId)
+            NativeLog.error(String(format: "AsyncTaskExecutor: dispatch(%@) dropped — executor not running", taskId))
             return false
         }
 
@@ -236,8 +236,8 @@ final class AsyncTaskExecutor {
         if let boot {
             bootSlot(bootstrapPath: boot.path, bootGeneration: boot.generation)
         } else {
-            NSLog("AsyncTaskExecutor: task %@ queued behind %d others (pool=%d, booting=%d, max=%d)",
-                  taskId, ahead, slotCount, booting, poolSize)
+            NativeLog.debug(String(format: "AsyncTaskExecutor: task %@ queued behind %d others (pool=%d, booting=%d, max=%d)",
+                                   taskId, ahead, slotCount, booting, poolSize))
         }
 
         return true
@@ -291,7 +291,7 @@ final class AsyncTaskExecutor {
                     self.waiting.removeAll()
                 }
                 self.lock.unlock()
-                NSLog("AsyncTaskExecutor: lazy slot boot FAILED (%d)", handle)
+                NativeLog.error(String(format: "AsyncTaskExecutor: lazy slot boot FAILED (%d)", handle))
                 stranded.forEach { self.failNow(taskId: $0) }
                 return
             }
@@ -309,7 +309,7 @@ final class AsyncTaskExecutor {
             let count = self.slots.count
             self.lock.unlock()
 
-            NSLog("AsyncTaskExecutor: slot booted (%d/%d slots) in %.0f ms", count, self.poolSize, ms)
+            NativeLog.perf(String(format: "AsyncTaskExecutor: slot booted (%d/%d slots) in %.0f ms", count, self.poolSize, ms))
 
             self.next(on: slot)
         }
@@ -331,7 +331,7 @@ final class AsyncTaskExecutor {
             self.lock.unlock()
             if let since {
                 let ms = Double(DispatchTime.now().uptimeNanoseconds - since.uptimeNanoseconds) / 1_000_000
-                NSLog("AsyncTaskExecutor: task %@ done %.0f ms after dispatch", taskId, ms)
+                NativeLog.debug(String(format: "AsyncTaskExecutor: task %@ done %.0f ms after dispatch", taskId, ms))
             }
 
             self.next(on: slot)
@@ -404,7 +404,7 @@ final class AsyncTaskExecutor {
                 let boot = self.claimBootLocked()
                 self.lock.unlock()
 
-                NSLog("AsyncTaskExecutor: slot shut down after %ds idle (%d/%d slots)", self.idleTimeout, left, self.poolSize)
+                NativeLog.debug(String(format: "AsyncTaskExecutor: slot shut down after %ds idle (%d/%d slots)", self.idleTimeout, left, self.poolSize))
 
                 if let boot {
                     self.bootSlot(bootstrapPath: boot.path, bootGeneration: boot.generation)
@@ -425,7 +425,7 @@ final class AsyncTaskExecutor {
             self.lock.unlock()
             guard armed else { return }
 
-            NSLog("AsyncTaskExecutor: task %@ timed out; reporting failure to the UI", taskId)
+            NativeLog.error(String(format: "AsyncTaskExecutor: task %@ timed out; reporting failure to the UI", taskId))
             NativeElementBridge.sendNativeEvent(eventName: event, payloadJson: payloadJson)
         }
 
@@ -453,11 +453,11 @@ final class AsyncTaskExecutor {
         lock.unlock()
 
         guard let item else {
-            NSLog("AsyncTaskExecutor: task %@ dropped — no slot could boot", taskId)
+            NativeLog.error(String(format: "AsyncTaskExecutor: task %@ dropped — no slot could boot", taskId))
             return
         }
 
-        NSLog("AsyncTaskExecutor: task %@ failed — no slot could boot", taskId)
+        NativeLog.error(String(format: "AsyncTaskExecutor: task %@ failed — no slot could boot", taskId))
         watchdogQueue.async { item.perform() }
     }
 
@@ -479,7 +479,7 @@ final class AsyncTaskExecutor {
         // Wait for any in-flight lazy slot boot so it sees `!running` and tears
         // down its own C handle before php_embed_shutdown() runs.
         if wasBooting, bootFinished.wait(timeout: .now() + bootWaitTimeout) == .timedOut {
-            NSLog("AsyncTaskExecutor: timed out waiting for boot to settle; stopping anyway")
+            NativeLog.error("AsyncTaskExecutor: timed out waiting for boot to settle; stopping anyway")
         }
 
         lock.lock()
@@ -495,7 +495,7 @@ final class AsyncTaskExecutor {
         lock.unlock()
 
         if !dropped.isEmpty {
-            NSLog("AsyncTaskExecutor: %d queued task(s) dropped on stop", dropped.count)
+            NativeLog.error(String(format: "AsyncTaskExecutor: %d queued task(s) dropped on stop", dropped.count))
         }
 
         pendingWatchdogs.values.forEach { $0.cancel() }
@@ -508,6 +508,6 @@ final class AsyncTaskExecutor {
                 slot.shutDown()
             }
         }
-        NSLog("AsyncTaskExecutor: stopped (%d slot(s))", live.count)
+        NativeLog.debug(String(format: "AsyncTaskExecutor: stopped (%d slot(s))", live.count))
     }
 }

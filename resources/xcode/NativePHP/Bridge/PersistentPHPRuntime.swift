@@ -91,17 +91,17 @@ final class PersistentPHPRuntime {
 
         let bootstrapPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
 
-        print("PersistentPHPRuntime: booting with \(bootstrapPath)")
+        NativeLog.debug("PersistentPHPRuntime: booting with \(bootstrapPath)")
 
         // This blocks until the C worker thread completes boot
         let result = _persistent_php_boot(bootstrapPath)
 
         if result == 0 {
             isBooted = true
-            print("PersistentPHPRuntime: boot succeeded")
+            NativeLog.debug("PersistentPHPRuntime: boot succeeded")
         } else {
             let bootError = String(cString: _persistent_php_boot_error())
-            print("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
+            NativeLog.error("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
         }
 
         // Re-open the window shutdown() closed, so webview contexts
@@ -132,11 +132,11 @@ final class PersistentPHPRuntime {
     func dispatchData(request: RequestData) -> Data {
         // Detect stale state: Swift thinks we're booted but C layer disagrees
         if isBooted && _persistent_php_is_booted() == 0 {
-            print("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
+            NativeLog.debug("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
             isBooted = false
             let rebooted = boot()
             if !rebooted {
-                print("PersistentPHPRuntime: re-boot failed, falling back to error response")
+                NativeLog.error("PersistentPHPRuntime: re-boot failed, falling back to error response")
                 return Data("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime re-boot failed.".utf8)
             }
         }
