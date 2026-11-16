@@ -185,3 +185,21 @@ it('defaults the async pool to two slots and a 60 second idle timeout', function
 
     expect($config['async'])->toBe(['max_slots' => 2, 'idle_timeout' => 60]);
 });
+
+/**
+ * Jobs queued by a version that wrote no marker would sit until the next push.
+ * Both platforms write the marker where they already run migrations for a newly
+ * extracted bundle, so the worker runs once after an upgrade.
+ */
+it('marks jobs as pending after a new bundle is extracted on both platforms', function () {
+    $root = dirname(__DIR__, 2).'/resources/';
+
+    $ios = file_get_contents($root.'xcode/NativePHP/AppUpdateManager.swift');
+    $iosMigrate = substr($ios, strpos($ios, 'private func runMigrationsAndClearCaches()'));
+
+    $android = file_get_contents($root.'androidstudio/app/src/main/java/com/nativephp/mobile/bridge/LaravelEnvironment.kt');
+    $androidMigrate = substr($android, strpos($android, 'private fun runBaseArtisanCommands()'));
+
+    expect(strpos($iosMigrate, 'PHPQueueWorker.markPending()'))->toBeGreaterThan(strpos($iosMigrate, '"migrate", "--force"'))
+        ->and(strpos($androidMigrate, 'PHPQueueWorker.markPending(context)'))->toBeGreaterThan(strpos($androidMigrate, 'migrate --force'));
+});

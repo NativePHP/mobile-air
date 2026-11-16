@@ -56,6 +56,21 @@ class PHPQueueWorker(
         var shared: PHPQueueWorker? = null
             private set
 
+        /**
+         * Leave the marker [start] looks for, so the next start boots the worker
+         * once. Called after a new bundle is extracted: jobs queued by a version
+         * that wrote no marker would otherwise wait for the next push.
+         */
+        fun markPending(context: Context) {
+            try {
+                val marker = pendingMarkerFor(context)
+                marker.parentFile?.mkdirs()
+                marker.createNewFile()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not write the pending-jobs marker", e)
+            }
+        }
+
         /** Where PHP leaves word that jobs may be queued (`QueueWorkerSignal::markerPath()`). */
         fun pendingMarkerFor(context: Context): File =
             File(context.getDir("storage", Context.MODE_PRIVATE), "persisted_data/storage/framework/queue_pending")

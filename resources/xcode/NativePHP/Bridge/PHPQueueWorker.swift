@@ -78,6 +78,16 @@ final class PHPQueueWorker {
             .appendingPathComponent("storage/framework/queue_pending").path
     }
 
+    /// Leave the marker `start()` looks for, so the next start boots the worker
+    /// once. Called after a new bundle is extracted: jobs queued by a version
+    /// that wrote no marker would otherwise wait for the next push.
+    static func markPending() {
+        guard let marker = pendingMarkerPath else { return }
+        let dir = (marker as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: marker, contents: nil)
+    }
+
     /// Take wakes from now on, and boot the worker if jobs were left queued.
     /// Boots nothing when there is no sign of queued work.
     func start() {

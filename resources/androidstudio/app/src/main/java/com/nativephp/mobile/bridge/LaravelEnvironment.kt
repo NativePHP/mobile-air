@@ -801,6 +801,11 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("storage:link")
         phpBridge.runArtisanCommand("migrate --force")
 
+        // A new bundle may come from a version that started the queue worker at
+        // every launch and never wrote the pending-jobs marker. Write it, so the
+        // worker runs once and clears it if the queue is empty.
+        PHPQueueWorker.markPending(context)
+
         // Cache the Laravel bootstrap so every subsequent cold boot skips config
         // parsing, event discovery, and Blade compilation. Built HERE — once per app
         // update, with the device's real paths — rather than at build time on the host
