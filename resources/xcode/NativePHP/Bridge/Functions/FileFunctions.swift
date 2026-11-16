@@ -99,6 +99,17 @@ enum FileFunctions {
             return ["success": false, "error": "Destination path is not allowed"]
         }
 
+        // A destination whose leaf is itself a symlink slips the check above: for
+        // a DANGLING link canonical() takes the fileExists()==false branch and
+        // keeps the in-root leaf name, so the containment check passes — then the
+        // copy/move follows the link and writes outside the root. attributesOfItem
+        // does not traverse the final component (lstat), so refuse a symlink leaf.
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: to),
+           attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+            print("File op refused: destination leaf is a symlink")
+            return ["success": false, "error": "Destination path is not allowed"]
+        }
+
         return nil
     }
 

@@ -28,6 +28,49 @@ it('is a no-op unless native compilation is active', function () {
     expect(($this->precompiler)($input))->toBe($input);
 });
 
+it('settles a key once per outermost native render, and never outside one', function () {
+    expect(NativeTagPrecompiler::onceThisFrame('k'))->toBeFalse()
+        ->and(NativeTagPrecompiler::onceThisFrame('k'))->toBeFalse();
+
+    NativeTagPrecompiler::beginRender();
+    $first = NativeTagPrecompiler::onceThisFrame('k');
+    NativeTagPrecompiler::beginRender();   // a nested render shares the frame
+    $nested = NativeTagPrecompiler::onceThisFrame('k');
+    NativeTagPrecompiler::endRender();
+    NativeTagPrecompiler::endRender();
+
+    NativeTagPrecompiler::beginRender();
+    $nextFrame = NativeTagPrecompiler::onceThisFrame('k');
+    NativeTagPrecompiler::endRender();
+
+    expect($first)->toBeFalse()->and($nested)->toBeTrue()->and($nextFrame)->toBeFalse();
+});
+
+it('reads a compiled file again in each native render, and on every call outside one', function () {
+    $path = tempnam(sys_get_temp_dir(), 'nphp-marker');
+    $marked = '<?php '.NativeTagPrecompiler::COMPILED_MARKER.' ?>';
+
+    file_put_contents($path, $marked);
+    NativeTagPrecompiler::beginRender();
+    $markedFirst = NativeTagPrecompiler::compiledFileIsNativeThisFrame($path);
+    file_put_contents($path, 'plain');
+    $sameFrame = NativeTagPrecompiler::compiledFileIsNativeThisFrame($path);
+    NativeTagPrecompiler::endRender();
+
+    NativeTagPrecompiler::beginRender();
+    $nextFrame = NativeTagPrecompiler::compiledFileIsNativeThisFrame($path);
+    NativeTagPrecompiler::endRender();
+
+    file_put_contents($path, $marked);
+    NativeTagPrecompiler::compiledFileIsNativeThisFrame($path);
+    file_put_contents($path, 'plain');
+    $outside = NativeTagPrecompiler::compiledFileIsNativeThisFrame($path);
+    unlink($path);
+
+    expect($markedFirst)->toBeTrue()->and($sameFrame)->toBeTrue()
+        ->and($nextFrame)->toBeFalse()->and($outside)->toBeFalse();
+});
+
 // Compiled output names core's collector directly. It used to name this
 // package's alias of it, which is the same class here but not in an app
 // holding a released (pre-extraction) mobile, nor in a desktop-only app

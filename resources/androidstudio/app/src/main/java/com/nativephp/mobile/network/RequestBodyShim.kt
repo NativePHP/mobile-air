@@ -7,9 +7,9 @@ package com.nativephp.mobile.network
  * browser serialize each same-origin body (so the bytes and the
  * Content-Type, multipart boundary included, are exactly what the request
  * carries), and hands the bytes to [JSBridge] in base64 chunks with
- * beginBody / appendBody / commitBody. Base64 is used only on this hop,
- * because addJavascriptInterface can only pass strings; Kotlin decodes each
- * chunk to bytes immediately.
+ * beginBody / appendBody / commitBody. The calls cross the AndroidPOST
+ * bridge, which carries only strings, so the bytes are base64 on this hop;
+ * Kotlin decodes each chunk to bytes immediately.
  *
  * It is installed at document start where the WebView supports it, so the
  * page's first requests are covered too, and again from onPageFinished as a
@@ -23,18 +23,35 @@ internal object RequestBodyShim {
     // Hands every same-origin request body to native as exact bytes, because
     // WebResourceRequest carries no body. The browser serializes the body
     // (so the bytes and the Content-Type, multipart boundary included, are
-    // what a real request would carry), and the bytes cross
-    // addJavascriptInterface in base64 chunks, since it only passes strings.
-    // Kotlin decodes them to a ByteArray straight away.
+    // what a real request would carry), and the bytes cross the AndroidPOST
+    // bridge in base64 chunks, since it only passes strings. Kotlin decodes
+    // them to a ByteArray straight away.
     if (window.__nphpBodyShim) {
         return 'request body shim already installed';
     }
-    var bridge = window.AndroidPOST;
-    if (!bridge || typeof bridge.beginBody !== 'function') {
-        return 'request body shim: no AndroidPOST bridge yet';
-    }
     window.__nphpBodyShim = true;
     window.__nphpPostPatched = true;
+
+    // AndroidPOST is a WebMessageListener on modern WebViews (postMessage only,
+    // and injected only into the app's own origin) and an addJavascriptInterface
+    // object on old ones (direct methods). Resolve it per call: the listener
+    // object can be injected a touch after this document-start script runs, so
+    // we install the wrappers now and look the bridge up when a body arrives.
+    function call(method, args) {
+        var bridge = window.AndroidPOST;
+        if (!bridge) {
+            return false;
+        }
+        if (typeof bridge.postMessage === 'function') {
+            bridge.postMessage(JSON.stringify({ method: method, args: args }));
+            return true;
+        }
+        if (typeof bridge[method] === 'function') {
+            bridge[method].apply(bridge, args);
+            return true;
+        }
+        return false;
+    }
 
     var CHUNK = 786432;               // bytes per bridge call, a multiple of 3
     var MAX_BODY = 16 * 1024 * 1024;  // post_max_size of the embedded PHP
@@ -73,11 +90,13 @@ internal object RequestBodyShim {
                 MAX_BODY + ' byte limit and was not sent to PHP: ' + url);
             return false;
         }
-        bridge.beginBody(key, String(url), contentType || '', bytes.length, !!isForm);
-        for (var i = 0; i < bytes.length; i += CHUNK) {
-            bridge.appendBody(key, toBase64(bytes.subarray(i, i + CHUNK)));
+        if (!call('beginBody', [key, String(url), contentType || '', bytes.length, !!isForm])) {
+            return false;
         }
-        bridge.commitBody(key);
+        for (var i = 0; i < bytes.length; i += CHUNK) {
+            call('appendBody', [key, toBase64(bytes.subarray(i, i + CHUNK))]);
+        }
+        call('commitBody', [key]);
         return true;
     }
 

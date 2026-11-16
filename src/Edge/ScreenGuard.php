@@ -200,7 +200,9 @@ class ScreenGuard
                 ->through($middleware)
                 ->then(fn () => $passed);
         } catch (AuthenticationException $e) {
-            return static::redirect($e->redirectTo() ?? static::loginUri(), $uri);
+            // Laravel 11+ resolves the guest redirect from the request (and
+            // `redirectGuestsTo()`); Laravel 10 takes no argument and ignores it.
+            return static::redirect($e->redirectTo($request) ?? static::loginUri(), $uri);
         } catch (HttpException) {
             return new NavigationIntent(NavigationIntent::BACK);
         } catch (HttpResponseException $e) {

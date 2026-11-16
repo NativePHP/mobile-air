@@ -8,13 +8,19 @@ use Illuminate\Support\Str;
 class NativeCallController
 {
     /**
-     * Bridge functions that the lanes of an app call among themselves and a
-     * page never does. AsyncTask.Dispatch hands its id to PHP that the async
-     * lane evaluates, and AsyncTask.Complete posts an event of any name to a
-     * native screen. Native checks both calls, but an app keeps the native
-     * project it installed until it reinstalls one, so they stop here too.
+     * Bridge-function prefixes an app's lanes call among themselves and a web
+     * view never legitimately does, so they are refused here.
+     *
+     * AsyncTask.Dispatch hands its id to PHP that the async lane evaluates, and
+     * AsyncTask.Complete posts an event of any name to a native screen. Ota.*
+     * downloads and stages an app update for next-boot apply — from a page it
+     * would take an attacker-chosen URL and let a web view stage a malicious
+     * bundle, so OTA is driven from app PHP only (in-process via nativephp_call,
+     * which does not pass through this controller). Native also checks these,
+     * but an app keeps the native project it installed until it reinstalls, so
+     * they stop here too — and this gate ships with the composer package.
      */
-    protected const INTERNAL_PREFIXES = ['AsyncTask.'];
+    protected const INTERNAL_PREFIXES = ['AsyncTask.', 'Ota.'];
 
     public function __invoke(Request $request)
     {

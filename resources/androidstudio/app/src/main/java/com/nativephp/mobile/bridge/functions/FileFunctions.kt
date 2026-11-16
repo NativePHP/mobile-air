@@ -85,6 +85,20 @@ object FileFunctions {
             return mapOf("success" to false, "error" to "Destination path is not allowed")
         }
 
+        // Refuse a destination whose leaf is itself a symlink. A dangling link can
+        // keep an in-root canonical path on some platforms, and the copy/move would
+        // then follow it out of the root. Detect the link without following it: a
+        // symlink leaf's canonical path differs from its absolute path (parent
+        // already resolved). Uses java.io.File only.
+        val canonicalParent = File(to).absoluteFile.parentFile?.canonicalFile
+        if (canonicalParent != null) {
+            val leaf = File(canonicalParent, File(to).name)
+            if (leaf.canonicalPath != leaf.absolutePath) {
+                Log.w("FileFunctions", "File op refused: destination leaf is a symlink")
+                return mapOf("success" to false, "error" to "Destination path is not allowed")
+            }
+        }
+
         return null
     }
 

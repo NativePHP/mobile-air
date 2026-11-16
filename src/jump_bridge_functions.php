@@ -141,6 +141,10 @@ if (! function_exists('nativephp_element_wait_event')) {
 
         $decoded = json_decode($result, true);
 
+        if ($decoded === []) {
+            return null;
+        }
+
         // Two DIFFERENT rejection shapes reach us and both must count as errors:
         //   JumpBridge::call() itself  → {"status":"error","code":"NO_DEVICE",…}
         //   websocket-server.php       → {"id":…,"error":"No device connected"}

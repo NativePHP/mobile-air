@@ -47,6 +47,17 @@ it('confines the destination to app storage on both platforms', function (string
     'Android' => [$android, 'storageAppRoot'],
 ]);
 
+it('refuses a destination whose leaf is a symlink, on both platforms', function (string $path, string $needle) {
+    // canonical() resolves the parent but, for a dangling-symlink destination,
+    // keeps the in-root leaf name — the copy would then follow the link out of
+    // the root. Each twin refuses a symlink leaf outright (iOS lstats via
+    // attributesOfItem; Android compares the leaf's canonical and absolute paths).
+    expect(fileFunctionsSource($path))->toContain($needle);
+})->with([
+    'iOS lstats the dest leaf' => [$ios, 'typeSymbolicLink'],
+    'Android checks the dest leaf link' => [$android, 'leaf.canonicalPath != leaf.absolutePath'],
+]);
+
 it('anchors the storage root to the real storage_path, not the ephemeral app extract', function (string $path, string $needle) {
     // storage_path() on both platforms points outside the swappable app tree
     // (iOS: Application Support via LARAVEL_STORAGE_PATH; Android:
