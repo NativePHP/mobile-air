@@ -6,14 +6,21 @@ import Foundation
 enum PHPIni {
 
     /// Writes php.ini to Application Support and returns its path.
-    static func write(caPath: String) -> String {
+    ///
+    /// `fileCache` is only true for the first time PHP starts in this
+    /// process. Opcache names its cache directory after a system id, and this
+    /// PHP build computes a different one each time php_embed_init runs again
+    /// in the same process. A later start-up would fill a directory that the
+    /// next launch, which starts PHP once, never reads. In practice that means
+    /// the persistent runtime on a launch where nothing ran artisan first.
+    static func write(caPath: String, fileCache: Bool) -> String {
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let iniPath = supportDir.appendingPathComponent("php.ini")
 
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
 
         do {
-            try contents(caPath: caPath).write(to: iniPath, atomically: true, encoding: .utf8)
+            try contents(caPath: caPath, fileCache: fileCache).write(to: iniPath, atomically: true, encoding: .utf8)
         } catch {
             print("Couldn't create php.ini: \(error)")
         }
@@ -29,18 +36,35 @@ enum PHPIni {
     // memory_limit: 128M for every context. The persistent runtime, which
     // runs the native session, raises its own to 512M when it boots (see
     // raise_persistent_memory_limit in PHP.c).
-    static func contents(caPath: String) -> String {
+    static func contents(caPath: String, fileCache: Bool) -> String {
         """
         curl.cainfo="\(caPath)"
         openssl.cafile="\(caPath)"
         upload_max_filesize=16M
         post_max_size=16M
         memory_limit=128M
-        \(opcacheSettings())
+        \(opcacheSettings(fileCache: fileCache))
         """
     }
 
     // MARK: - OPcache
+
+    private static let startupLock = NSLock()
+    private static var started = false
+
+    /// Whether PHP has already started in this process.
+    static var hasStarted: Bool {
+        startupLock.lock()
+        defer { startupLock.unlock() }
+        return started
+    }
+
+    /// Call just before each php_embed_init (or persistent boot).
+    static func noteStartup() {
+        startupLock.lock()
+        started = true
+        startupLock.unlock()
+    }
 
     /// Opcache's shared memory lives only as long as the process, so without
     /// a file cache every cold launch compiles all of Laravel again. The file
@@ -58,7 +82,7 @@ enum PHPIni {
     /// AppUpdateManager), so opcache doesn't need to stat each file it
     /// includes. Debug builds keep checking timestamps on every include,
     /// because hot reload rewrites files in place.
-    static func opcacheSettings() -> String {
+    static func opcacheSettings(fileCache: Bool) -> String {
         var lines = [
             "opcache.enable=1",
             "opcache.memory_consumption=128",
@@ -75,7 +99,7 @@ enum PHPIni {
             lines.append("opcache.revalidate_freq=0")
         }
 
-        if fileCacheEnabled, let dir = prepareFileCacheDirectory() {
+        if fileCache, fileCacheEnabled, let dir = prepareFileCacheDirectory() {
             lines.append("opcache.file_cache=\"\(dir.path(percentEncoded: false))\"")
             // With timestamp checks off, nothing else would notice a damaged
             // .bin, and the app would crash on it every launch until the next

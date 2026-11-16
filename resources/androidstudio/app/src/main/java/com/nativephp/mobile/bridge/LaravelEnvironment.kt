@@ -212,7 +212,7 @@ class LaravelEnvironment(private val context: Context) {
                 val didPending = applyPendingUpdatesUnlocked()
                 val didExtract = didBundle || didPending
 
-                setupEnvironment(didExtract)
+                setupEnvironment(forceCertRefresh = didExtract, opcacheFileCache = !didExtract)
 
                 // Only run artisan commands when files were actually extracted/changed
                 if (didExtract) {
@@ -662,7 +662,7 @@ class LaravelEnvironment(private val context: Context) {
      * DEBUG bundle keep checking timestamps, because hot reload rewrites files
      * in place.
      */
-    private fun opcacheSettings(): String {
+    private fun opcacheSettings(fileCache: Boolean): String {
         val lines = mutableListOf(
             "opcache.enable=1",
             "opcache.memory_consumption=128",
@@ -680,7 +680,7 @@ class LaravelEnvironment(private val context: Context) {
             lines += "opcache.validate_timestamps=0"
         }
 
-        if (readBundleMetadata().opcacheFileCache) {
+        if (fileCache && readBundleMetadata().opcacheFileCache) {
             // Opcache turns the file cache off at startup when the directory
             // is missing.
             val dir = opcacheFileCacheDir()
@@ -911,7 +911,15 @@ class LaravelEnvironment(private val context: Context) {
         }
     }
 
-    private fun setupEnvironment(forceCertRefresh: Boolean = false) {
+    /**
+     * opcacheFileCache is false when artisan is about to run (after an
+     * extraction). Opcache names its cache directory after a system id, and
+     * this PHP build computes a different one each time the embed SAPI starts
+     * again in the same process, so the persistent runtime booting after
+     * artisan would fill a directory the next launch never reads. That launch
+     * starts PHP once and fills the right one.
+     */
+    private fun setupEnvironment(forceCertRefresh: Boolean = false, opcacheFileCache: Boolean = true) {
         try {
             val appKeys = AppKeyStore(context).load(File(appStorageDir, LEGACY_APP_KEY_FILE)) {
                 laravelSupportsPreviousKeys()
@@ -1030,7 +1038,7 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
 post_max_size=16M
 upload_max_filesize=16M
 memory_limit=128M
-${opcacheSettings()}
+${opcacheSettings(opcacheFileCache)}
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
                 Log.d(TAG, "✅ PHP ini configured with certificate path")
@@ -1125,7 +1133,7 @@ ${opcacheSettings()}
             extractionLock.withLock {
                 val didExtract = extractLaravelBundleUnlocked()
 
-                setupEnvironment(didExtract)
+                setupEnvironment(forceCertRefresh = didExtract, opcacheFileCache = !didExtract)
 
                 if (didExtract) {
                     Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")

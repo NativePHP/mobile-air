@@ -82,7 +82,10 @@ final class PersistentPHPRuntime {
 
         // PHP INI
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? ""
-        setenv("PHPRC", PHPIni.write(caPath: caPath), 1)
+        // Only the first PHP start-up in the process can use the file cache;
+        // see PHPIni.write.
+        setenv("PHPRC", PHPIni.write(caPath: caPath, fileCache: !PHPIni.hasStarted), 1)
+        PHPIni.noteStartup()
 
         // APP_KEY from Keychain
         if let appKey = NativePHPApp.getOrGenerateAppKey() {

@@ -53,7 +53,7 @@ it('only turns timestamp checks off in release builds', function () {
     expect($ios)->toContain('#if DEBUG')
         ->and($ios)->toContain('"DEBUG"');
 
-    $android = opcacheFunctionBody(opcacheSource(ANDROID_ENV), 'private fun opcacheSettings(): String');
+    $android = opcacheFunctionBody(opcacheSource(ANDROID_ENV), 'private fun opcacheSettings(fileCache: Boolean): String');
     expect($android)->toContain('FLAG_DEBUGGABLE')
         ->and($android)->toContain('isDebugBundle()');
 });
@@ -64,7 +64,7 @@ it('reads the opt-out from bundle_meta.json', function () {
 });
 
 it('routes both iOS php.ini writers through PHPIni', function (string $caller) {
-    expect(opcacheSource($caller))->toContain('PHPIni.write(caPath: caPath)')
+    expect(opcacheSource($caller))->toContain('PHPIni.write(caPath: caPath, fileCache: ')
         ->not->toContain('memory_limit=128M');
 })->with([
     'xcode/NativePHP/Bridge/PersistentPHPRuntime.swift',
@@ -105,3 +105,29 @@ it('logs whether the file cache is on at boot', function (string $bootstrap) {
         ->toContain("',file_cache='")
         ->toContain("',free_mb='");
 })->with(['ios/persistent.php', 'android/persistent.php']);
+
+/*
+ * This PHP build computes a different opcache system id each time the embed
+ * SAPI starts again in one process, so a cache written after artisan ran
+ * lands in a directory the next launch never reads.
+ */
+it('only uses the file cache for the first PHP start-up on iOS', function () {
+    expect(opcacheSource('xcode/NativePHP/NativePHPApp.swift'))
+        ->toContain('PHPIni.write(caPath: caPath, fileCache: false)')
+        ->and(substr_count(opcacheSource('xcode/NativePHP/NativePHPApp.swift'), "PHPIni.noteStartup()\n\n        argv.withUnsafeMutableBufferPointer { bufferPtr in\n            php_embed_init("))->toBe(2);
+
+    expect(opcacheSource('xcode/NativePHP/Bridge/PersistentPHPRuntime.swift'))
+        ->toContain('PHPIni.write(caPath: caPath, fileCache: !PHPIni.hasStarted)')
+        ->toContain('PHPIni.noteStartup()');
+
+    expect(opcacheFunctionBody(opcacheSource(IOS_INI), 'static func opcacheSettings(fileCache: Bool) -> String'))
+        ->toContain('if fileCache, fileCacheEnabled');
+});
+
+it('leaves the file cache off on Android while artisan runs after an extraction', function () {
+    $source = opcacheSource(ANDROID_ENV);
+
+    expect(substr_count($source, 'setupEnvironment(forceCertRefresh = didExtract, opcacheFileCache = !didExtract)'))->toBe(2)
+        ->and(opcacheFunctionBody($source, 'private fun opcacheSettings(fileCache: Boolean): String'))
+        ->toContain('if (fileCache && readBundleMetadata().opcacheFileCache)');
+});

@@ -495,7 +495,9 @@ struct NativePHPApp: App {
     private func createPhpIni() -> String {
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? "Path not found"
 
-        return PHPIni.write(caPath: caPath)
+        // Artisan and classic requests start PHP again for every call, so
+        // they never use the file cache (see PHPIni.write).
+        return PHPIni.write(caPath: caPath, fileCache: false)
     }
 
     private func createDatabase() {
@@ -632,6 +634,8 @@ struct NativePHPApp: App {
         envKeys.append("CONTENT_TYPE")
 
         // Equivalent to PHP_EMBED_START_BLOCK
+        PHPIni.noteStartup()
+
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)
 
@@ -903,6 +907,8 @@ struct NativePHPApp: App {
 
         let appPath = AppUpdateManager.shared.getAppPath()
         let phpFilePath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/artisan.php"
+
+        PHPIni.noteStartup()
 
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)
