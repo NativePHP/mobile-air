@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Process;
 use Native\Mobile\Commands\BuildIosAppCommand;
 use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
+use Symfony\Component\Console\Input\ArrayInput;
 use Tests\TestCase;
 
 class IosBuildCopyTest extends TestCase
@@ -653,6 +654,158 @@ class IosBuildCopyTest extends TestCase
         $this->createDirectoryStructure($appPath, $structure);
 
         return $appPath;
+    }
+
+    public function test_excluded_paths_include_vendor_lock_files_and_native_sources(): void
+    {
+        $paths = BundleFileManager::excludes();
+
+        foreach (['composer.lock', 'package-lock.json', '*.swift', '*.kt', '*.java', '*.a', '*.xcframework'] as $pattern) {
+            $this->assertContains('vendor/**/'.$pattern, $paths);
+        }
+    }
+
+    public function test_remove_prunes_vendor_lock_files_and_native_sources_after_composer_install(): void
+    {
+        $appPath = $this->createAppPath([
+            'vendor' => [
+                'acme' => ['plugin' => [
+                    'composer.json' => '{}',
+                    'composer.lock' => '{}',
+                    'nativephp.json' => '{}',
+                    'src' => ['PluginServiceProvider.php' => '<?php'],
+                    'resources' => [
+                        'ios' => [
+                            'PluginFunctions.swift' => 'import Foundation',
+                            'Vendor.xcframework' => ['ios-arm64' => ['libvendor.a' => 'binary']],
+                            'Legacy.m' => '@implementation',
+                        ],
+                        'android' => [
+                            'build.gradle' => 'android {}',
+                            'PluginFunctions.kt' => 'package acme',
+                            'libs' => ['vendor.aar' => 'binary', 'vendor.jar' => 'binary'],
+                        ],
+                        'icons' => ['icons.json' => '{}'],
+                    ],
+                ]],
+                'other' => ['package' => [
+                    'package-lock.json' => '{}',
+                    'src' => ['Thing.php' => '<?php'],
+                ]],
+            ],
+        ]);
+
+        BundleFileManager::removeUnnecessaryFiles($appPath);
+
+        $plugin = $appPath.'vendor/acme/plugin/';
+        $this->assertFileDoesNotExist($plugin.'composer.lock');
+        $this->assertFileDoesNotExist($plugin.'resources/ios/PluginFunctions.swift');
+        $this->assertFileDoesNotExist($plugin.'resources/ios/Legacy.m');
+        $this->assertDirectoryDoesNotExist($plugin.'resources/ios/Vendor.xcframework');
+        $this->assertFileDoesNotExist($plugin.'resources/android/build.gradle');
+        $this->assertFileDoesNotExist($plugin.'resources/android/PluginFunctions.kt');
+        $this->assertFileDoesNotExist($plugin.'resources/android/libs/vendor.aar');
+        $this->assertFileDoesNotExist($plugin.'resources/android/libs/vendor.jar');
+        $this->assertFileDoesNotExist($appPath.'vendor/other/package/package-lock.json');
+
+        // What PHP does read on the device stays.
+        $this->assertFileExists($plugin.'composer.json');
+        $this->assertFileExists($plugin.'nativephp.json');
+        $this->assertFileExists($plugin.'src/PluginServiceProvider.php');
+        $this->assertFileExists($plugin.'resources/icons/icons.json');
+        $this->assertFileExists($appPath.'vendor/other/package/src/Thing.php');
+    }
+
+    public function test_keep_vendor_files_config_ships_matching_files(): void
+    {
+        config(['nativephp.cleanup_keep_vendor_files' => ['LICENSE*']]);
+
+        $this->assertNotContains('vendor/**/LICENSE*', BundleFileManager::excludes());
+        $this->assertContains('vendor/**/*.md', BundleFileManager::excludes());
+
+        $appPath = $this->createAppPath([
+            'vendor' => ['acme' => ['pkg' => [
+                'LICENSE' => 'MIT',
+                'README.md' => '# pkg',
+            ]]],
+        ]);
+
+        BundleFileManager::removeUnnecessaryFiles($appPath);
+
+        $this->assertFileExists($appPath.'vendor/acme/pkg/LICENSE');
+        $this->assertFileDoesNotExist($appPath.'vendor/acme/pkg/README.md');
+    }
+
+    public function test_vendor_prune_never_deletes_through_a_symlinked_package(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Symlink test requires a Unix-like OS.');
+        }
+
+        // composer install links a path repository package into vendor/.
+        // Its name matching a pattern must not delete the package's source.
+        $package = $this->testProjectPath.'/packages/docs';
+        $this->createDirectoryStructure($package, [
+            'src' => ['Docs.php' => '<?php'],
+            'Plugin.swift' => 'import Foundation',
+        ]);
+
+        $appPath = $this->createAppPath(['vendor' => ['acme' => []]]);
+        symlink($package, $appPath.'vendor/acme/docs');
+
+        BundleFileManager::removeUnnecessaryFiles($appPath);
+
+        $this->assertFileExists($package.'/src/Docs.php');
+        $this->assertFileExists($package.'/Plugin.swift');
+    }
+
+    public function test_ios_app_zip_has_no_directory_entries_or_extra_fields_but_keeps_required_dirs(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('The iOS bundle is zipped with the zip CLI on macOS.');
+        }
+
+        $appPath = $this->createAppPath([
+            'app' => ['Models' => ['User.php' => '<?php']],
+            'bootstrap' => ['cache' => []],
+            'resources' => ['views' => ['native' => []]],
+            'storage' => ['app' => []],
+            'vendor' => ['acme' => ['pkg' => ['src' => ['Pkg.php' => '<?php']]]],
+        ]);
+
+        $containerPath = $this->testProjectPath.'/nativephp/ios/NativePHP/';
+        File::ensureDirectoryExists($containerPath);
+
+        $command = app(BuildIosAppCommand::class);
+        $command->setInput(new ArrayInput(['--release' => true], $command->getDefinition()));
+        foreach (['appPath' => $appPath, 'containerPath' => $containerPath] as $property => $value) {
+            (new \ReflectionProperty($command, $property))->setValue($command, $value);
+        }
+        (new \ReflectionMethod($command, 'createAppZip'))->invoke($command);
+
+        $zip = new \ZipArchive;
+        $this->assertTrue($zip->open($containerPath.'app.zip'));
+
+        $names = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $names[] = $zip->getNameIndex($i);
+        }
+        $zip->close();
+
+        // No extended timestamp (UT, 0x5455) or Info-ZIP unix (ux, 0x7875)
+        // extra fields, in either the local or the central headers.
+        $raw = file_get_contents($containerPath.'app.zip');
+        $this->assertStringNotContainsString("UT\x09\x00", $raw);
+        $this->assertStringNotContainsString("UT\x05\x00", $raw);
+        $this->assertStringNotContainsString("ux\x0b\x00", $raw);
+
+        sort($names);
+        $this->assertSame([
+            'app/Models/User.php',
+            'bootstrap/cache/',
+            'resources/views/native/',
+            'vendor/acme/pkg/src/Pkg.php',
+        ], $names);
     }
 
     public function test_ios_bundle_delegates_exclusions_to_bundle_file_manager(): void

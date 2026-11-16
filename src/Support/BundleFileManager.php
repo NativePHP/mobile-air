@@ -18,7 +18,7 @@ class BundleFileManager
     {
         $excludes = array_merge(
             BundleExclusions::ANY_DEPTH,
-            array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::VENDOR_PATTERNS),
+            array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::vendorPatterns()),
             BundleExclusions::VENDOR_PATHS,
             array_map(fn ($p) => '/'.$p, BundleExclusions::PROJECT),
             array_map(fn ($p) => '/'.$p, BundleExclusions::COPY_ONLY),
@@ -230,16 +230,19 @@ class BundleFileManager
     }
 
     /**
-     * Delete files matching VENDOR_PATTERNS from a copied vendor tree.
+     * Delete files matching the vendor patterns from a copied vendor tree.
      * Robocopy cannot express the multi-level vendor wildcards rsync
      * handles natively, so the Windows backend prunes them here to
-     * keep the copy contract identical on every platform.
+     * keep the copy contract identical on every platform. Cleanup runs it
+     * again after composer install, which can put files back.
      */
     private static function pruneVendorPatterns(string $destination): void
     {
+        $patterns = BundleExclusions::vendorPatterns();
+
         $vendorPath = $destination.'/vendor';
 
-        if (! is_dir($vendorPath)) {
+        if (! is_dir($vendorPath) || is_link($vendorPath)) {
             return;
         }
 
@@ -256,7 +259,13 @@ class BundleFileManager
                 continue;
             }
 
-            foreach (BundleExclusions::VENDOR_PATTERNS as $pattern) {
+            // composer install links path repository packages into vendor/.
+            // Deleting through a link would delete the package's own source.
+            if ($item->isLink()) {
+                continue;
+            }
+
+            foreach ($patterns as $pattern) {
                 if (fnmatch($pattern, $item->getFilename())) {
                     $item->isDir() ? File::deleteDirectory($item->getPathname()) : unlink($item->getPathname());
 
@@ -362,6 +371,10 @@ class BundleFileManager
                 }
             }
         }
+
+        // composer install runs after the copy, and it can reinstall a
+        // package (a path repository, say) with everything the copy left out.
+        self::pruneVendorPatterns(rtrim($appPath, '/'));
 
         foreach ($configPaths as $path) {
             $fullPath = $appPath.ltrim($path, '/');

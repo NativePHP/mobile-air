@@ -22,6 +22,7 @@ use Native\Mobile\Plugins\PluginSecretsValidator;
 use Native\Mobile\Support\AsyncPoolConfig;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
+use Native\Mobile\Support\BundleExclusions;
 use Native\Mobile\Support\BundleFileManager;
 
 use function Laravel\Prompts\error;
@@ -1022,7 +1023,24 @@ class BuildIosAppCommand extends Command
         // -9 max compression for release; -0 (stored) in debug for faster
         // build + boot at the cost of on-disk size.
         $level = $this->option('release') ? '-9' : '-0';
-        $command = "cd {$escapedAppPath} && zip {$level} -r {$escapedZipPath} . {$excludes}";
+
+        // -X leaves out the extended timestamp and uid/gid extra fields
+        // (about 50 bytes per entry, ~400 KB on a typical app). Extraction
+        // never restores them. -D leaves out directory entries, like the
+        // Android packer: unzipping creates every file's parent anyway.
+        $command = "cd {$escapedAppPath} && zip {$level} -X -D -r {$escapedZipPath} . {$excludes}";
+
+        // Directories Laravel needs even when nothing in them ships still
+        // get an entry, as on Android.
+        $requiredDirectories = array_filter(
+            BundleExclusions::REQUIRED_DIRECTORIES,
+            fn (string $dir) => is_dir($this->appPath.$dir),
+        );
+
+        if ($requiredDirectories !== []) {
+            $dirs = implode(' ', array_map(fn (string $dir) => escapeshellarg($dir.'/'), $requiredDirectories));
+            $command .= " && zip {$level} -X {$escapedZipPath} {$dirs}";
+        }
 
         $result = Process::run($command);
 
