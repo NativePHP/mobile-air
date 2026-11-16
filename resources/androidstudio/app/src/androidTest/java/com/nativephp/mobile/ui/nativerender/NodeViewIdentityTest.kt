@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
+import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Test
 
@@ -30,6 +31,36 @@ class NodeViewIdentityTest {
             showsConditionalChildren.value = false
         }
         composeRule.waitForIdle()
+    }
+
+    @Test
+    fun nodeKeepsItsStateWhenAnEarlierSiblingIsRemoved() {
+        // Remembers one object per composition of each node, by id.
+        val remembered = mutableMapOf<Int, Any>()
+        NativeRendererRegistry.register("state_probe") { node, modifier ->
+            remembered[node.id] = remember { Any() }
+            androidx.compose.foundation.layout.Box(modifier)
+        }
+        fun probe(id: Int) = NativeUINode(
+            id = id, type = "state_probe", layout = null, style = null,
+            props = GenericProps(emptyMap()), onPress = 0, onLongPress = 0, children = emptyList(),
+        )
+        lateinit var withBanner: MutableState<Boolean>
+
+        composeRule.setContent {
+            withBanner = remember { mutableStateOf(true) }
+            val children = listOfNotNull(probe(1).takeIf { withBanner.value }, probe(2), probe(3))
+            FlexContainer(childNodes = children, content = {})
+            FlexContainer(direction = FlexDirection.ROW, childNodes = children.map { probe(it.id + 10) }, content = {})
+        }
+
+        val before = composeRule.runOnIdle { remembered.toMap() }
+        composeRule.runOnIdle { withBanner.value = false }
+        composeRule.waitForIdle()
+
+        for (id in listOf(2, 3, 12, 13)) {
+            assertSame("node $id", before[id], remembered[id])
+        }
     }
 
     // Each prop NodeView branches on, with a value that turns its branch on.
