@@ -83,6 +83,11 @@ class NativeRootTabs extends Element
         if ($edgeBlur !== null) {
             $this->props['edge_blur'] = $edgeBlur;
         }
+        // Bar-level push behaviour (TabBar::hideOnPush()). Only sent when
+        // the app set it; renderers fall back to their platform default.
+        if (isset($attrs['hideOnPush'])) {
+            $this->props['hide_on_push'] = (bool) $attrs['hideOnPush'];
+        }
         if (isset($attrs['tabPresentationId'])) {
             $this->props['tab_presentation_id'] = $attrs['tabPresentationId'];
         }
@@ -144,6 +149,11 @@ class NativeRootTabs extends Element
         // URI-match heuristic.
         if (isset($attrs['hideTabBar'])) {
             $this->props['hide_tab_bar'] = (bool) $attrs['hideTabBar'];
+        }
+        // Per-screen keep: `tabBarOptions()->hidden(false)` keeps the bar on
+        // this screen even when it's pushed and the bar hides on push.
+        if (isset($attrs['showTabBar'])) {
+            $this->props['show_tab_bar'] = (bool) $attrs['showTabBar'];
         }
         // Per-screen nav-bar opt-out — hides the top toolbar for the
         // active destination while the NavigationStack itself survives.

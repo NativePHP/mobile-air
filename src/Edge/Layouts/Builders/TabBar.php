@@ -63,6 +63,9 @@ class TabBar
 
     private ?string $edgeBlur = null;
 
+    /** Null = the default: the bar hides on pushed screens on both platforms. */
+    private ?bool $hideOnPush = null;
+
     private ?string $presentationIdentifier = null;
 
     private ?string $presentationConfiguration = null;
@@ -95,6 +98,7 @@ class TabBar
         $bar->font = $props['font_name'] ?? null;
         $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
         $bar->edgeBlur = $props['edge_blur'] ?? null;
+        $bar->hideOnPush = isset($props['hide_on_push']) ? (bool) $props['hide_on_push'] : null;
         $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
         $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
 
@@ -226,6 +230,25 @@ class TabBar
     {
         $this->edgeBlur = BottomBar::edgeBlurStyle($style)
             ?? throw new InvalidArgumentException('A tab bar\'s edge blur is "soft", "hard" or "none".');
+
+        return $this;
+    }
+
+    /**
+     * Whether the bar hides on screens pushed inside a tab (a detail screen
+     * opened from a tab's root). Left unset, the bar hides on pushed screens
+     * on both iOS and Android. Set it to choose:
+     *
+     *   TabBar::make()->hideOnPush(false)   // keep the bar on pushed screens
+     *   TabBar::make()->hideOnPush()        // hide it on pushed screens
+     *
+     * Inline: `<native:bottom-nav :hide-on-push="false">`. A single screen
+     * can still override this with `tabBarOptions()->hidden()` (hide) or
+     * `->hidden(false)` (keep).
+     */
+    public function hideOnPush(bool $hide = true): self
+    {
+        $this->hideOnPush = $hide;
 
         return $this;
     }
@@ -397,6 +420,9 @@ class TabBar
         if ($this->edgeBlur !== null) {
             $attrs['edgeBlur'] = $this->edgeBlur;
         }
+        if ($this->hideOnPush !== null) {
+            $attrs['hideOnPush'] = $this->hideOnPush;
+        }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
             $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
@@ -457,6 +483,9 @@ class TabBar
         }
         if ($this->edgeBlur !== null) {
             $attrs['edgeBlur'] = $this->edgeBlur;
+        }
+        if ($this->hideOnPush !== null) {
+            $attrs['hideOnPush'] = $this->hideOnPush;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;

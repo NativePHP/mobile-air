@@ -28,6 +28,7 @@ class BottomNav extends Element
             'font-name' => 'fontName',
             'minimize-on-scroll' => 'minimizeOnScroll',
             'edge-blur' => 'edgeBlur',
+            'hide-on-push' => 'hideOnPush',
             'tab-presentation-id' => 'tabPresentationId',
             'tab-presentation-configuration' => 'tabPresentationConfiguration',
         ] as $kebab => $camel) {
@@ -69,6 +70,11 @@ class BottomNav extends Element
         $edgeBlur = BottomBar::edgeBlurStyle($attrs['edgeBlur'] ?? null);
         if ($edgeBlur !== null) {
             $this->props['edge_blur'] = $edgeBlur;
+        }
+
+        // Unset means the renderers' default (see TabBar::hideOnPush()).
+        if (isset($attrs['hideOnPush'])) {
+            $this->props['hide_on_push'] = filter_var($attrs['hideOnPush'], FILTER_VALIDATE_BOOLEAN);
         }
 
         if (isset($attrs['tabPresentationId'])) {

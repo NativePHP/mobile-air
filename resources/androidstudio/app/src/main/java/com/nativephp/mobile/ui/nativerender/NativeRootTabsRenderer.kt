@@ -210,6 +210,11 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         if (atTabRoot && stackDepth > 0) tabRootDepths[activeTabId] = stackDepth
     }
     val isPushed = !atTabRoot && stackDepth > (tabRootDepths[activeTabId] ?: 1)
+    // `TabBar::hideOnPush()`: unset hides the bar on pushed screens, the
+    // same as iOS. `hideOnPush(false)` keeps it, and so does
+    // `tabBarOptions()->hidden(false)` (show_tab_bar) on this screen.
+    val hidesOnPush = !node.props.has("hide_on_push") || node.props.getBool("hide_on_push")
+    val hiddenForPush = isPushed && hidesOnPush && !node.props.getBool("show_tab_bar")
 
     // Folded NavBar config — present when the layout supplied both bars.
     // Pushed levels always get a back button, as on iOS.
@@ -501,10 +506,11 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         bottomBar = bottomBar@{
             // Mirror iOS's `HideTabBarOnPushModifier`: pushed-detail
             // screens hide the tab strip entirely (iMessage / Music /
-            // Mail pattern). Driven by the push depth above, or by the
+            // Mail pattern). Driven by the push depth above (unless the bar
+            // or this screen keeps it, see `hiddenForPush`), or by the
             // `hide_tab_bar` wire prop set by the screen via `$hidesTabBar`
             // or `tabBarOptions()->hidden()`.
-            if (hideTabBar || isPushed) return@bottomBar
+            if (hideTabBar || hiddenForPush) return@bottomBar
 
             Column {
                 // Persistent accessory pinned above the NavigationBar

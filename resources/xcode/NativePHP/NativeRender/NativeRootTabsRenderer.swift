@@ -249,6 +249,7 @@ struct NativeRootTabsRenderer: View {
         let hidesCustomPresentation = nativeTabPresentationIsHidden(
             explicitlyHidden: node.props.getBool("hide_tab_bar"),
             hasPushedDestination: isRegularTabSelected && customPresentationHiddenForPush
+                && tabBarHidesOnPush(node) && !node.props.getBool("show_tab_bar")
         )
         let presentationContext = presentationConfiguration.map { configuration in
             return NativeTabPresentationContext(
@@ -620,6 +621,10 @@ private struct PerTabContent: View {
         // request hiding — useful for tab-root screens that want the bar
         // hidden anyway, which path-depth alone can't express.
         let forceHideTabBar = root.props.getBool("hide_tab_bar")
+        // Bar-level `TabBar::hideOnPush(false)` and per-screen
+        // `tabBarOptions()->hidden(false)` keep the bar on pushed levels.
+        let hidesOnPush = tabBarHidesOnPush(root)
+        let forceShowTabBar = root.props.getBool("show_tab_bar")
         // Per-screen nav-bar opt-out (PHP-side `$hidesNavBar` /
         // `navigationOptions()->hidden()`). Hides the toolbar for this
         // destination only — the NavigationStack survives so push / pop
@@ -723,7 +728,12 @@ private struct PerTabContent: View {
             // bottom-bar modifier below) pins to the correct edge.
             // Inverting the order leaves the bar latched to where the
             // tab bar *used to be* — visually mid-screen.
-            .modifier(HideTabBarOnPushModifier(isRoot: isRoot, forceHide: forceHideTabBar))
+            .modifier(HideTabBarOnPushModifier(
+                isRoot: isRoot,
+                forceHide: forceHideTabBar,
+                hidesOnPush: hidesOnPush,
+                forceShow: forceShowTabBar
+            ))
             .modifier(BottomBarInsetModifier(bottomBar: bottomBar))
             // Outside the bottom bar, so a root-level bar's own edge blur
             // wins for its region. Only where the tab bar shows. Soft draws
@@ -1087,13 +1097,19 @@ private struct BottomBarInsetModifier: ViewModifier {
 ///     chrome sentinel as `hide_tab_bar`. Lets the dev override the
 ///     default for cases where path-depth alone doesn't capture intent.
 ///
-/// Bar hides if EITHER is true.
+/// Bar hides if EITHER is true. The push signal only counts when the bar
+/// hides on push (`hidesOnPush`, from `TabBar::hideOnPush()`, default true
+/// on iOS) and the screen didn't ask to keep it (`forceShow`, from
+/// `tabBarOptions()->hidden(false)`).
 private struct HideTabBarOnPushModifier: ViewModifier {
     let isRoot: Bool
     let forceHide: Bool
+    var hidesOnPush: Bool = true
+    var forceShow: Bool = false
 
     func body(content: Content) -> some View {
-        if isRoot && !forceHide {
+        let hiddenForPush = !isRoot && hidesOnPush && !forceShow
+        if !hiddenForPush && !forceHide {
             content
         } else {
             content
@@ -1148,6 +1164,12 @@ private struct ExplicitBarBackgroundModifier: ViewModifier {
             content
         }
     }
+}
+
+/// `TabBar::hideOnPush()` from the chrome sentinel. Unset keeps the iOS
+/// default of hiding the bar on pushed levels.
+private func tabBarHidesOnPush(_ node: NativeUINode) -> Bool {
+    node.props.has("hide_on_push") ? node.props.getBool("hide_on_push") : true
 }
 
 /// Applies `UITabBarAppearance` tweaks based on the
