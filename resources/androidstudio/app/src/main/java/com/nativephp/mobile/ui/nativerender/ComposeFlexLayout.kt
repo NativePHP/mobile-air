@@ -28,6 +28,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.graphicsLayer
@@ -202,7 +203,9 @@ fun FlexContainer(
                 // because nodeLayout's size(0) / alpha(0) sit inside nodeStyle.
                 if ((node.layout?.display ?: 0) == Display.NONE) return@forEach
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
-                    AbsolutePositionedChild(node = node, modifier = Modifier.matchParentSize())
+                    key(node.id, node.type) {
+                        AbsolutePositionedChild(node = node, modifier = Modifier.matchParentSize())
+                    }
                 }
             }
         }
@@ -336,9 +339,14 @@ private fun FlexColumn(
             // a definite width of its own only if this column's is definite.
             val childDefinite = (LocalDefiniteWidth.current && columnChildStretches(node, align)) ||
                 ((node.layout?.widthMode == SizeMode.FIXED || node.layout?.widthMode == SizeMode.PERCENT) && (node.layout?.width ?: 0f) > 0f)
-            AnimatedLayoutChild(node, animation) { animated ->
-                CompositionLocalProvider(LocalDefiniteWidth provides childDefinite) {
-                    NodeView(node = node, overrideModifier = animated.then(childMod))
+            // Keyed here, among the siblings, so a node's state follows its id
+            // when an earlier sibling comes or goes. NodeView's own key sits
+            // inside this call, where Compose only matches by position.
+            key(node.id, node.type) {
+                AnimatedLayoutChild(node, animation) { animated ->
+                    CompositionLocalProvider(LocalDefiniteWidth provides childDefinite) {
+                        NodeView(node = node, overrideModifier = animated.then(childMod))
+                    }
                 }
             }
         }
@@ -387,9 +395,11 @@ private fun FlexRow(
                 val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
                 // same definite-width gate for flex-wrap children —
                 // the chips in a wrapping row are exactly the content-sized case.
-                AnimatedLayoutChild(node, animation) { animated ->
-                    CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
-                        NodeView(node = node, overrideModifier = animated.then(childMod))
+                key(node.id, node.type) {
+                    AnimatedLayoutChild(node, animation) { animated ->
+                        CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                            NodeView(node = node, overrideModifier = animated.then(childMod))
+                        }
                     }
                 }
             }
@@ -418,9 +428,11 @@ private fun FlexRow(
                     // Outside a RowScope, buildChildModifier leaves out
                     // weight() and align(); the RowChildSpec carries them.
                     val childMod = buildChildModifier(node, isRow = true, align = align, scope = Unit)
-                    AnimatedLayoutChild(node, animation) { animated ->
-                        CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
-                            NodeView(node = node, overrideModifier = animated.then(Modifier.layoutId(rowChildSpec(node, alignment))).then(childMod))
+                    key(node.id, node.type) {
+                        AnimatedLayoutChild(node, animation) { animated ->
+                            CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                                NodeView(node = node, overrideModifier = animated.then(Modifier.layoutId(rowChildSpec(node, alignment))).then(childMod))
+                            }
                         }
                     }
                 }
@@ -439,9 +451,11 @@ private fun FlexRow(
         flowNodes.forEach { node ->
             val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
             // a row child's width is definite only when it grows or is sized.
-            AnimatedLayoutChild(node, animation) { animated ->
-                CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
-                    NodeView(node = node, overrideModifier = animated.then(childMod))
+            key(node.id, node.type) {
+                AnimatedLayoutChild(node, animation) { animated ->
+                    CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                        NodeView(node = node, overrideModifier = animated.then(childMod))
+                    }
                 }
             }
         }
