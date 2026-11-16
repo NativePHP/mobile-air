@@ -129,6 +129,14 @@ struct ContentView: View {
                 AppState.shared.markInitialized()
             }
         }
+        .onAppear {
+            // When PHP was already booted (by an App Intent, say), the first
+            // tree can be published before this view mounts, and onChange
+            // never sees it change.
+            if nativeUIBridge.isActive && !AppState.shared.isInitialized {
+                AppState.shared.markInitialized()
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
         // Global 3-finger swipe-right escape hatch (attaches a recognizer to the
         // key window). Fires `JumpEscapeHatch`; the Jump client exits any
