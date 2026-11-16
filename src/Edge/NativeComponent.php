@@ -741,6 +741,15 @@ abstract class NativeComponent
             }
         }
 
+        // Tell the router which keep-alive tabs this screen shows, so a tab
+        // switch knows the tabs and which stack entries belong to which.
+        // Only native tab chrome keeps tabs alive: its renderers hold each
+        // tab's last tree, so a switch back shows it at once.
+        $this->nativeRouter?->observeTabBar(
+            $this,
+            $usesNativeChrome && $tabBar !== null && $tabBar->keepsAlive() ? $tabBar->tabUrls() : null,
+        );
+
         if ($navBar !== null || $tabBar !== null) {
             if ($usesNativeChrome) {
                 // Native chrome path: emit a `native_root_*` sentinel
@@ -1032,6 +1041,11 @@ abstract class NativeComponent
         if ($tabBar !== null) {
             $root = NativeRootTabs::make();
             $attrs = $tabBar->toRootProps();
+            // The router parks the tab being left instead of unmounting it
+            // (NativeRouter::switchTab()); renderers may show its last tree.
+            if ($tabBar->keepsAlive()) {
+                $attrs['keepAlive'] = true;
+            }
 
             // Fold NavBar config in via nav-prefixed keys when both exist
             // (each tab hosts its own NavigationStack natively).
@@ -1145,6 +1159,9 @@ abstract class NativeComponent
             foreach ($tabBar->tabElements() as $item) {
                 if ($item->isSearchTab() && $screenSearchItems !== null) {
                     $item->setRawSearchItems($screenSearchItems);
+                }
+                if ($tabBar->keepsAlive()) {
+                    $item->switchesTab();
                 }
                 $root->addChild($item);
             }
@@ -4021,6 +4038,41 @@ abstract class NativeComponent
     }
 
     /**
+     * Switch to the tab of a keep-alive tab bar whose URL is `$uri`, the way
+     * tapping it in the bar does. The tab being left keeps its stack and its
+     * component state; the tab being opened comes back as it was left (its
+     * top screen gets onResume(), not mount()), or opens at its root screen
+     * the first time.
+     *
+     * Switching to the tab you are already in pops it back to its root.
+     * When the screen is not showing a keep-alive tab bar, or `$uri` is not
+     * one of its tabs, this is a replace() with no transition.
+     */
+    public function switchToTab(string $uri, Transition|string|null $transition = null): static
+    {
+        if ($this->openedExternally($uri)) {
+            return $this;
+        }
+
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->switchToTab($uri, $transition);
+
+            return $this;
+        }
+
+        $this->flushDispatchedEvents();
+        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::TAB, static::appPath($uri), [], $transition);
+        // The farewell frame closes sheets and modals in the tab being left,
+        // as on any navigation. The screen keeps its own state: a sheet it
+        // still holds open comes back with it.
+        $this->publishFinalState();
+        $this->stop();
+
+        return $this;
+    }
+
+    /**
      * Re-render and publish ONE more time before stopping the runloop.
      *
      * The runloop is `render → wait → dispatch → loop`. State mutations
@@ -4664,6 +4716,7 @@ abstract class NativeComponent
         match ($config['type']) {
             'back' => $this->back(),
             'replace' => $this->replace($config['uri'] ?? '', $config['data'] ?? []),
+            'tab' => $this->switchToTab($config['uri'] ?? ''),
             'exitToWeb' => $this->exitToWeb($config['uri'] ?? ''),
             default => $this->navigate($config['uri'] ?? '', $config['data'] ?? []),
         };

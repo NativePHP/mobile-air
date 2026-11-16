@@ -30,6 +30,7 @@ class BottomNav extends Element
             'edge-blur' => 'edgeBlur',
             'tab-presentation-id' => 'tabPresentationId',
             'tab-presentation-configuration' => 'tabPresentationConfiguration',
+            'keep-alive' => 'keepAlive',
         ] as $kebab => $camel) {
             if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
                 $attrs[$camel] = $attrs[$kebab];
@@ -77,6 +78,12 @@ class BottomNav extends Element
 
         if (isset($attrs['tabPresentationConfiguration'])) {
             $this->props['tab_presentation_configuration'] = $attrs['tabPresentationConfiguration'];
+        }
+
+        // `keep-alive="false"` opts this bar out of keeping each tab's
+        // screens alive across tab switches (TabBar::keepAlive()).
+        if (isset($attrs['keepAlive'])) {
+            $this->props['keep_alive'] = filter_var($attrs['keepAlive'], FILTER_VALIDATE_BOOLEAN);
         }
 
         if (! empty($attrs['custom'])) {
