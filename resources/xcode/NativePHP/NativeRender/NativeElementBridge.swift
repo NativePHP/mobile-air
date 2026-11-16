@@ -123,7 +123,21 @@ final class NativeElementBridge {
     /// haven't structurally changed. Without this, every nav publish
     /// arrives with all-new refs, NodeView's `===` equality fails, and
     /// SwiftUI re-renders the entire tree mid-animation = visible jitter.
-    private static var nativeChromePrevTrees: [String: NativeUITree] = [:]
+    ///
+    /// Bounded: entries for levels popped off a `native_root_stack` are
+    /// dropped, the rest is an LRU of `ChromeTreeCache.capacity` URIs, and
+    /// a memory warning keeps only the current screen's tree. A missing
+    /// entry only costs a diff against `previousTree` instead.
+    private static let nativeChromePrevTrees = ChromeTreeCache()
+
+    /// Registered once, from `startWatching()`.
+    private static let memoryWarningObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: UIApplication.didReceiveMemoryWarningNotification,
+        object: nil,
+        queue: nil
+    ) { _ in
+        nativeChromePrevTrees.trimToMostRecent()
+    }
 
     // MARK: - Shadow Thread
     // Mirrors Android's PendingFrames + LockSupport pattern.
@@ -441,7 +455,7 @@ final class NativeElementBridge {
                 let diffedRoot = diffNode(old: prev.root, new: tree.root)
                 finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
             } else if update.isNav, nativeChromeContinuation, !newUri.isEmpty,
-                      let prevAtUri = nativeChromePrevTrees[newUri] {
+                      let prevAtUri = nativeChromePrevTrees.tree(for: newUri) {
                 let diffedRoot = diffNode(old: prevAtUri.root, new: tree.root)
                 finalTree = NativeUITree(version: tree.version, callbackCount: tree.callbackCount, root: diffedRoot)
             } else if update.isNav, nativeChromeContinuation, let prev = previousTree {
@@ -457,7 +471,12 @@ final class NativeElementBridge {
             if newRootType == "native_root_stack" || newRootType == "native_root_tabs" {
                 let uri = finalTree.root.props.getString("current_uri", default: "")
                 if !uri.isEmpty {
-                    nativeChromePrevTrees[uri] = finalTree
+                    // Stack depth only means "levels above this were popped"
+                    // for a single stack; tabs keep one stack per tab.
+                    let depth = newRootType == "native_root_stack"
+                        ? finalTree.root.props.getInt("stack_depth", default: 0)
+                        : 0
+                    nativeChromePrevTrees.store(finalTree, for: uri, depth: depth)
                 }
             }
 
@@ -1164,6 +1183,7 @@ final class NativeElementBridge {
     static func startWatching() {
         // Stop any existing shadow thread before resetting state
         stopShadowThread()
+        _ = memoryWarningObserver
         previousTree = nil
         nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
@@ -1213,5 +1233,70 @@ final class NativeElementBridge {
         pthread_cond_signal(&shadowCond)
         pthread_mutex_unlock(&shadowMutex)
         shadowThread = nil
+    }
+}
+
+/// Last tree published at each native chrome URI, for `NativeElementBridge`'s
+/// nav diff baseline. Written from the shadow thread, trimmed from the main
+/// thread on a memory warning, so every access takes the lock.
+final class ChromeTreeCache {
+    /// Enough for a normal back stack plus a few tabs. Older URIs fall back
+    /// to diffing against the previous tree.
+    static let capacity = 10
+
+    private struct Entry {
+        let tree: NativeUITree
+        /// Lowest stack depth this URI is known to sit at; 0 when unknown.
+        let depth: Int
+        let lastUse: UInt64
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var useCounter: UInt64 = 0
+    private var mostRecentUri: String?
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return entries.count
+    }
+
+    func tree(for uri: String) -> NativeUITree? {
+        lock.lock(); defer { lock.unlock() }
+        return entries[uri]?.tree
+    }
+
+    /// Store `tree` as the latest at `uri`. When `depth` > 0, the publish
+    /// is on a stack at that depth, so anything recorded deeper has been
+    /// popped and can't be diffed against again except by a fresh push.
+    func store(_ tree: NativeUITree, for uri: String, depth: Int) {
+        lock.lock(); defer { lock.unlock() }
+        if depth > 0 {
+            entries = entries.filter { $0.key == uri || $0.value.depth == 0 || $0.value.depth <= depth }
+        }
+        var keepDepth = depth
+        if let existing = entries[uri], existing.depth > 0, existing.depth < depth {
+            // A → B → A: the root copy of A is still on the stack below.
+            keepDepth = existing.depth
+        }
+        useCounter &+= 1
+        entries[uri] = Entry(tree: tree, depth: keepDepth, lastUse: useCounter)
+        mostRecentUri = uri
+        while entries.count > Self.capacity,
+              let oldest = entries.min(by: { $0.value.lastUse < $1.value.lastUse })?.key {
+            entries.removeValue(forKey: oldest)
+        }
+    }
+
+    /// Memory pressure: keep only the screen published last.
+    func trimToMostRecent() {
+        lock.lock(); defer { lock.unlock() }
+        entries = entries.filter { $0.key == mostRecentUri }
+    }
+
+    func removeAll() {
+        lock.lock(); defer { lock.unlock() }
+        entries.removeAll()
+        mostRecentUri = nil
     }
 }
