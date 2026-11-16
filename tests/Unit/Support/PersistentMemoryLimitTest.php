@@ -36,8 +36,7 @@ it('gives every context 128M in php.ini', function (string $writer) {
         ->toContain('memory_limit=128M')
         ->not->toContain('memory_limit=512M');
 })->with([
-    'xcode/NativePHP/Bridge/PersistentPHPRuntime.swift',
-    'xcode/NativePHP/NativePHPApp.swift',
+    'xcode/NativePHP/Bridge/PHPIni.swift',
     'androidstudio/app/src/main/java/com/nativephp/mobile/bridge/LaravelEnvironment.kt',
 ]);
 

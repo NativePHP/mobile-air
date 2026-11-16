@@ -2,6 +2,7 @@ package com.nativephp.mobile.bridge
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import com.nativephp.mobile.bridge.plugins.PluginFeatures
 import com.nativephp.mobile.security.AppKeyStore
@@ -33,7 +34,10 @@ class LaravelEnvironment(private val context: Context) {
         // What this shell ships with, so a lane cannot offer it a release that
         // predates its own code.
         val shellBuiltAt: String? = null,
-        val shellCommit: String? = null
+        val shellCommit: String? = null,
+        // nativephp.opcache.file_cache from the app's config. On unless the
+        // app turned it off.
+        val opcacheFileCache: Boolean = true
     )
 
     companion object {
@@ -92,6 +96,7 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_APP = "persisted_data/storage/app"
         private const val DIR_PUBLIC = "persisted_data/storage/app/public"
         private const val DIR_DATABASE = "persisted_data/database/"
+        private const val DIR_OPCACHE = "opcache"
 
         // Version constants
         private const val VERSION_DEBUG = "DEBUG"
@@ -389,8 +394,9 @@ class LaravelEnvironment(private val context: Context) {
             val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
             val shellBuiltAt = if (obj.has("shell_built_at") && !obj.isNull("shell_built_at")) obj.getString("shell_built_at") else null
             val shellCommit = if (obj.has("shell_commit") && !obj.isNull("shell_commit")) obj.getString("shell_commit") else null
+            val opcacheFileCache = obj.optBoolean("opcache_file_cache", true)
             Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
-            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit)
+            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit, opcacheFileCache)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
@@ -623,7 +629,72 @@ class LaravelEnvironment(private val context: Context) {
             }
         }
 
+        // Compiled scripts of the app that was just replaced. Release builds
+        // don't check timestamps (see opcacheSettings), so they must go before
+        // any PHP runs against the new files.
+        clearOpcacheFileCache()
+
         Log.d(TAG, "🧹 Cleared $removed compiled cache entries after extraction")
+    }
+
+    /** cacheDir/opcache: opcache's file cache, a second level behind its shared memory. */
+    private fun opcacheFileCacheDir(): File = File(context.cacheDir, DIR_OPCACHE)
+
+    private fun clearOpcacheFileCache() {
+        val dir = opcacheFileCacheDir()
+        if (dir.exists() && !dir.deleteRecursively()) {
+            Log.e(TAG, "❌ Could not fully clear the opcache file cache")
+        }
+    }
+
+    /**
+     * Opcache's shared memory lives only as long as the process, so without a
+     * file cache every cold start compiles all of Laravel again. The file cache
+     * keeps compiled scripts on disk between launches.
+     *
+     * Shared memory stays at PHP's default 128 MB (only touched pages cost
+     * memory); interned strings get 16 MB, because Laravel outgrows the
+     * default 8 MB. JIT stays off, as on iOS.
+     *
+     * A release build's PHP files only change when a bundle is extracted, and
+     * every extraction empties the file cache (clearCompiledCaches), so
+     * opcache needn't stat each file it includes. Debuggable builds and the
+     * DEBUG bundle keep checking timestamps, because hot reload rewrites files
+     * in place.
+     */
+    private fun opcacheSettings(): String {
+        val lines = mutableListOf(
+            "opcache.enable=1",
+            "opcache.memory_consumption=128",
+            "opcache.interned_strings_buffer=16",
+            "opcache.max_accelerated_files=4000",
+            "opcache.jit=disable",
+            "opcache.jit_buffer_size=0"
+        )
+
+        val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable || isDebugBundle()) {
+            lines += "opcache.validate_timestamps=1"
+            lines += "opcache.revalidate_freq=0"
+        } else {
+            lines += "opcache.validate_timestamps=0"
+        }
+
+        if (readBundleMetadata().opcacheFileCache) {
+            // Opcache turns the file cache off at startup when the directory
+            // is missing.
+            val dir = opcacheFileCacheDir()
+            if (dir.isDirectory || dir.mkdirs()) {
+                lines += "opcache.file_cache=\"${dir.absolutePath}\""
+                // With timestamp checks off nothing else would notice a
+                // damaged .bin; the checksum costs a few ms per launch.
+                lines += "opcache.file_cache_consistency_checks=1"
+            } else {
+                Log.e(TAG, "❌ Could not create ${dir.absolutePath}; opcache file cache off")
+            }
+        }
+
+        return lines.joinToString("\n")
     }
 
     /**
@@ -959,6 +1030,7 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
 post_max_size=16M
 upload_max_filesize=16M
 memory_limit=128M
+${opcacheSettings()}
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
                 Log.d(TAG, "✅ PHP ini configured with certificate path")

@@ -284,6 +284,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | OPcache
+    |--------------------------------------------------------------------------
+    |
+    | file_cache: keep compiled PHP on disk between launches, so a cold start
+    | doesn't compile the framework again. The cache is emptied whenever the
+    | app installs a new bundle. Turn it off to compile on every launch.
+    |
+    */
+
+    'opcache' => [
+        'file_cache' => env('NATIVEPHP_OPCACHE_FILE_CACHE', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |
