@@ -66,6 +66,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -547,9 +548,14 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         val icon = tab.props.getString("icon", "circle")
                         val badge = tab.props.getString("badge", "")
                         val news = tab.props.getBool("news")
+                        // PHP `ref` (`Tab::ref()` / `ref="…"`) → testTag on the
+                        // item, published as its resource-id by the
+                        // `testTagsAsResourceId` set at the NativeUIContent root.
+                        val ref = tab.props.getString("ref", "")
                         NavigationBarItem(
                             selected = actualIdx == selection,
                             onClick = { activateTabAt(actualIdx) },
+                            modifier = if (ref.isNotEmpty()) Modifier.testTag(ref) else Modifier,
                             icon = {
                                 if (badge.isNotEmpty() || news) {
                                     BadgedBox(badge = {

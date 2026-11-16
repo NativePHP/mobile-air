@@ -32,6 +32,7 @@ use Native\Mobile\Icon\IosSymbol;
  *   Tab::link('Messages', '/syncup-native',
  *       ios: Ios::BubbleLeft, android: Android::ChatBubble)
  *   Tab::search('Search', icon: 'search', placeholder: '…')
+ *   Tab::link('Home', '/', icon: 'home')->ref('tab-home')   // UI-test handle
  *
  * All three icon slots are nullable so each call site picks the
  * combination it needs. The string `icon:` is the cross-platform
@@ -67,6 +68,8 @@ class Tab
     private ?array $searchItems = null;
 
     private ?string $pressMethod = null;
+
+    private ?string $ref = null;
 
     private function __construct(string $id, string $label, string $url)
     {
@@ -165,6 +168,20 @@ class Tab
     public function id(string $id): self
     {
         $this->id = $id;
+
+        return $this;
+    }
+
+    /**
+     * Name this tab for UI tests. Becomes the tab button's accessibility
+     * identifier on iOS (`app.tabBars.buttons["tab-home"]` in XCUITest)
+     * and its Compose `testTag` on Android, which UiAutomator and Maestro
+     * see as the resource-id. Same as `ref="tab-home"` on an inline
+     * `<native:bottom-nav-item>`.
+     */
+    public function ref(string $ref): self
+    {
+        $this->ref = $ref;
 
         return $this;
     }
@@ -271,6 +288,9 @@ class Tab
             $attrs['search_placeholder'] = $this->searchPlaceholder;
         }
         $attrs['search_debounce_ms'] = $this->searchDebounceMs;
+        if ($this->ref !== null) {
+            $attrs['ref'] = $this->ref;
+        }
 
         $item->applyAttributes($attrs);
 
