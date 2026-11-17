@@ -60,8 +60,10 @@ the real picture. Roughly:
 
 - The Edge element layer: `Element`, the elements in `Edge/Elements`, the `<native:*>`
   Blade layer (`NativeTagPrecompiler`, `NativeElementCollector`, `Edge/Components/Native`),
-  `TailwindParser`, `CallbackRegistry`, `Transition` and the enums.
-- The attributes (`Computed`, `Lazy`, `Locked`, `On`, `Poll`) and `Support\NativeCallbacks`.
+  `TailwindParser`, `CallbackRegistry`, `Transition`, the enums and the exceptions in
+  `Edge/Exceptions`.
+- The attributes (`Computed`, `Lazy`, `Locked`, `Memo`, `On`, `Poll`) and
+  `Support\NativeCallbacks`.
 - The neutral half of `NativeComponent` and `NavigationIntent`. Mobile keeps real subclasses
   of both that add the mobile traits and constants.
 - The registry behind `Route::native()` (`ScreenRegistry`, `ScreenRoutes`). Mobile keeps the
