@@ -10,6 +10,7 @@ use Native\Mobile\Edge\Transition;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\Testing\FakeBridge;
 
@@ -156,6 +157,35 @@ it('routes a failed() callback an AsyncTaskException with the original message',
     ]);
 
     expect($screen->error)->toBe('kaboom');
+});
+
+it('drops the work of a task that timed out while it waited for a background context', function () {
+    config(['app.key' => 'base64:'.base64_encode(Encrypter::generateKey('AES-256-CBC'))]);
+    $bridge = FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
+
+    $screen = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $task = AsyncTask::dispatch(static fn () => 'sent too late')
+        ->timeout(5)
+        ->failed(function ($e) {
+            $this->error = $e->getMessage();
+        });
+    $id = $task->getId();
+    $task->start();
+
+    // Every context is busy, so the watchdog fails it before one picks it up.
+    $screen->fireEvent([
+        'type' => 20,
+        'event' => AsyncTaskFailed::class,
+        'payload' => ['id' => $id, 'exceptionClass' => 'RuntimeException', 'message' => 'The async task did not complete within 5 seconds.', 'trace' => null],
+    ]);
+
+    expect($screen->error)->toBe('The async task did not complete within 5 seconds.')
+        // When a context frees up, there is nothing left to run.
+        ->and(AsyncTaskTransport::readPayload($id))->toBeNull();
+
+    FakeBridge::disable();
 });
 
 it('delivers a shared() task as a named event regardless of active screen', function () {
