@@ -12,9 +12,13 @@ class AppUpdateManager {
     private let updatesPath: String
     private var appReady = false
 
-    /// The key this shell checks its Parcel bundle against, from
+    /// The key this shell checks its Parcel bundles against, from
     /// bundle_meta.json inside the .app. Set only when the build signed it.
     private let bundlePublicKey: String?
+
+    /// The phar a Parcel build ships inside the .app, with its signature
+    /// beside it. Nothing ever changes or removes it.
+    private let shippedCodeBundle: String?
 
     private init() {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -22,6 +26,7 @@ class AppUpdateManager {
         appPath = documentsURL.appendingPathComponent("app").path
         updatesPath = documentsURL.appendingPathComponent("updates").path
         bundlePublicKey = Self.readBundlePublicKey()
+        shippedCodeBundle = Bundle.main.path(forResource: Self.pharName, ofType: nil)
 
         // Ensure directories exist
         try? FileManager.default.createDirectory(atPath: appPath, withIntermediateDirectories: true)
@@ -33,26 +38,36 @@ class AppUpdateManager {
     }
 
     /// File name of a Parcel bundle: the app's PHP code packed into one phar,
-    /// shipped next to .env and public/ instead of as a tree of files.
+    /// with its signature in a .sig file of the same name beside it.
     static let pharName = "__nativephp_app_bundle.phar"
 
-    /// Where PHP reads the app's code from. For a Parcel bundle that is the
-    /// inside of the phar, which PHP opens in place through phar://; for any
-    /// other build it is the extracted app directory itself. .env, public/
-    /// and the other files Swift reads stay under getAppPath() either way.
+    /// Where PHP reads the app's code from. .env, public/ and the other files
+    /// Swift reads stay under getAppPath() whatever this returns.
     ///
-    /// A shell built with a bundle key runs nothing but a phar that matches
-    /// its signature. Anything else, including no phar at all (a plain tree
-    /// of PHP files unpacked in its place), gets a code path with nothing in
-    /// it, so PHP fails to boot instead of running code changed on disk.
+    /// A Parcel build ships its code as a phar inside the .app, and PHP reads
+    /// it there through phar://, never unpacked. An OTA update brings its own
+    /// phar and signature into the app directory, and while it is there that
+    /// one runs instead. Every phar carries its own signature, checked
+    /// against the one public key the shell was built with, so a release
+    /// never replaces another's signature, and the shipped pair is always
+    /// there to go back to. Other builds run the extracted app directory.
+    ///
+    /// A shell built with a key runs nothing but a phar that matches its
+    /// signature. Anything else gets a code path with nothing in it, so PHP
+    /// fails to boot instead of running code that was changed on disk.
     func getCodePath() -> String {
-        let phar = appPath + "/" + Self.pharName
-
-        if FileManager.default.fileExists(atPath: phar) {
-            return codeBundleIsTrusted(phar) ? "phar://" + phar : untrustedCodePath
+        guard let phar = installedCodeBundle() ?? shippedCodeBundle else {
+            return bundlePublicKey == nil ? appPath : untrustedCodePath
         }
 
-        return bundlePublicKey == nil ? appPath : untrustedCodePath
+        return codeBundleIsTrusted(phar) ? "phar://" + phar : untrustedCodePath
+    }
+
+    /// A phar an OTA update installed in the app directory, if there is one.
+    private func installedCodeBundle() -> String? {
+        let phar = appPath + "/" + Self.pharName
+
+        return FileManager.default.fileExists(atPath: phar) ? phar : nil
     }
 
     private var untrustedCodePath: String { appPath + "/.untrusted-bundle" }
@@ -72,20 +87,17 @@ class AppUpdateManager {
     private static let signaturePurpose = "nativephp.parcel-bundle.v1:"
 
     private let trustLock = NSLock()
-    private var checkedBundle: (identity: String, trusted: Bool)?
+    private var checkedBundles: [String: (identity: String, trusted: Bool)] = [:]
 
-    /// True when the code on disk is not what this shell will run: a Parcel
-    /// bundle that fails its signature check, or, for a shell with a bundle
-    /// key, no bundle at all.
+    /// True when an OTA update's phar no longer matches its signature, so
+    /// launch has to put the shipped app back.
     private func hasUntrustedCodeBundle() -> Bool {
-        let phar = appPath + "/" + Self.pharName
+        guard let installed = installedCodeBundle() else { return false }
 
-        guard FileManager.default.fileExists(atPath: phar) else { return bundlePublicKey != nil }
-
-        return !codeBundleIsTrusted(phar)
+        return !codeBundleIsTrusted(installed)
     }
 
-    /// Checks the bundle once per file: a new or rewritten phar (another
+    /// Checks a bundle once per file: a new or rewritten phar (another
     /// inode, size or modification time) is checked again.
     private func codeBundleIsTrusted(_ phar: String) -> Bool {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: phar) else { return false }
@@ -96,12 +108,12 @@ class AppUpdateManager {
         trustLock.lock()
         defer { trustLock.unlock() }
 
-        if let checked = checkedBundle, checked.identity == identity {
+        if let checked = checkedBundles[phar], checked.identity == identity {
             return checked.trusted
         }
 
         let trusted = verifyCodeBundle(phar)
-        checkedBundle = (identity, trusted)
+        checkedBundles[phar] = (identity, trusted)
 
         return trusted
     }
@@ -186,12 +198,11 @@ class AppUpdateManager {
             didExtract = true
         }
 
-        // A signed bundle that no longer matches its signature was changed
-        // after it was unpacked. Put back the copy shipped inside the app,
-        // which iOS's own code signature covers. If that fails too, the code
-        // path stays empty and PHP never runs.
+        // An OTA update's phar that no longer matches its signature was
+        // changed after it was installed. Put the shipped app back: its phar
+        // is inside the .app, which iOS's own code signature covers.
         if hasUntrustedCodeBundle() {
-            print("❌ App code failed its signature check; restoring the shipped copy")
+            print("❌ Updated app code failed its signature check; restoring the shipped app")
             copyBundledApp()
             clearCompiledCaches()
             didExtract = true
@@ -372,6 +383,15 @@ class AppUpdateManager {
         let envStashPath = updatesPath + "/.env.stash"
         let currentEnvPath = appPath + "/.env"
 
+        // A shell that ships a phar only runs Parcel payloads. Look for the
+        // phar before unpacking anything, so a plain tree of PHP files is
+        // turned away at once rather than after thousands of files.
+        if shippedCodeBundle != nil && !payloadHasCodeBundle(zipPath) {
+            print("❌ This app runs Parcel bundles; the update is a plain tree of PHP files")
+            try? FileManager.default.removeItem(atPath: zipPath)
+            return false
+        }
+
         do {
             // Stash the running .env so device-local values survive the payload replace.
             // Restore it verbatim over the extracted .env; no key merge. Skip if none.
@@ -404,6 +424,9 @@ class AppUpdateManager {
                 print("❌ Invalid app structure in zip")
                 try? FileManager.default.removeItem(atPath: extractPath)
                 try? FileManager.default.removeItem(atPath: envStashPath)
+                // It would fail the same way on every launch, after being
+                // unpacked again each time.
+                try? FileManager.default.removeItem(atPath: zipPath)
                 return false
             }
 
@@ -610,7 +633,27 @@ class AppUpdateManager {
         print("🧹 Cleared compiled caches after extraction")
     }
 
+    private func payloadHasCodeBundle(_ zipPath: String) -> Bool {
+        guard let archive = Archive(url: URL(fileURLWithPath: zipPath), accessMode: .read) else { return false }
+
+        return archive[Self.pharName] != nil
+    }
+
     private func isValidApp(at path: String) -> Bool {
+        // A Parcel payload: its code is one phar. Check its signature now,
+        // before it replaces the app that works, as well as on every launch.
+        let phar = path + "/" + Self.pharName
+
+        if FileManager.default.fileExists(atPath: phar) {
+            return FileManager.default.fileExists(atPath: path + "/.env") && verifyCodeBundle(phar)
+        }
+
+        // A shell that ships a phar would never run a plain tree of PHP
+        // files, so installing one would only leave the update unused.
+        if shippedCodeBundle != nil {
+            return false
+        }
+
         let envFile = path + "/.env"
         let vendorDir = path + "/vendor"
         // The package was renamed from mobile-lite to mobile, and this kept

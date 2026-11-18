@@ -37,6 +37,9 @@ class BuildIosAppCommand extends Command
 
     private string $containerPath;
 
+    /** The phar a Parcel build ships in the .app. The runtime looks for this name. */
+    private const PARCEL_BUNDLE = '__nativephp_app_bundle.phar';
+
     /** Base64 Ed25519 key that a signed Parcel bundle is checked against. */
     private ?string $parcelPublicKey = null;
 
@@ -1002,6 +1005,8 @@ class BuildIosAppCommand extends Command
 
     private function createAppZip(): void
     {
+        $this->removeParcelBundle();
+
         $zipPath = $this->containerPath.'app.zip';
 
         // Remove existing ZIP if it exists
@@ -1046,10 +1051,12 @@ class BuildIosAppCommand extends Command
     }
 
     /**
-     * Ship the app's PHP code as one phar built by Parcel, next to the two
-     * things that have to stay outside it: .env, which the runtime and OTA
-     * updates rewrite, and public/, which the web view's asset handler reads
-     * straight off disk. The device runs the code from inside the phar.
+     * Ship the app's PHP code as one phar built by Parcel. The phar and its
+     * signature go into the Xcode project's NativePHP folder, so they ship
+     * loose inside the .app, and the device runs the code from there through
+     * phar:// without unpacking it. app.zip only carries what the device has
+     * to be able to rewrite: .env (the runtime and OTA updates change it) and
+     * public/ (storage:link writes into it).
      */
     private function createParcelZip(): void
     {
@@ -1057,10 +1064,12 @@ class BuildIosAppCommand extends Command
         $workPath = $this->basePath.'/parcel';
         $sourcePath = $workPath.'/app';
         $payloadPath = $workPath.'/payload';
-        $pharName = '__nativephp_app_bundle.phar';
+        $phar = $this->containerPath.self::PARCEL_BUNDLE;
         $zipPath = $this->containerPath.'app.zip';
 
-        $this->components->task('Bundling PHP code with Parcel', function () use ($release, $workPath, $sourcePath, $payloadPath, $pharName) {
+        $this->removeParcelBundle();
+
+        $this->components->task('Bundling PHP code with Parcel', function () use ($release, $workPath, $sourcePath, $payloadPath, $phar) {
             File::deleteDirectory($workPath);
             File::ensureDirectoryExists($payloadPath);
 
@@ -1081,20 +1090,22 @@ class BuildIosAppCommand extends Command
 
             $this->runParcel(['compile', $sourcePath]);
 
-            File::move($sourcePath.'/build/'.$pharName, $payloadPath.'/'.$pharName);
+            File::move($sourcePath.'/build/'.self::PARCEL_BUNDLE, $phar);
             File::copy($this->appPath.'.env', $payloadPath.'/.env');
             File::copyDirectory($this->appPath.'public', $payloadPath.'/public');
 
-            $this->signParcelBundle($payloadPath.'/'.$pharName, $workPath);
+            $this->signParcelBundle($phar, $workPath);
         });
 
         if (file_exists($zipPath)) {
             unlink($zipPath);
         }
 
-        // The phar is compressed already; zipping it again only adds time.
+        // Same compression as any other build: -9 for release, stored for
+        // debug.
+        $level = $this->option('release') ? '-9' : '-0';
         $command = 'cd '.escapeshellarg($payloadPath)
-            .' && zip -0 -r '.escapeshellarg($zipPath).' . -x '.escapeshellarg('*.DS_Store');
+            .' && zip '.$level.' -r '.escapeshellarg($zipPath).' . -x '.escapeshellarg('*.DS_Store');
 
         $result = Process::run($command);
 
@@ -1106,13 +1117,25 @@ class BuildIosAppCommand extends Command
 
         $this->components->twoColumnDetail(
             'Parcel bundle',
-            sprintf('%.1f MB phar, %.1f MB app.zip', filesize($payloadPath.'/'.$pharName) / 1048576, filesize($zipPath) / 1048576),
+            sprintf('%.1f MB phar, %d KB app.zip', filesize($phar) / 1048576, filesize($zipPath) / 1024),
         );
 
         $this->createBundledVersionFile($zipPath);
 
         // The payload stays for inspection; the next build starts over.
         File::deleteDirectory($sourcePath);
+    }
+
+    /**
+     * The device runs a phar shipped in the .app in preference to app.zip,
+     * so a build that isn't using Parcel must not leave one behind.
+     */
+    private function removeParcelBundle(): void
+    {
+        File::delete([
+            $this->containerPath.self::PARCEL_BUNDLE,
+            $this->containerPath.self::PARCEL_BUNDLE.'.sig',
+        ]);
     }
 
     /**

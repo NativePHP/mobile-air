@@ -215,6 +215,25 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertSame('cHVibGljLWtleQ==', $signed['bundle_public_key']);
     }
 
+    public function test_a_build_without_parcel_removes_a_phar_left_by_one_with_it(): void
+    {
+        // The device runs a phar shipped in the .app in preference to
+        // app.zip, so a stale one would ship the previous build's code.
+        $container = $this->testProjectPath.'/nativephp/ios/NativePHP/';
+        File::ensureDirectoryExists($container);
+        File::put($container.'__nativephp_app_bundle.phar', 'old code');
+        File::put($container.'__nativephp_app_bundle.phar.sig', 'old signature');
+        File::put($container.'app.zip', 'zip');
+
+        $command = app(BuildIosAppCommand::class);
+        (new \ReflectionProperty($command, 'containerPath'))->setValue($command, $container);
+        (new \ReflectionMethod($command, 'removeParcelBundle'))->invoke($command);
+
+        $this->assertFileDoesNotExist($container.'__nativephp_app_bundle.phar');
+        $this->assertFileDoesNotExist($container.'__nativephp_app_bundle.phar.sig');
+        $this->assertFileExists($container.'app.zip');
+    }
+
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
     {
         // storage/framework is excluded from the copy, but composer install
