@@ -372,3 +372,18 @@ it('refuses to overwrite an existing test without --force', function () {
 
     @unlink($path);
 });
+
+it('keeps the folders of a relative name in the test path', function () {
+    $path = base_path('tests/Feature/Settings/ProfileTest.php');
+    @unlink($path);
+
+    $this->artisan('native:make-test', ['name' => 'Settings/Profile'])
+        ->expectsOutputToContain('php artisan native:make Settings/Profile')
+        ->assertExitCode(0);
+
+    expect(file_exists($path))->toBeTrue()
+        ->and(file_get_contents($path))->toContain('use App\NativeComponents\Settings\Profile;');
+
+    @unlink($path);
+    @rmdir(dirname($path));
+});
