@@ -56,12 +56,23 @@ class ScreenGuard
      * re-open the session, and re-emit cookies against a request that is never
      * actually sent anywhere.
      *
+     * A subclass of a listed class is skipped too. That is how an app's own
+     * App\Http\Middleware\VerifyCsrfToken is caught, and Laravel 11 and 12's
+     * ValidateCsrfToken. Laravel 13 renamed the base class to
+     * PreventRequestForgery and made VerifyCsrfToken extend it, so it is
+     * listed by name; on older versions the entry simply never matches.
+     *
+     * Skipping the CSRF check matters beyond token rotation: its constructor
+     * needs the Encrypter, which throws when there is no APP_KEY, and a guard
+     * that throws refuses the screen.
+     *
      * @var array<int, class-string>
      */
     public const DEFAULT_SKIP = [
         StartSession::class,
         AuthenticateSession::class,
         VerifyCsrfToken::class,
+        'Illuminate\Foundation\Http\Middleware\PreventRequestForgery',
         EncryptCookies::class,
         AddQueuedCookiesToResponse::class,
         ShareErrorsFromSession::class,
@@ -249,12 +260,29 @@ class ScreenGuard
 
         return array_values(array_filter(
             $gathered,
-            fn ($middleware) => ! in_array(
-                is_string($middleware) ? strtok($middleware, ':') : $middleware,
-                static::$skip,
-                true,
-            ),
+            fn ($middleware) => ! static::skipped($middleware),
         ));
+    }
+
+    /**
+     * Whether $middleware is in $skip, or extends a class that is. Only class
+     * names can match; closures and parameters after `:` are ignored.
+     */
+    protected static function skipped(mixed $middleware): bool
+    {
+        if (! is_string($middleware)) {
+            return false;
+        }
+
+        $class = strtok($middleware, ':');
+
+        foreach (static::$skip as $skip) {
+            if ($class === $skip || is_a($class, $skip, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
