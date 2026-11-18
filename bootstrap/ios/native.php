@@ -18,6 +18,9 @@ try {
 
     // Bootstrap Laravel and handle the request...
     $app = require_once __DIR__.'/../../../../../bootstrap/app.php';
+
+    require_once __DIR__.'/../shared/bundle-paths.php';
+    nativephp_use_bundle_paths($app);
     $_timing['bootstrap'] = microtime(true);
 
     // Catch uncaught throwables and PHP fatals this request can't trap.

@@ -61,7 +61,8 @@ final class PersistentPHPRuntime {
     /// This boots PHP, loads Composer, and boots the Laravel kernel.
     /// Blocks until boot is complete (work runs on dedicated C pthread).
     func boot() -> Bool {
-        let appPath = AppUpdateManager.shared.getAppPath()
+        let codePath = AppUpdateManager.shared.getCodePath()
+        AppUpdateManager.shared.prepareCodeEnvironment()
 
         // Set environment variables before PHP boots (env vars are process-wide)
         let storageDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -76,8 +77,8 @@ final class PersistentPHPRuntime {
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
 
         // Composer autoloader and bootstrap paths (used by persistent.php)
-        setenv("COMPOSER_AUTOLOADER_PATH", appPath + "/vendor/autoload.php", 1)
-        setenv("LARAVEL_BOOTSTRAP_PATH", appPath + "/bootstrap", 1)
+        setenv("COMPOSER_AUTOLOADER_PATH", codePath + "/vendor/autoload.php", 1)
+        setenv("LARAVEL_BOOTSTRAP_PATH", codePath + "/bootstrap", 1)
 
         // PHP INI
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? ""
@@ -88,7 +89,7 @@ final class PersistentPHPRuntime {
             setenv("APP_KEY", appKey, 1)
         }
 
-        let bootstrapPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
+        let bootstrapPath = codePath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
 
         print("PersistentPHPRuntime: booting with \(bootstrapPath)")
 
@@ -149,8 +150,8 @@ final class PersistentPHPRuntime {
             uri += "?" + query
         }
 
-        let appPath = AppUpdateManager.shared.getAppPath()
-        let scriptPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
+        let codePath = AppUpdateManager.shared.getCodePath()
+        let scriptPath = codePath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
 
         // Every request header reaches PHP through the header block.
         // BridgeDispatcher::handle() no longer reads HTTP_* from the

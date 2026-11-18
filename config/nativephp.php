@@ -262,6 +262,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Parcel Bundles (experimental, iOS only)
+    |--------------------------------------------------------------------------
+    |
+    | Ship the app's PHP code as one compressed phar built by Parcel instead
+    | of as a tree of files. PHP reads the code straight out of the archive
+    | on the device, so it is never unpacked. .env and public/ stay outside
+    | it. 'binary' is the parcel command to run.
+    |
+    | With a signing key (a base64 Ed25519 secret key or seed), the bundle is
+    | signed and the app refuses to run code that no longer matches it. The
+    | key never ships: it is always removed from the bundled .env.
+    |
+    */
+
+    'parcel' => [
+        'enabled' => env('NATIVEPHP_PARCEL', false),
+        'binary' => env('NATIVEPHP_PARCEL_BINARY', 'parcel'),
+        'signing_key' => env('NATIVEPHP_PARCEL_SIGNING_KEY'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |

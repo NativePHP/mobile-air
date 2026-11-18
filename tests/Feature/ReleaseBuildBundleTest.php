@@ -192,6 +192,29 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertSame(1, $meta['version_code']);
     }
 
+    public function test_ios_bundle_meta_carries_the_parcel_public_key_only_for_a_signed_bundle(): void
+    {
+        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+
+        $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
+        File::ensureDirectoryExists(dirname($zipPath));
+
+        $command = app(BuildIosAppCommand::class);
+        $write = new \ReflectionMethod($command, 'createBundledVersionFile');
+        $publicKey = new \ReflectionProperty($command, 'parcelPublicKey');
+
+        $write->invoke($command, $zipPath);
+        $unsigned = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $publicKey->setValue($command, 'cHVibGljLWtleQ==');
+        $write->invoke($command, $zipPath);
+        $signed = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $this->assertArrayNotHasKey('bundle_public_key', $unsigned);
+        $this->assertArrayHasKey('bifrost_app_id', $unsigned);
+        $this->assertSame('cHVibGljLWtleQ==', $signed['bundle_public_key']);
+    }
+
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
     {
         // storage/framework is excluded from the copy, but composer install

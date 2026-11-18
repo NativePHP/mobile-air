@@ -37,6 +37,9 @@ class BuildIosAppCommand extends Command
 
     private string $containerPath;
 
+    /** Base64 Ed25519 key that a signed Parcel bundle is checked against. */
+    private ?string $parcelPublicKey = null;
+
     private string $logPath;
 
     protected ?string $target;
@@ -215,7 +218,12 @@ class BuildIosAppCommand extends Command
             $configExcludes
         ));
         $this->cleanEnvFile($this->appPath.'.env');
-        $this->createAppZip();
+
+        if (config('nativephp.parcel.enabled')) {
+            $this->createParcelZip();
+        } else {
+            $this->createAppZip();
+        }
     }
 
     /**
@@ -223,9 +231,9 @@ class BuildIosAppCommand extends Command
      *
      * @param  array<int, string>  $arguments
      */
-    private function runComposer(array $arguments): bool
+    private function runComposer(array $arguments, ?string $path = null): bool
     {
-        $result = Process::path($this->appPath)
+        $result = Process::path($path ?? $this->appPath)
             ->forever()
             ->run(['composer', ...$arguments], function ($type, $output) {
                 file_put_contents($this->logPath, $output, FILE_APPEND);
@@ -1037,6 +1045,125 @@ class BuildIosAppCommand extends Command
         // what changed. See bundleLaravelApp().
     }
 
+    /**
+     * Ship the app's PHP code as one phar built by Parcel, next to the two
+     * things that have to stay outside it: .env, which the runtime and OTA
+     * updates rewrite, and public/, which the web view's asset handler reads
+     * straight off disk. The device runs the code from inside the phar.
+     */
+    private function createParcelZip(): void
+    {
+        $release = (bool) $this->option('release');
+        $workPath = $this->basePath.'/parcel';
+        $sourcePath = $workPath.'/app';
+        $payloadPath = $workPath.'/payload';
+        $pharName = '__nativephp_app_bundle.phar';
+        $zipPath = $this->containerPath.'app.zip';
+
+        $this->components->task('Bundling PHP code with Parcel', function () use ($release, $workPath, $sourcePath, $payloadPath, $pharName) {
+            File::deleteDirectory($workPath);
+            File::ensureDirectoryExists($payloadPath);
+
+            // Parcel patches composer.json and the autoloader, so it works on
+            // a copy: the staged app is reused by the next build as it is.
+            // APFS clones the tree instead of copying it.
+            $copy = Process::run(['cp', '-c', '-R', rtrim($this->appPath, '/'), $sourcePath]);
+
+            if (! $copy->successful()) {
+                File::deleteDirectory($sourcePath);
+                File::copyDirectory($this->appPath, $sourcePath);
+            }
+
+            $this->runParcel(['prepare', '--mobile', '--force', $sourcePath]);
+
+            // Parcel adds its path helpers to composer.json's autoload files.
+            $this->runComposer(['dump-autoload', '--no-scripts', ...($release ? ['--no-dev'] : [])], $sourcePath);
+
+            $this->runParcel(['compile', $sourcePath]);
+
+            File::move($sourcePath.'/build/'.$pharName, $payloadPath.'/'.$pharName);
+            File::copy($this->appPath.'.env', $payloadPath.'/.env');
+            File::copyDirectory($this->appPath.'public', $payloadPath.'/public');
+
+            $this->signParcelBundle($payloadPath.'/'.$pharName, $workPath);
+        });
+
+        if (file_exists($zipPath)) {
+            unlink($zipPath);
+        }
+
+        // The phar is compressed already; zipping it again only adds time.
+        $command = 'cd '.escapeshellarg($payloadPath)
+            .' && zip -0 -r '.escapeshellarg($zipPath).' . -x '.escapeshellarg('*.DS_Store');
+
+        $result = Process::run($command);
+
+        if (! $result->successful()) {
+            $error = trim($result->errorOutput()) ?: trim($result->output());
+
+            throw new \Exception('Failed to create ZIP file: '.($error ?: 'exit code '.$result->exitCode()));
+        }
+
+        $this->components->twoColumnDetail(
+            'Parcel bundle',
+            sprintf('%.1f MB phar, %.1f MB app.zip', filesize($payloadPath.'/'.$pharName) / 1048576, filesize($zipPath) / 1048576),
+        );
+
+        $this->createBundledVersionFile($zipPath);
+
+        // The payload stays for inspection; the next build starts over.
+        File::deleteDirectory($sourcePath);
+    }
+
+    /**
+     * Sign the bundle when there is a key, and keep the public key for
+     * bundle_meta.json. That file ships inside the .app, where iOS's code
+     * signature covers it, so the key the app checks against can't be
+     * swapped along with the bundle. The signature itself travels with the
+     * bundle, as __nativephp_app_bundle.phar.sig.
+     */
+    private function signParcelBundle(string $phar, string $workPath): void
+    {
+        $this->parcelPublicKey = null;
+
+        $key = (string) config('nativephp.parcel.signing_key');
+
+        if ($key === '') {
+            return;
+        }
+
+        $publicKeyPath = $workPath.'/public.key';
+
+        // Through the environment, so the key never shows in a process list.
+        $this->runParcel(['sign', $phar, '--public-key-output='.$publicKeyPath], ['PARCEL_SIGNING_KEY' => $key]);
+
+        $this->parcelPublicKey = trim((string) file_get_contents($publicKeyPath));
+        File::delete($publicKeyPath);
+    }
+
+    /**
+     * @param  array<int, string>  $arguments
+     * @param  array<string, string>  $env
+     */
+    private function runParcel(array $arguments, array $env = []): void
+    {
+        $binary = (string) config('nativephp.parcel.binary', 'parcel');
+
+        $result = Process::forever()->env($env)->run([$binary, ...$arguments], function ($type, $output) {
+            file_put_contents($this->logPath, $output, FILE_APPEND);
+
+            if ($this->verbose) {
+                $this->output->write($output);
+            }
+        });
+
+        if (! $result->successful()) {
+            file_put_contents($this->logPath, 'ERROR: parcel '.$arguments[0].' failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
+
+            throw new \Exception("parcel {$arguments[0]} failed: ".(trim($result->errorOutput()) ?: trim($result->output())));
+        }
+    }
+
     private function createBundledVersionFile(string $zipPath): void
     {
         $appVersion = config('nativephp.version', 'DEBUG');
@@ -1064,7 +1191,7 @@ class BuildIosAppCommand extends Command
         $nativeRoutes = array_keys(NativeRouter::registeredRoutes());
         $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
 
-        $bundleMeta = json_encode([
+        $bundleMeta = [
             'version' => $appVersion,
             'version_code' => (int) $versionCode,
             'bifrost_app_id' => $bifrostAppId,
@@ -1076,9 +1203,14 @@ class BuildIosAppCommand extends Command
             // replaced wholesale by a payload and this has to outlive one.
             'shell_built_at' => env('NATIVEPHP_OTA_SHELL_BUILT_AT'),
             'shell_commit' => env('NATIVEPHP_OTA_SHELL_COMMIT'),
-        ], JSON_PRETTY_PRINT);
+        ];
 
-        file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);
+        // What a signed Parcel bundle is checked against on the device.
+        if ($this->parcelPublicKey !== null) {
+            $bundleMeta['bundle_public_key'] = $this->parcelPublicKey;
+        }
+
+        file_put_contents(dirname($zipPath).'/bundle_meta.json', json_encode($bundleMeta, JSON_PRETTY_PRINT));
     }
 
     private function configureProvisioningProfile(): void

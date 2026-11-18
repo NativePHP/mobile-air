@@ -38,6 +38,9 @@ $_timing['autoload'] = microtime(true);
 
 // 2. Bootstrap Laravel application (once)
 $app = require_once $_SERVER['LARAVEL_BOOTSTRAP_PATH'].'/app.php';
+
+require_once __DIR__.'/../shared/bundle-paths.php';
+nativephp_use_bundle_paths($app);
 $_timing['bootstrap'] = microtime(true);
 
 // Catch uncaught throwables and PHP fatals for the whole runtime lifetime.

@@ -8,7 +8,11 @@ define('LARAVEL_START', microtime(true));
 require __DIR__.'/../../../../autoload.php';
 
 // Bootstrap Laravel and handle the command...
-$status = (require_once __DIR__.'/../../../../../bootstrap/app.php')
-    ->handleCommand(new ArgvInput);
+$app = require_once __DIR__.'/../../../../../bootstrap/app.php';
+
+require_once __DIR__.'/../shared/bundle-paths.php';
+nativephp_use_bundle_paths($app);
+
+$status = $app->handleCommand(new ArgvInput);
 
 exit($status);

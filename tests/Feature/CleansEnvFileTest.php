@@ -59,6 +59,18 @@ class CleansEnvFileTest extends TestCase
         $this->assertSame("APP_NAME=Test\nAPP_KEYBOARD=qwerty", $cleaned);
     }
 
+    public function test_the_parcel_signing_key_never_ships(): void
+    {
+        config(['nativephp.cleanup_env_keys' => []]);
+
+        $cleaned = $this->clean(implode("\n", [
+            'NATIVEPHP_PARCEL=true',
+            'NATIVEPHP_PARCEL_SIGNING_KEY=c2VjcmV0',
+        ]));
+
+        $this->assertSame('NATIVEPHP_PARCEL=true', $cleaned);
+    }
+
     public function test_configured_keys_are_still_stripped(): void
     {
         config(['nativephp.cleanup_env_keys' => ['AWS_*', '*_SECRET']]);

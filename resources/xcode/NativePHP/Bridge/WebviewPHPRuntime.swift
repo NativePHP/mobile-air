@@ -107,8 +107,8 @@ final class WebviewPHPRuntime {
                 uri += "?" + query
             }
 
-            let appPath = AppUpdateManager.shared.getAppPath()
-            let scriptPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
+            let codePath = AppUpdateManager.shared.getCodePath()
+            let scriptPath = codePath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
             let cookieHeader = request.header("Cookie") ?? ""
             let contentType = request.header("Content-Type") ?? ""
             let headerBlock = request.headerBlock
@@ -174,8 +174,8 @@ final class WebviewPHPRuntime {
             return
         }
 
-        let appPath = AppUpdateManager.shared.getAppPath()
-        let bootstrap = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
+        let codePath = AppUpdateManager.shared.getCodePath()
+        let bootstrap = codePath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
         state.handle = _webview_php_start(bootstrap)
         // Leave the door open on failure — the next request retries rather
         // than leaving the webview permanently dead.

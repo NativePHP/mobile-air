@@ -139,6 +139,7 @@ function runClassic(string $platform, array $env, ?string $body, string $tempDir
         mkdir($work.'/app/vendor/nativephp/mobile/bootstrap/shared');
         copy($root.'/bootstrap/ios/native.php', $script);
         copy($root.'/bootstrap/shared/devtools-boot-report.php', $work.'/app/vendor/nativephp/mobile/bootstrap/shared/devtools-boot-report.php');
+        copy($root.'/bootstrap/shared/bundle-paths.php', $work.'/app/vendor/nativephp/mobile/bootstrap/shared/bundle-paths.php');
         file_put_contents($work.'/app/vendor/autoload.php', '<?php return require '.var_export($root.'/vendor/autoload.php', true).';');
         file_put_contents($work.'/app/bootstrap/app.php', '<?php return require '.var_export($root.'/tests/Fixtures/Bridge/classic-app/bootstrap/app.php', true).';');
     }
