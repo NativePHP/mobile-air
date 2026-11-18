@@ -64,6 +64,33 @@ use Native\Mobile\Edge\SharedValue;
  *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
  *     </native:gesture-area>
  *
+ * Double tap to zoom — with `double-tap-zoom`, a double tap on content
+ * at its whole size zooms the pinch to that scale, bringing the tapped
+ * point to the middle of the area (as far as `bounded` lets it go), and a
+ * double tap on zoomed content takes it back to its whole size. Both
+ * animate on the phone, and `@pinchEnd` fires with the new scale once
+ * the zoom settles, as it does after a pinch, so one handler hears every
+ * zoom.
+ *
+ * Aiming a zoom moves the pan, so the zoom needs the pan's SharedValues
+ * even while the area isn't panning. A photo pager binds `pan-x` and
+ * `pan-y` only once the picture is zoomed, because a bound pan takes
+ * every one-finger drag and the pager would stop paging. `zoom-pan-x`
+ * and `zoom-pan-y` give the zoom those same values without taking any
+ * drags: a pinch keeps the point between the fingers where it is, and a
+ * double tap aims at the tapped point, while drags at whole size are
+ * left to whatever is around the area. Once `pan-x` / `pan-y` are bound
+ * as well, to the same values, everything carries on from where the zoom
+ * left it:
+ *
+ *     <native:gesture-area :pinch="$zoom" pinch-min="1" pinch-max="4" double-tap-zoom="2"
+ *         :pan-x="$zoomed ? $x : null" :pan-y="$zoomed ? $y : null" :zoom-pan-x="$x" :zoom-pan-y="$y"
+ *         bounded :content-ratio="$ratio" @pinchEnd="zoomEnded">
+ *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
+ *     </native:gesture-area>
+ *
+ *     public function zoomEnded(float $scale): void   // $zoomed = $scale > 1
+ *
  * Snapping — a pan that settles on set points, the swipe-to-reveal
  * pattern. With `snap-x` (or `snap-y`) the bound axis moves with the
  * finger between the lowest and highest point, with growing resistance
@@ -156,6 +183,20 @@ class GestureArea extends Element
 
     private ?float $triggerY = null;
 
+    /** The scale a double tap zooms to (see the class docblock). Null =
+     *  a double tap does nothing. */
+    private ?float $doubleTapZoom = null;
+
+    /** The pan a zoom moves when the area isn't panning, per axis (see
+     *  the class docblock). */
+    private ?int $zoomPanXId = null;
+
+    private float $zoomPanXInitial = 0.0;
+
+    private ?int $zoomPanYId = null;
+
+    private float $zoomPanYInitial = 0.0;
+
     /** Keep the zoomed content inside the area's edges. */
     private bool $bounded = false;
 
@@ -191,6 +232,18 @@ class GestureArea extends Element
         if (isset($attrs['pinch']) && $attrs['pinch'] instanceof SharedValue) {
             $this->pinchId = $attrs['pinch']->id;
             $this->pinchInitial = $attrs['pinch']->value();
+        }
+
+        if (isset($attrs['zoom-pan-x']) && $attrs['zoom-pan-x'] instanceof SharedValue) {
+            $this->zoomPanX($attrs['zoom-pan-x']);
+        }
+
+        if (isset($attrs['zoom-pan-y']) && $attrs['zoom-pan-y'] instanceof SharedValue) {
+            $this->zoomPanY($attrs['zoom-pan-y']);
+        }
+
+        if (isset($attrs['double-tap-zoom'])) {
+            $this->doubleTapZoom((float) $attrs['double-tap-zoom']);
         }
 
         if (isset($attrs['pinch-min'])) {
@@ -285,6 +338,35 @@ class GestureArea extends Element
         return is_array($value) ? $value : array_filter(array_map(trim(...), explode(',', (string) $value)), fn (string $point): bool => $point !== '');
     }
 
+    /** The scale a double tap zooms to, from content at its whole size
+     *  (see the class docblock). One or less means a double tap does
+     *  nothing. */
+    public function doubleTapZoom(float $scale): static
+    {
+        $this->doubleTapZoom = $scale > 1 ? $scale : null;
+
+        return $this;
+    }
+
+    /** The horizontal pan a pinch or a double tap moves to aim the zoom,
+     *  without the area taking drags (see the class docblock). */
+    public function zoomPanX(SharedValue $value): static
+    {
+        $this->zoomPanXId = $value->id;
+        $this->zoomPanXInitial = $value->value();
+
+        return $this;
+    }
+
+    /** The vertical pan a pinch or a double tap moves to aim the zoom. */
+    public function zoomPanY(SharedValue $value): static
+    {
+        $this->zoomPanYId = $value->id;
+        $this->zoomPanYInitial = $value->value();
+
+        return $this;
+    }
+
     /** Keep the zoomed content inside the area's edges (see the class
      *  docblock). */
     public function bounded(bool $bounded = true): static
@@ -370,6 +452,22 @@ class GestureArea extends Element
         if ($this->pinchId !== null) {
             $props['pinch-id'] = $this->pinchId;
             $props['pinch-initial'] = $this->pinchInitial;
+        }
+
+        // The zoom's own pan. Seeded like a pan, so a zoom aimed before
+        // anything else has touched the value starts from where PHP put it.
+        if ($this->zoomPanXId !== null) {
+            $props['zoom-pan-x-id'] = $this->zoomPanXId;
+            $props['zoom-pan-x-initial'] = $this->zoomPanXInitial;
+        }
+
+        if ($this->zoomPanYId !== null) {
+            $props['zoom-pan-y-id'] = $this->zoomPanYId;
+            $props['zoom-pan-y-initial'] = $this->zoomPanYInitial;
+        }
+
+        if ($this->doubleTapZoom !== null) {
+            $props['double-tap-zoom'] = $this->doubleTapZoom;
         }
 
         // Bounds ride independently of the SharedValue binding — a

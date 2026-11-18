@@ -170,3 +170,27 @@ it('renders a bounded zoom and pan area from Blade', function () {
         ->and($tree['props']['pan-y-id'])->toBe($y->id)
         ->and($tree['props']['pinch-id'])->toBe($zoom->id);
 });
+
+it('renders a photo page that zooms on a double tap from Blade', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-double-tap.blade.php',
+        '<native:gesture-area :pinch="$zoom" pinch-min="1" pinch-max="4" double-tap-zoom="2" :zoom-pan-x="$x" :zoom-pan-y="$y" bounded @pinchEnd="zoomEnded">'
+        .'<native:image src="https://example.com/a.png" :scale="$zoom" :translate-x="$x" :translate-y="$y" />'
+        .'</native:gesture-area>'
+    );
+
+    $zoom = SharedValue::make(1.0);
+    $x = SharedValue::make();
+    $y = SharedValue::make();
+    $registry = new CallbackRegistry;
+
+    NativeElementCollector::reset();
+    view('gesture-double-tap', ['zoom' => $zoom, 'x' => $x, 'y' => $y])->render();
+    $tree = NativeElementCollector::collect()->toArray($registry);
+
+    expect($tree['props']['double-tap-zoom'])->toBe(2.0)
+        ->and($tree['props']['zoom-pan-x-id'])->toBe($x->id)
+        ->and($tree['props']['zoom-pan-y-id'])->toBe($y->id)
+        ->and($tree['props'])->not->toHaveKey('pan-x-id')
+        ->and($registry->resolve($tree['props']['on_pinch_end'])['method'])->toBe('zoomEnded');
+});

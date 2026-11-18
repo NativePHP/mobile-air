@@ -183,6 +183,41 @@ it('omits bounded and content-ratio unless bounded is set', function () {
         ->and($props)->not->toHaveKey('content-ratio');
 });
 
+// ── Double tap to zoom ──────────────────────────────
+
+it('carries double-tap-zoom and the zoom pan to the wire', function () {
+    $x = SharedValue::make(8.0);
+    $y = SharedValue::make(-2.0);
+
+    $area = GestureArea::make();
+    $area->applyAttributes(['double-tap-zoom' => '2', 'zoom-pan-x' => $x, 'zoom-pan-y' => $y]);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props['double-tap-zoom'])->toBe(2.0)
+        ->and($props['zoom-pan-x-id'])->toBe($x->id)
+        ->and($props['zoom-pan-x-initial'])->toBe(8.0)
+        ->and($props['zoom-pan-y-id'])->toBe($y->id)
+        ->and($props['zoom-pan-y-initial'])->toBe(-2.0);
+});
+
+it('leaves the zoom pan apart from a pan, which still takes drags', function () {
+    $x = SharedValue::make();
+
+    $props = GestureArea::make()->zoomPanX($x)->getResolvedProps(new CallbackRegistry);
+
+    expect($props['zoom-pan-x-id'])->toBe($x->id)
+        ->and($props)->not->toHaveKey('pan-x-id')
+        ->and($props)->not->toHaveKey('zoom-pan-y-id');
+});
+
+it('leaves double-tap-zoom off when it would not zoom in', function (mixed $scale) {
+    $area = GestureArea::make();
+    $area->applyAttributes(['double-tap-zoom' => $scale]);
+
+    expect($area->getResolvedProps(new CallbackRegistry))->not->toHaveKey('double-tap-zoom');
+})->with([1, '0.5', 0, '-2']);
+
 // ── Swipe ───────────────────────────────────────────
 
 it('registers on_swipe with the finger count from swipe-fingers', function () {
