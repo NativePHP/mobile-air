@@ -182,19 +182,20 @@ struct NativePHPApp: App {
             return (.nativeDirect, linkRoute, true)
         }
 
-        if DeepLinkRouter.shared.pendingUniversalLinkRoute() != nil,
-           BootPlanner.plan(startPath: startPath) == .nativeDirect {
-            // A universal link to a path with no native screen could be a web
-            // route or nothing at all, and only PHP can tell. Loading it in the
-            // WebView shows a local 404 for the second kind. Boot the start
-            // screen instead: the link is replayed as __deeplink with its URL
-            // once native-ui is active, so PHP navigates to it or gives it back
-            // to Safari, the same as a link that arrives while the app is open.
+        if BootPlanner.plan(startPath: startPath) == .nativeDirect {
+            // A link to a path with no native screen could be a web route or
+            // nothing at all, and only PHP can tell. Loading it in the WebView
+            // shows a local 404 for the second kind, with no way back into the
+            // app. Boot the start screen instead: the link is replayed as
+            // __deeplink once native-ui is active, so PHP navigates to it,
+            // gives a universal link back to Safari, or drops it and stays on
+            // the start screen, the same as a link that arrives while the app
+            // is open. Custom-scheme links and tapped notifications go this
+            // way too.
             return (.nativeDirect, startPath, false)
         }
 
-        // A custom-scheme or notification link to a web route loads it in the
-        // WebView, as does any link when the start route isn't native either.
+        // Any link loads in the WebView when the start route isn't native either.
         return (.webLegacy, startPath, false)
     }
 
