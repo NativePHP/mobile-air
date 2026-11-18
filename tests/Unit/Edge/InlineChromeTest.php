@@ -13,6 +13,7 @@ use Tests\Fixtures\Edge\ChromeTabsLayout;
 use Tests\Fixtures\Edge\CustomTopBarScreen;
 use Tests\Fixtures\Edge\FabScreen;
 use Tests\Fixtures\Edge\InlineBottomNavScreen;
+use Tests\Fixtures\Edge\InlineGlassBottomBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarTitleScreen;
 use Tests\Fixtures\Edge\ScrollFabScreen;
@@ -200,6 +201,20 @@ it('keeps inline top-bar actions (and their callbacks) on the chrome root', func
         });
 
     $screen->tap('Save')->assertSet('saves', 1);
+});
+
+it('keeps glass on an inline bottom-bar for the renderers to draw behind the bar', function () {
+    $tree = Native::test(InlineGlassBottomBarScreen::class)
+        ->assertSee('Composer')
+        ->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    // The iOS renderers read `glass` off the bottom_bar marker itself and
+    // draw soft glass behind the whole bar; its content is the first child.
+    expect($tree['type'])->toBe('native_root_stack')
+        ->and($bar['props']['glass'] ?? null)->toBe(1 | 8)
+        ->and($bar['children'][0]['type'])->toBe('row');
 });
 
 it('hoists an inline bottom-nav into a NativeRootTabs with no layout at all', function () {

@@ -953,7 +953,9 @@ private struct TabsActionView: View {
 /// Uses `.safeAreaInset(.bottom)` — the battle-tested primitive that
 /// reserves space above the safe-area-bottom and renders the bar inside
 /// it. Keyboard avoidance is automatic. Bar content is responsible for
-/// its own visible chrome (bg color or glass class).
+/// its own visible chrome (bg color or glass class), except that a
+/// `bottom_bar` carrying `glass` gets soft glass behind the whole bar
+/// (see `BottomBarSoftGlass`).
 private struct BottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -979,6 +981,9 @@ private struct BottomBarInsetModifier: ViewModifier {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity)
                     .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+                    .background(alignment: .top) {
+                        BottomBarSoftGlass(flags: bottomBar.props.getInt("glass", default: 0))
+                    }
             }
         } else {
             content
@@ -1507,5 +1512,59 @@ private struct ObjectResultRow: View {
         }
         .buttonStyle(.plain)
         .disabled(tapCallback == 0)
+    }
+}
+
+/// Liquid Glass behind a bottom bar whose `bottom_bar` element carries the
+/// `glass` class (`<native:bottom-bar class="glass">`). The glass runs on
+/// through the bottom safe area, under the home indicator, and fades in over
+/// the bar's top `fade` points, so what scrolls under the bar blurs into it
+/// without the hard top edge (rim and lensing) a plain `glass` surface has.
+/// The bar's own content draws on top; give it a translucent fill to tint
+/// the glass. `glass:clear` takes the clear variant. Before iOS 26 it's
+/// `.regularMaterial`, faded the same way. Shared with the stack renderer's
+/// `StackBottomBarInsetModifier`.
+struct BottomBarSoftGlass: View {
+    let flags: Int
+    var fade: CGFloat = 28
+
+    var body: some View {
+        if flags & 1 != 0 {
+            GeometryReader { geo in
+                glass.mask(
+                    LinearGradient(
+                        stops: Self.fadeIn(until: min(1, fade / max(geo.size.height, 1))),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            }
+            // Past the screen's sides, so the glass draws no rim down them.
+            .padding(.horizontal, -24)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Clear to opaque on an ease-in-out curve, which leaves no line where
+    /// a straight ramp would stop.
+    static func fadeIn(until end: CGFloat) -> [Gradient.Stop] {
+        (0...8).map { step in
+            let t = CGFloat(step) / 8
+            return .init(color: .black.opacity(t * t * (3 - 2 * t)), location: t * end)
+        }
+    }
+
+    @ViewBuilder
+    private var glass: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            Rectangle().fill(.clear).glassEffect(flags & 8 != 0 ? .clear : .regular, in: Rectangle())
+        } else {
+            Rectangle().fill(.regularMaterial)
+        }
+        #else
+        Rectangle().fill(.regularMaterial)
+        #endif
     }
 }
