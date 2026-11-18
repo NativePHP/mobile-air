@@ -2,6 +2,8 @@ package com.nativephp.mobile.ui.nativerender
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
@@ -76,7 +78,7 @@ import com.nativephp.mobile.ui.MaterialIcon
  * shrinking the path and firing `sendSystemBackEvent` so the PHP
  * runloop pops to match.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val currentUri = node.props.getString("current_uri", "")
@@ -392,55 +394,86 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         if (levelNodes.size > 16) {
             levelNodes.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
         }
-        AnimatedContent(
-            targetState = activeUri,
-            transitionSpec = {
-                val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
-                val popping = (levelDepths[targetState] ?: 0) < (levelDepths[initialState] ?: 0)
-                if (popping) {
-                    slideInHorizontally(intSpec) { -it } togetherWith
-                        slideOutHorizontally(intSpec) { it }
-                } else {
-                    slideInHorizontally(intSpec) { it } togetherWith
-                        slideOutHorizontally(intSpec) { -it }
-                }
-            },
-            label = "stack-level",
-            modifier = Modifier.fillMaxSize()
-        ) { uri ->
-            // The TopAppBar's nested-scroll connection is attached HERE —
-            // directly wrapping the screen content — rather than on the
-            // Scaffold modifier. With the connection on the Scaffold, the
-            // AnimatedContent transition boundary sat between it and the
-            // scrolling list, so the list's scroll deltas never reached the
-            // bar and `collapse`/`enterAlways` never fired. Wrapping the
-            // content keeps the connection a direct ancestor of the list.
-            val scrollModifier = if (barReactsToScroll) {
-                Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-            } else {
-                Modifier
-            }
-            val levelPadding = if (uri == activeUri) {
-                levelPaddings[uri] = padding
-                padding
-            } else {
-                levelPaddings[uri] ?: padding
-            }
-            val chromeScrollController = rememberChromeScrollController(scrollBehavior, barReactsToScroll)
-
-            CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
-                val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
-                val levelContent = levelNode?.children?.firstOrNull {
-                    it.type != "top_bar_action" && it.type != "top_bar_title" &&
-                        it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
-                }
-                Box(modifier = scrollModifier.fillMaxSize().screenBackground(levelContent).padding(levelPadding)) {
-                    if (levelContent != null) {
-                        NodeView(node = levelContent)
-                    } else if (uri == currentUri && screenContent != null) {
-                        NodeView(node = screenContent)
+        // A `morph` push cross-fades the two levels while every `ref` they
+        // share flies between its old and new bounds, the same as the
+        // full-screen morph. Back pops locally here before PHP has staged
+        // anything, so the tracker remembers which levels arrived by morph
+        // and morphs them back out. See ChromeMorphTracker.
+        val morphTracker = remember { ChromeMorphTracker() }
+        val morphing = morphTracker.settle(
+            key = activeUri,
+            depth = path.size,
+            nav = ChromeMorphTracker.NavStamp(
+                NativeUIBridge.navigationSerial.longValue,
+                NativeUIBridge.navigationTransition.value,
+            ),
+            canMorph = { true },
+            honourStagedPop = false,
+        )
+        SharedTransitionLayout(modifier = Modifier.fillMaxSize()) {
+            AnimatedContent(
+                targetState = rememberChromeTransitionKey(activeUri, morphing),
+                transitionSpec = {
+                    val intSpec = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 250)
+                    val popping = (levelDepths[targetState] ?: 0) < (levelDepths[initialState] ?: 0)
+                    if (morphing) {
+                        // Cross-fade, not the push slide: a level sliding past an
+                        // element that is flying across it reads as two competing
+                        // motions. iOS's morph holds the screens still for the
+                        // same reason.
+                        transitionFor("morph")
+                    } else if (popping) {
+                        slideInHorizontally(intSpec) { -it } togetherWith
+                            slideOutHorizontally(intSpec) { it }
                     } else {
-                        Box(modifier = Modifier.fillMaxSize())
+                        slideInHorizontally(intSpec) { it } togetherWith
+                            slideOutHorizontally(intSpec) { -it }
+                    }
+                },
+                label = "stack-level",
+                modifier = Modifier.fillMaxSize()
+            ) { uri ->
+                ChromeMorphPane(
+                    sharedScope = this@SharedTransitionLayout,
+                    paneScope = this@AnimatedContent,
+                    morphing = morphing,
+                    held = uri != activeUri,
+                ) {
+                    // The TopAppBar's nested-scroll connection is attached HERE —
+                    // directly wrapping the screen content — rather than on the
+                    // Scaffold modifier. With the connection on the Scaffold, the
+                    // AnimatedContent transition boundary sat between it and the
+                    // scrolling list, so the list's scroll deltas never reached the
+                    // bar and `collapse`/`enterAlways` never fired. Wrapping the
+                    // content keeps the connection a direct ancestor of the list.
+                    val scrollModifier = if (barReactsToScroll) {
+                        Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
+                    } else {
+                        Modifier
+                    }
+                    val levelPadding = if (uri == activeUri) {
+                        levelPaddings[uri] = padding
+                        padding
+                    } else {
+                        levelPaddings[uri] ?: padding
+                    }
+                    val chromeScrollController = rememberChromeScrollController(scrollBehavior, barReactsToScroll)
+
+                    CompositionLocalProvider(LocalChromeScrollController provides chromeScrollController) {
+                        val levelNode = coordinator.rootNodeCache[uri]?.also { levelNodes[uri] = it } ?: levelNodes[uri]
+                        val levelContent = levelNode?.children?.firstOrNull {
+                            it.type != "top_bar_action" && it.type != "top_bar_title" &&
+                                it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
+                        }
+                        Box(modifier = scrollModifier.fillMaxSize().screenBackground(levelContent).padding(levelPadding)) {
+                            if (levelContent != null) {
+                                NodeView(node = levelContent)
+                            } else if (uri == currentUri && screenContent != null) {
+                                NodeView(node = screenContent)
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize())
+                            }
+                        }
                     }
                 }
             }

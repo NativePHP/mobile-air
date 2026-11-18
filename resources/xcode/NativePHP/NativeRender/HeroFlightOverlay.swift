@@ -81,7 +81,10 @@ private struct HeroFlightView: View {
                 // A LATER runloop turn than the mount. Setting this inline
                 // coalesces with the insertion, so the copy appears already at
                 // its destination and never travels.
-                DispatchQueue.main.async { arrived = true }
+                DispatchQueue.main.async {
+                    arrived = true
+                    HeroFlightStore.shared.flightTookOff(flight)
+                }
             }
     }
 }
