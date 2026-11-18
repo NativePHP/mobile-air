@@ -270,16 +270,18 @@ return [
     | on the device, so it is never unpacked. .env and public/ stay outside
     | it. 'binary' is the parcel command to run.
     |
-    | With a signing key (a base64 Ed25519 secret key or seed), the bundle is
-    | signed and the app refuses to run code that no longer matches it. The
-    | key never ships: it is always removed from the bundled .env.
+    | With 'sign' on, `parcel sign` signs the bundle (ECDSA P-256) and the app
+    | refuses to run code that no longer matches it. Parcel either asks
+    | Bifrost to sign (PARCEL_SIGNING_URL and PARCEL_SIGNING_TOKEN) or uses
+    | a local key (PARCEL_SIGNING_KEY). None of those ever ship: they are
+    | always removed from the bundled .env.
     |
     */
 
     'parcel' => [
         'enabled' => env('NATIVEPHP_PARCEL', false),
         'binary' => env('NATIVEPHP_PARCEL_BINARY', 'parcel'),
-        'signing_key' => env('NATIVEPHP_PARCEL_SIGNING_KEY'),
+        'sign' => env('NATIVEPHP_PARCEL_SIGN', false),
     ],
 
     /*

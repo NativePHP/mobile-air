@@ -192,7 +192,7 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertSame(1, $meta['version_code']);
     }
 
-    public function test_ios_bundle_meta_carries_the_parcel_public_key_only_for_a_signed_bundle(): void
+    public function test_ios_bundle_meta_carries_parcel_signing_only_for_a_signed_bundle(): void
     {
         config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
 
@@ -201,18 +201,18 @@ class ReleaseBuildBundleTest extends TestCase
 
         $command = app(BuildIosAppCommand::class);
         $write = new \ReflectionMethod($command, 'createBundledVersionFile');
-        $publicKey = new \ReflectionProperty($command, 'parcelPublicKey');
+        $signing = new \ReflectionProperty($command, 'parcelSigning');
 
         $write->invoke($command, $zipPath);
         $unsigned = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
 
-        $publicKey->setValue($command, 'cHVibGljLWtleQ==');
+        $signing->setValue($command, ['project' => 'project-uuid', 'keys' => ['bifrost-1' => 'cHVibGljLWtleQ==']]);
         $write->invoke($command, $zipPath);
         $signed = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
 
-        $this->assertArrayNotHasKey('bundle_public_key', $unsigned);
+        $this->assertArrayNotHasKey('parcel_signing', $unsigned);
         $this->assertArrayHasKey('bifrost_app_id', $unsigned);
-        $this->assertSame('cHVibGljLWtleQ==', $signed['bundle_public_key']);
+        $this->assertSame(['project' => 'project-uuid', 'keys' => ['bifrost-1' => 'cHVibGljLWtleQ==']], $signed['parcel_signing']);
     }
 
     public function test_a_build_without_parcel_removes_a_phar_left_by_one_with_it(): void

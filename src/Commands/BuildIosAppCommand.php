@@ -40,8 +40,13 @@ class BuildIosAppCommand extends Command
     /** The phar a Parcel build ships in the .app. The runtime looks for this name. */
     private const PARCEL_BUNDLE = '__nativephp_app_bundle.phar';
 
-    /** Base64 Ed25519 key that a signed Parcel bundle is checked against. */
-    private ?string $parcelPublicKey = null;
+    /**
+     * What a signed Parcel bundle is checked against on the device: the
+     * project the signature is bound to and the trusted keys by key id.
+     *
+     * @var array{project: string, keys: array<string, string>}|null
+     */
+    private ?array $parcelSigning = null;
 
     private string $logPath;
 
@@ -1139,40 +1144,49 @@ class BuildIosAppCommand extends Command
     }
 
     /**
-     * Sign the bundle when there is a key, and keep the public key for
+     * Have Parcel sign the bundle, and keep the key it was signed with for
      * bundle_meta.json. That file ships inside the .app, where iOS's code
-     * signature covers it, so the key the app checks against can't be
-     * swapped along with the bundle. The signature itself travels with the
-     * bundle, as __nativephp_app_bundle.phar.sig.
+     * signature covers it, so the keys the app trusts can't be swapped along
+     * with a bundle. The signature itself travels with the bundle, as
+     * __nativephp_app_bundle.phar.sig.
+     *
+     * Parcel decides how to sign: on Bifrost it sends the bundle's hash to
+     * Bifrost, which signs with its own key; locally it uses
+     * PARCEL_SIGNING_KEY. Either way no private key passes through here.
      */
     private function signParcelBundle(string $phar, string $workPath): void
     {
-        $this->parcelPublicKey = null;
+        $this->parcelSigning = null;
 
-        $key = (string) config('nativephp.parcel.signing_key');
-
-        if ($key === '') {
+        if (! config('nativephp.parcel.sign')) {
             return;
         }
 
-        $publicKeyPath = $workPath.'/public.key';
+        // Bound into the signature, so a bundle signed for one app can't run
+        // in another. Bifrost checks it against its own record of the build.
+        $project = (string) (env('BIFROST_APP_ID') ?: config('nativephp.app_id'));
+        $keysPath = $workPath.'/keys.json';
 
-        // Through the environment, so the key never shows in a process list.
-        $this->runParcel(['sign', $phar, '--public-key-output='.$publicKeyPath], ['PARCEL_SIGNING_KEY' => $key]);
+        $this->runParcel(['sign', $phar, '--project='.$project, '--public-key-output='.$keysPath]);
 
-        $this->parcelPublicKey = trim((string) file_get_contents($publicKeyPath));
-        File::delete($publicKeyPath);
+        $keys = json_decode((string) file_get_contents($keysPath), true);
+        File::delete($keysPath);
+
+        if (! is_array($keys) || $keys === []) {
+            throw new \Exception('parcel sign did not say which key it signed with.');
+        }
+
+        $this->parcelSigning = ['project' => $project, 'keys' => $keys];
     }
 
     /**
      * @param  array<int, string>  $arguments
-     * @param  array<string, string>  $env
      */
-    private function runParcel(array $arguments, array $env = []): void
+    private function runParcel(array $arguments): void
     {
         $binary = (string) config('nativephp.parcel.binary', 'parcel');
 
-        $result = Process::forever()->env($env)->run([$binary, ...$arguments], function ($type, $output) {
+        $result = Process::forever()->run([$binary, ...$arguments], function ($type, $output) {
             file_put_contents($this->logPath, $output, FILE_APPEND);
 
             if ($this->verbose) {
@@ -1229,8 +1243,8 @@ class BuildIosAppCommand extends Command
         ];
 
         // What a signed Parcel bundle is checked against on the device.
-        if ($this->parcelPublicKey !== null) {
-            $bundleMeta['bundle_public_key'] = $this->parcelPublicKey;
+        if ($this->parcelSigning !== null) {
+            $bundleMeta['parcel_signing'] = $this->parcelSigning;
         }
 
         file_put_contents(dirname($zipPath).'/bundle_meta.json', json_encode($bundleMeta, JSON_PRETTY_PRINT));

@@ -12,7 +12,8 @@ trait CleansEnvFile
     protected array $alwaysCleanedEnvKeys = [
         'APP_KEY',
         'APP_PREVIOUS_KEYS',
-        'NATIVEPHP_PARCEL_SIGNING_KEY',
+        'PARCEL_SIGNING_KEY',
+        'PARCEL_SIGNING_TOKEN',
     ];
 
     protected function cleanEnvFile(string $path): void
