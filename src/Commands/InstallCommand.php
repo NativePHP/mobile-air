@@ -486,7 +486,7 @@ class InstallCommand extends Command
 
     protected function detectPhpVersion(): string
     {
-        $supported = ['8.5', '8.4', '8.3'];
+        $supported = ['8.6', '8.5', '8.4', '8.3'];
 
         // Check nativephp.lock first (committed by the user or written by a previous install)
         $lockPath = base_path('nativephp.lock');

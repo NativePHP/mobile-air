@@ -371,7 +371,7 @@ class RunCommand extends Command
             return false;
         }
 
-        $supported = ['8.5', '8.4', '8.3'];
+        $supported = ['8.6', '8.5', '8.4', '8.3'];
 
         if (! in_array($hostMinor, $supported, true)) {
             note("Your host PHP {$hostMinor} is not supported by NativePHP. Switch your host to PHP {$lockedMinor}.x and retry.");
