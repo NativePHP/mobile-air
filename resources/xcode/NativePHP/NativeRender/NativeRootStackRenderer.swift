@@ -49,10 +49,15 @@ struct NativeRootStackRenderer: View {
             // very first publish, before the coordinator has seeded its
             // root, fall back to `currentUri`.
             let rootUri = coordinator.rootUri ?? currentUri
+            // Each level names itself to the morph store (`heroScreen`), so
+            // a ref on the level pushed from and the same ref on the level
+            // pushed to are told apart. See `HeroFlightStore`.
             destination(uri: rootUri, isRoot: true)
+                .environment(\.heroScreen, HeroFlightStore.screenId(stack: "stack", uri: rootUri))
                 .navigationDestination(for: String.self) { uri in
                     StackLevelView(level: coordinator.level(for: uri)) {
                         destination(uri: uri, isRoot: false)
+                            .environment(\.heroScreen, HeroFlightStore.screenId(stack: "stack", uri: uri))
                     }
                 }
         }

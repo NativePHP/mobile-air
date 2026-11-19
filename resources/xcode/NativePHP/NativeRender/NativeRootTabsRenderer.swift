@@ -531,10 +531,19 @@ private struct PerTabContent: View {
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
+                // Each level names itself to the morph store (`heroScreen`),
+                // scoped by tab so two tabs can't collide. See
+                // `HeroFlightStore`.
                 levelView(uri: coordinator.rootLevelUri, isRoot: true)
+                    .environment(\.heroScreen, HeroFlightStore.screenId(
+                        stack: coordinator.rootUri, uri: coordinator.rootLevelUri
+                    ))
                     .navigationDestination(for: String.self) { uri in
                         StackLevelView(level: coordinator.level(for: uri)) {
                             levelView(uri: uri, isRoot: false)
+                                .environment(\.heroScreen, HeroFlightStore.screenId(
+                                    stack: coordinator.rootUri, uri: uri
+                                ))
                         }
                     }
             }

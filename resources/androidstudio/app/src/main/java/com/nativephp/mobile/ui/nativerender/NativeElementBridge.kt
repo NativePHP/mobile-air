@@ -257,6 +257,9 @@ class NativeElementBridge private constructor() {
                 // Snapshot navigation flag on PHP thread (avoid race with next update)
                 val isNav = NativeUIBridge.navigationPending
                 if (isNav) NativeUIBridge.navigationPending = false
+                // Read on the PHP thread with the flag, so the transition is the
+                // one staged for THIS navigation, not one staged after it.
+                val navTransition = if (isNav) NativeUIBridge.pendingTransition.value else null
 
                 val t1 = System.nanoTime()
                 Log.d(TAG, "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread")
@@ -272,7 +275,7 @@ class NativeElementBridge private constructor() {
                 }
 
                 // Hand off to shadow thread — overwrites any pending update (coalescing)
-                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, t0, t1)
+                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, navTransition, t0, t1)
                 pendingUpdate.set(update)
                 shadowThread?.let { LockSupport.unpark(it) }
             } catch (e: Throwable) {
@@ -391,6 +394,7 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
+                            if (isNav) NativeUIBridge.publishNavigation(update.navTransition)
                             NativeUIBridge.publishTree(diffedTree)
                             // First publish after a hot-reload dismisses
                             // the "Reloading…" pill and clears the
@@ -988,6 +992,7 @@ private data class ShadowUpdate(
     val typeTable: Array<String>,
     val nodeCount: Int,
     val isNav: Boolean,
+    val navTransition: String?,  // what PHP staged for this navigation; null when not one
     val t0: Long,   // nanoTime at postTreeUpdate entry
     val t1: Long,   // nanoTime after JNI + buffer copy
 )

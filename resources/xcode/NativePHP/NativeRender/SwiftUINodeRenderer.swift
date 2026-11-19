@@ -37,6 +37,17 @@ private struct HeroIsOutgoingKey: EnvironmentKey {
 private struct HeroIsFlyingCopyKey: EnvironmentKey {
     static let defaultValue: Bool = false
 }
+/// The navigation-stack level an element is drawn on, inside native chrome:
+/// the level's URI, scoped by its stack. Nil outside native chrome.
+///
+/// A NavigationStack keeps every level below the top mounted, so the screen
+/// you pushed FROM is still reporting frames while the screen you pushed TO
+/// reports its own. Without knowing which level a report came from, the two
+/// halves of a pair would overwrite each other under the same ref. See
+/// `HeroFlightStore`'s chrome section.
+private struct HeroScreenKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
 
 extension EnvironmentValues {
     var nativeSafeAreaTop: CGFloat {
@@ -66,6 +77,10 @@ extension EnvironmentValues {
     var heroIsFlyingCopy: Bool {
         get { self[HeroIsFlyingCopyKey.self] }
         set { self[HeroIsFlyingCopyKey.self] = newValue }
+    }
+    var heroScreen: String? {
+        get { self[HeroScreenKey.self] }
+        set { self[HeroScreenKey.self] = newValue }
     }
 }
 
