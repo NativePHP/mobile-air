@@ -6,6 +6,7 @@ use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -60,7 +61,8 @@ class ScreenGuard
      * App\Http\Middleware\VerifyCsrfToken is caught, and Laravel 11 and 12's
      * ValidateCsrfToken. Laravel 13 renamed the base class to
      * PreventRequestForgery and made VerifyCsrfToken extend it, so it is
-     * listed by name; on older versions the entry simply never matches.
+     * listed too. On older versions the class doesn't exist and the entry
+     * never matches.
      *
      * Skipping the CSRF check matters beyond token rotation: its constructor
      * needs the Encrypter, which throws when there is no APP_KEY, and a guard
@@ -72,7 +74,7 @@ class ScreenGuard
         StartSession::class,
         AuthenticateSession::class,
         VerifyCsrfToken::class,
-        'Illuminate\Foundation\Http\Middleware\PreventRequestForgery',
+        PreventRequestForgery::class, // @phpstan-ignore class.notFound (Laravel 13+ only)
         EncryptCookies::class,
         AddQueuedCookiesToResponse::class,
         ShareErrorsFromSession::class,
