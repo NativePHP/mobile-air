@@ -114,14 +114,15 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val bottomBarNode = node.children.firstOrNull { it.type == "bottom_bar" }
 
     // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).
-    val activeTabIdx = tabs.indexOfFirst { it.props.getBool("active") }.coerceAtLeast(0)
+    // Allow activeTabIdx to be -1 if no tab explicitly has active = true
+    val activeTabIdx = tabs.indexOfFirst { it.props.getBool("active") }
 
     // Stable per-tab identity for the in-flight-navigation trackers below —
     // FlatBuffer node ids regenerate every publish, so use the PHP-side slug.
     val tabIds = tabs.mapIndexed { idx, tab ->
         tab.props.getString("id", "").ifEmpty { "tab_$idx" }
     }
-    val activeTabId = tabIds.getOrElse(activeTabIdx) { "" }
+    val activeTabId = if (activeTabIdx >= 0) tabIds.getOrElse(activeTabIdx) { "" } else ""
 
     // Local selection mirrors PHP's active flag, but also responds to taps so
     // the bar UI updates instantly while we wait for PHP to republish.
@@ -143,7 +144,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     LaunchedEffect(activeTabIdx) {
         val pending = pendingTabId
-        if (pending != null && activeTabId != pending) {
+        if (pending != null && activeTabId != pending && activeTabIdx >= 0) {
             val pendingTab = tabs.getOrNull(tabIds.indexOf(pending))
             if (supersededTabIds.contains(activeTabId) && pendingTab != null && pendingTab.onPress != 0) {
                 // Stale publish: a navigation the user superseded by tapping
@@ -460,7 +461,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         val badge = tab.props.getString("badge", "")
                         val news = tab.props.getBool("news")
                         NavigationBarItem(
-                            selected = actualIdx == selection,
+                            selected = selection >= 0 && actualIdx == selection,
                             onClick = { activateTabAt(actualIdx) },
                             icon = {
                                 if (badge.isNotEmpty() || news) {
