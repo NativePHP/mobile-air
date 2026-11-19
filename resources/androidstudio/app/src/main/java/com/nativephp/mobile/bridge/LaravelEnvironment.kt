@@ -91,7 +91,6 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_APP = "persisted_data/storage/app"
         private const val DIR_PUBLIC = "persisted_data/storage/app/public"
         private const val DIR_DATABASE = "persisted_data/database/"
-        private const val DIR_PHP_SESSIONS = "php_sessions"
 
         // Version constants
         private const val VERSION_DEBUG = "DEBUG"
@@ -914,15 +913,6 @@ class LaravelEnvironment(private val context: Context) {
             )
 
             Log.d(TAG, "✅ Environment variables configured")
-
-            val phpSessionDir = File(appStorageDir, DIR_PHP_SESSIONS).apply {
-                mkdirs()
-                setReadable(true, true)
-                setWritable(true, true)
-                setExecutable(true, true)
-            }
-            setEnvironmentVariable("SESSION_SAVE_PATH", phpSessionDir.absolutePath)
-            Log.d(TAG, "PHP session path set to: ${phpSessionDir.absolutePath}")
 
             try {
                 // Check if we're in DEBUG mode to force certificate refresh
