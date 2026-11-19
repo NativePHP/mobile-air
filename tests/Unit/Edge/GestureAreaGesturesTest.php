@@ -241,6 +241,15 @@ it('takes zoom, zoom-min and zoom-max as the pinch binding and bounds', function
         ->and($props['pinch-max'])->toBe(4.0);
 });
 
+it('keeps a bound pinch when zoom is not a SharedValue', function () {
+    $zoom = SharedValue::make(1.0);
+
+    $area = GestureArea::make();
+    $area->applyAttributes(['zoom' => '2', 'pinch' => $zoom]);
+
+    expect($area->getResolvedProps(new CallbackRegistry)['pinch-id'])->toBe($zoom->id);
+});
+
 it('registers onZoomEnd as on_pinch_end', function () {
     $registry = new CallbackRegistry;
 

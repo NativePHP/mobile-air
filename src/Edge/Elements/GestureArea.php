@@ -234,11 +234,15 @@ class GestureArea extends Element
         }
 
         // `zoom` and `pinch` are two names for one binding (see the class
-        // docblock); the wire keeps the pinch names.
-        $zoom = $attrs['zoom'] ?? $attrs['pinch'] ?? null;
-        if ($zoom instanceof SharedValue) {
-            $this->pinchId = $zoom->id;
-            $this->pinchInitial = $zoom->value();
+        // docblock); the wire keeps the pinch names. Whichever is a
+        // SharedValue wins, so a stray `zoom` can't hide a bound `pinch`.
+        foreach (['zoom', 'pinch'] as $name) {
+            if (($attrs[$name] ?? null) instanceof SharedValue) {
+                $this->pinchId = $attrs[$name]->id;
+                $this->pinchInitial = $attrs[$name]->value();
+
+                break;
+            }
         }
 
         if (isset($attrs['zoom-pan-x']) && $attrs['zoom-pan-x'] instanceof SharedValue) {
