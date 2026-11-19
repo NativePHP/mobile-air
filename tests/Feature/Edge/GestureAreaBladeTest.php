@@ -200,6 +200,21 @@ it('renders a photo page that zooms on a double tap from Blade', function () {
         ->and($registry->resolve($tree['props']['on_pinch_end'])['method'])->toBe('zoomEnded');
 });
 
+it('takes the double tap zoom from an echoed value', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-double-tap-echo.blade.php',
+        '<native:gesture-area :zoom="$zoom" @doubleTap.zoom="{{ $level }}">'
+        .'<native:image src="https://example.com/a.png" :scale="$zoom" />'
+        .'</native:gesture-area>'
+    );
+
+    NativeElementCollector::reset();
+    view('gesture-double-tap-echo', ['zoom' => SharedValue::make(1.0), 'level' => 2.5])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props']['double-tap-zoom'])->toBe(2.5);
+});
+
 it('ignores a modifier on an element that has no use for it', function () {
     file_put_contents(
         __DIR__.'/views/gesture-stray-modifier.blade.php',
