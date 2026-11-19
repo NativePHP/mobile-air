@@ -59,13 +59,6 @@ final class DeepLinkRouter {
         return route.isEmpty ? "/" : route
     }
 
-    /// The route of a pending universal link, or nil when nothing is pending
-    /// or the pending link came from a custom scheme (it has no web page to
-    /// go back to).
-    func pendingUniversalLinkRoute() -> String? {
-        pendingExternalURL == nil ? nil : pendingRoute()
-    }
-
     /// Forget the pending link. A cold start calls this when it boots straight
     /// into the link's screen, so the link isn't replayed on top of it.
     func clearPendingURL() {

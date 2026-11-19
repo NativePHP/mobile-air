@@ -6,6 +6,7 @@ use Illuminate\Contracts\Routing\UrlRoutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\View\Engines\CompilerEngine;
@@ -2026,6 +2027,24 @@ abstract class NativeComponent
     }
 
     /**
+     * Leave the user where they are rather than open a link nothing can show,
+     * and say so in the log, which is the only place a dropped link shows up.
+     * Only the path goes in the log: a query can carry a token.
+     */
+    protected static function dropUnroutedDeepLink(string $uri): void
+    {
+        $path = (string) parse_url($uri, PHP_URL_PATH);
+
+        NativeRouter::debugLog("DEEPLINK: no route for $uri — staying on the current screen");
+
+        try {
+            Log::warning('NativePHP ignored a deep link that no route matches.', ['path' => $path === '' ? '/' : $path]);
+        } catch (\Throwable) {
+            // A failing log channel must not cost the user the screen they're on.
+        }
+    }
+
+    /**
      * Give a deep link back to the browser.
      *
      * Android goes through the core System.OpenInBrowser. A plain
@@ -2071,21 +2090,27 @@ abstract class NativeComponent
             $url = is_array($payload) ? ($payload['url'] ?? null) : null;
 
             if (is_string($uri) && $uri !== '') {
-                // A verified app link the app has no route for. Navigating would
-                // tear the native UI down and hand the path to the WebView, which
-                // serves a local 404 — a dead end the user can't back out of. The
-                // link belongs to the site we took it from, so give it back to the
-                // browser and leave the current screen alone.
-                // Only swallow the link if it was actually handed off — otherwise
-                // fall through and behave exactly as before.
-                if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
-                    NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
+                // A link the app has no route for. Navigating would tear the
+                // native UI down and hand the path to the WebView, which serves
+                // a local 404 — a dead end the user can't back out of. A verified
+                // app link belongs to the site we took it from, so give it back
+                // to the browser. Anything else (a custom scheme, a tapped push
+                // notification, an app link the browser won't take) is dropped,
+                // and the user stays on the screen they were on.
+                if (! static::routableDeepLink($uri)) {
+                    if (is_string($url) && $url !== '') {
+                        NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
 
-                    if (static::openDeepLinkInBrowser($url)) {
-                        return;
+                        if (static::openDeepLinkInBrowser($url)) {
+                            return;
+                        }
+
+                        NativeRouter::debugLog('DEEPLINK: browser handoff unavailable');
                     }
 
-                    NativeRouter::debugLog('DEEPLINK: browser handoff unavailable, navigating anyway');
+                    static::dropUnroutedDeepLink($uri);
+
+                    return;
                 }
 
                 NativeRouter::debugLog("DEEPLINK: navigating to $uri");
