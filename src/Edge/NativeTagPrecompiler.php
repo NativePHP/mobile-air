@@ -57,6 +57,14 @@ class NativeTagPrecompiler
     ];
 
     /**
+     * A gesture area's `@zoomEnd` is `@pinchEnd` under the name that also
+     * covers a double tap's zoom. Normalized away like the tap aliases.
+     */
+    private const ZOOM_ALIASES = [
+        'zoomEnd' => 'pinchEnd',
+    ];
+
+    /**
      * Built-in `@event` names rewritten to `_event` before Blade treats `@` as a directive.
      *
      * @var string[]
@@ -413,6 +421,20 @@ class NativeTagPrecompiler
             fn ($m) => '_'.self::TAP_ALIASES[$m[1]].'=',
             $value
         );
+
+        $value = preg_replace_callback(
+            '/@(zoomEnd)=/',
+            fn ($m) => '_'.self::ZOOM_ALIASES[$m[1]].'=',
+            $value
+        );
+
+        // A modifier on a known event, `@doubleTap.zoom="2"`, makes the value
+        // data for the element instead of a handler: nothing registers a
+        // callback, and the element reads `_doubleTap.zoom` itself (a gesture
+        // area zooms on the phone without asking PHP). An element with no
+        // use for a modifier ignores it, as it does any attr it doesn't know.
+        // Runs before the plain pass, which needs `=` straight after the name.
+        $value = preg_replace('/@('.self::elementEventAlternation().')\.([a-zA-Z][a-zA-Z0-9]*)=/', '_$1.$2=', $value);
 
         // Convert known `@event=` attributes (core + plugin-registered) to
         // underscored versions before Blade interprets @ as a directive.
@@ -838,8 +860,10 @@ class NativeTagPrecompiler
                 continue;
             }
 
-            // Static attribute name="value"
-            if (preg_match('/^([a-zA-Z0-9_\-]+)\s*=\s*"([^"]*)"/s', $remaining, $m)) {
+            // Static attribute name="value". The name may end in one
+            // `.modifier`, as `_doubleTap.zoom` does (an event with a
+            // modifier, rewritten in __invoke()).
+            if (preg_match('/^([a-zA-Z0-9_\-]+(?:\.[a-zA-Z][a-zA-Z0-9]*)?)\s*=\s*"([^"]*)"/s', $remaining, $m)) {
                 $parts[] = "'".addslashes($m[1])."' => ".$this->compileAttributeValue($m[2]);
                 $remaining = substr($remaining, strlen($m[0]));
 
@@ -847,7 +871,7 @@ class NativeTagPrecompiler
             }
 
             // Static attribute name='value'
-            if (preg_match("/^([a-zA-Z0-9_\\-]+)\\s*=\\s*'([^']*)'/s", $remaining, $m)) {
+            if (preg_match("/^([a-zA-Z0-9_\\-]+(?:\\.[a-zA-Z][a-zA-Z0-9]*)?)\\s*=\\s*'([^']*)'/s", $remaining, $m)) {
                 $parts[] = "'".addslashes($m[1])."' => ".$this->compileAttributeValue($m[2]);
                 $remaining = substr($remaining, strlen($m[0]));
 

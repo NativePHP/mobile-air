@@ -185,12 +185,12 @@ it('omits bounded and content-ratio unless bounded is set', function () {
 
 // ── Double tap to zoom ──────────────────────────────
 
-it('carries double-tap-zoom and the zoom pan to the wire', function () {
+it('carries @doubleTap.zoom and the zoom pan to the wire', function () {
     $x = SharedValue::make(8.0);
     $y = SharedValue::make(-2.0);
 
     $area = GestureArea::make();
-    $area->applyAttributes(['double-tap-zoom' => '2', 'zoom-pan-x' => $x, 'zoom-pan-y' => $y]);
+    $area->applyAttributes(['_doubleTap.zoom' => '2', 'zoom-pan-x' => $x, 'zoom-pan-y' => $y]);
 
     $props = $area->getResolvedProps(new CallbackRegistry);
 
@@ -211,12 +211,43 @@ it('leaves the zoom pan apart from a pan, which still takes drags', function () 
         ->and($props)->not->toHaveKey('zoom-pan-y-id');
 });
 
-it('leaves double-tap-zoom off when it would not zoom in', function (mixed $scale) {
+it('leaves the double tap zoom off when it would not zoom in', function (mixed $scale) {
     $area = GestureArea::make();
-    $area->applyAttributes(['double-tap-zoom' => $scale]);
+    $area->applyAttributes(['_doubleTap.zoom' => $scale]);
 
     expect($area->getResolvedProps(new CallbackRegistry))->not->toHaveKey('double-tap-zoom');
 })->with([1, '0.5', 0, '-2']);
+
+it('registers no double tap handler for @doubleTap.zoom', function () {
+    $area = GestureArea::make();
+    $area->applyAttributes(['_doubleTap.zoom' => '2']);
+
+    expect($area->getResolvedProps(new CallbackRegistry))->not->toHaveKey('on_double_tap');
+});
+
+// ── Zoom names ──────────────────────────────────────
+
+it('takes zoom, zoom-min and zoom-max as the pinch binding and bounds', function () {
+    $zoom = SharedValue::make(1.5);
+
+    $area = GestureArea::make();
+    $area->applyAttributes(['zoom' => $zoom, 'zoom-min' => '1', 'zoom-max' => '4']);
+
+    $props = $area->getResolvedProps(new CallbackRegistry);
+
+    expect($props['pinch-id'])->toBe($zoom->id)
+        ->and($props['pinch-initial'])->toBe(1.5)
+        ->and($props['pinch-min'])->toBe(1.0)
+        ->and($props['pinch-max'])->toBe(4.0);
+});
+
+it('registers onZoomEnd as on_pinch_end', function () {
+    $registry = new CallbackRegistry;
+
+    $props = GestureArea::make()->onZoomEnd('zoomEnded')->getResolvedProps($registry);
+
+    expect($registry->resolve($props['on_pinch_end'])['method'])->toBe('zoomEnded');
+});
 
 // ── Swipe ───────────────────────────────────────────
 
@@ -292,6 +323,24 @@ describe('precompiler @swipe / @pinchEnd conversion', function () {
         );
 
         expect($result)->toContain("'_trigger' => 'reply(5)'");
+    });
+
+    it('converts @zoomEnd to the pinch-end attr', function () {
+        $result = ($this->precompiler)(
+            '<native:gesture-area :zoom="$zoom" @zoomEnd="zoomEnded">x</native:gesture-area>'
+        );
+
+        expect($result)->toContain("'_pinchEnd' => 'zoomEnded'")
+            ->and($result)->not->toContain("'_zoomEnd'");
+    });
+
+    it('keeps @doubleTap.zoom as data, apart from a @doubleTap handler', function () {
+        $result = ($this->precompiler)(
+            '<native:gesture-area @doubleTap.zoom="2" @doubleTap="liked">x</native:gesture-area>'
+        );
+
+        expect($result)->toContain("'_doubleTap.zoom' => '2'")
+            ->and($result)->toContain("'_doubleTap' => 'liked'");
     });
 
     it('still converts @swipeDelete despite the shared prefix with @swipe', function () {

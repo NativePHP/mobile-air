@@ -33,19 +33,22 @@ use Native\Mobile\Edge\SharedValue;
  * render re-seeds the store from the initial, so a re-render after
  * `@dragEnd` puts the content back at rest without any write-back.
  *
- * Pinch — zoom scale factor into a SharedValue (1.0 = identity). The
- * optional `pinch-min` / `pinch-max` bounds clamp the value AT THE
- * SOURCE, per gesture step — without them the raw value compounds
+ * Zoom — a pinch writes its scale factor into a SharedValue (1.0 =
+ * identity). The optional `zoom-min` / `zoom-max` bounds clamp the value
+ * AT THE SOURCE, per gesture step — without them the raw value compounds
  * unbounded past any display clamp, and reversing direction has to
  * unwind the overshoot before anything visibly moves. The optional
- * `@pinchEnd` callback fires when the fingers lift, with the final
+ * `@zoomEnd` callback fires when a zoom finishes, with the final
  * (bounded) scale as a float argument:
  *
  *     $zoom = SharedValue::make(1.0);
  *
- *     <native:gesture-area :pinch="$zoom" pinch-min="0.5" pinch-max="3" @pinchEnd="onZoomEnd">
+ *     <native:gesture-area :zoom="$zoom" zoom-min="0.5" zoom-max="3" @zoomEnd="onZoomEnd">
  *         <native:image :scale="$zoom" ... />
  *     </native:gesture-area>
+ *
+ * `pinch`, `pinch-min`, `pinch-max` and `@pinchEnd` are older names for
+ * the same four attributes, and keep working.
  *
  * Bounded — a zoomable picture that can't be lost off screen. With
  * `bounded`, pan stops where the zoomed content's edges meet the area's
@@ -56,21 +59,22 @@ use Native\Mobile\Edge\SharedValue;
  * around the point between the fingers. The content is the area itself,
  * or, with `content-ratio` (width over height), that ratio fitted
  * inside the area, which is where an image with `fit="contain"` draws.
- * Bind both pan axes and the pinch, and bind the content's transform to
+ * Bind both pan axes and the zoom, and bind the content's transform to
  * the same values:
  *
- *     <native:gesture-area :pinch="$zoom" pinch-min="1" pinch-max="4" :pan-x="$x" :pan-y="$y"
+ *     <native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" :pan-x="$x" :pan-y="$y"
  *         bounded :content-ratio="$width / $height">
  *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
  *     </native:gesture-area>
  *
- * Double tap to zoom — with `double-tap-zoom`, a double tap on content
- * at its whole size zooms the pinch to that scale, bringing the tapped
- * point to the middle of the area (as far as `bounded` lets it go), and a
- * double tap on zoomed content takes it back to its whole size. Both
- * animate on the phone, and `@pinchEnd` fires with the new scale once
- * the zoom settles, as it does after a pinch, so one handler hears every
- * zoom.
+ * Double tap to zoom — `@doubleTap.zoom="2"` zooms content at its whole
+ * size to that scale on a double tap, bringing the tapped point to the
+ * middle of the area (as far as `bounded` lets it go), and a double tap
+ * on zoomed content takes it back to its whole size. The `.zoom`
+ * modifier makes the value the scale rather than a handler: the phone
+ * zooms on its own and PHP isn't asked. Both ways animate, and
+ * `@zoomEnd` fires with the new scale once the zoom settles, as it does
+ * after a pinch, so one handler hears every zoom.
  *
  * Aiming a zoom moves the pan, so the zoom needs the pan's SharedValues
  * even while the area isn't panning. A photo pager binds `pan-x` and
@@ -83,9 +87,9 @@ use Native\Mobile\Edge\SharedValue;
  * as well, to the same values, everything carries on from where the zoom
  * left it:
  *
- *     <native:gesture-area :pinch="$zoom" pinch-min="1" pinch-max="4" double-tap-zoom="2"
+ *     <native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" @doubleTap.zoom="2"
  *         :pan-x="$zoomed ? $x : null" :pan-y="$zoomed ? $y : null" :zoom-pan-x="$x" :zoom-pan-y="$y"
- *         bounded :content-ratio="$ratio" @pinchEnd="zoomEnded">
+ *         bounded :content-ratio="$ratio" @zoomEnd="zoomEnded">
  *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
  *     </native:gesture-area>
  *
@@ -229,9 +233,12 @@ class GestureArea extends Element
             $this->panYInitial = $attrs['pan-y']->value();
         }
 
-        if (isset($attrs['pinch']) && $attrs['pinch'] instanceof SharedValue) {
-            $this->pinchId = $attrs['pinch']->id;
-            $this->pinchInitial = $attrs['pinch']->value();
+        // `zoom` and `pinch` are two names for one binding (see the class
+        // docblock); the wire keeps the pinch names.
+        $zoom = $attrs['zoom'] ?? $attrs['pinch'] ?? null;
+        if ($zoom instanceof SharedValue) {
+            $this->pinchId = $zoom->id;
+            $this->pinchInitial = $zoom->value();
         }
 
         if (isset($attrs['zoom-pan-x']) && $attrs['zoom-pan-x'] instanceof SharedValue) {
@@ -242,15 +249,19 @@ class GestureArea extends Element
             $this->zoomPanY($attrs['zoom-pan-y']);
         }
 
-        if (isset($attrs['double-tap-zoom'])) {
-            $this->doubleTapZoom((float) $attrs['double-tap-zoom']);
+        // `@doubleTap.zoom="2"`, which the precompiler leaves as this attr
+        // rather than a handler.
+        if (isset($attrs['_doubleTap.zoom'])) {
+            $this->doubleTapZoom((float) $attrs['_doubleTap.zoom']);
         }
 
-        if (isset($attrs['pinch-min'])) {
-            $this->pinchMin = (float) $attrs['pinch-min'];
+        $min = $attrs['zoom-min'] ?? $attrs['pinch-min'] ?? null;
+        if ($min !== null) {
+            $this->pinchMin = (float) $min;
         }
-        if (isset($attrs['pinch-max'])) {
-            $this->pinchMax = (float) $attrs['pinch-max'];
+        $max = $attrs['zoom-max'] ?? $attrs['pinch-max'] ?? null;
+        if ($max !== null) {
+            $this->pinchMax = (float) $max;
         }
 
         if (isset($attrs['snap-x'])) {
@@ -338,9 +349,9 @@ class GestureArea extends Element
         return is_array($value) ? $value : array_filter(array_map(trim(...), explode(',', (string) $value)), fn (string $point): bool => $point !== '');
     }
 
-    /** The scale a double tap zooms to, from content at its whole size
-     *  (see the class docblock). One or less means a double tap does
-     *  nothing. */
+    /** The scale a double tap zooms to, from content at its whole size:
+     *  `@doubleTap.zoom` in Blade (see the class docblock). One or less
+     *  means a double tap does nothing. */
     public function doubleTapZoom(float $scale): static
     {
         $this->doubleTapZoom = $scale > 1 ? $scale : null;
@@ -394,12 +405,19 @@ class GestureArea extends Element
         return $this;
     }
 
-    /** Pinch-end handler. Receives the final scale factor as a float. */
-    public function onPinchEnd(string $method): static
+    /** Zoom-end handler, run when a pinch or a double tap's zoom
+     *  finishes. Receives the final scale factor as a float. */
+    public function onZoomEnd(string $method): static
     {
         $this->pinchEndMethod = $method;
 
         return $this;
+    }
+
+    /** The older name of onZoomEnd(). */
+    public function onPinchEnd(string $method): static
+    {
+        return $this->onZoomEnd($method);
     }
 
     /** Drag-end handler. Receives the final pan translation as two
