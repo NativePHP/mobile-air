@@ -150,6 +150,16 @@ it('refuses search on screens without onSearchQuery', function () {
     Native::test(CounterScreen::class)->search('anything');
 })->throws(AssertionFailedError::class);
 
+it('drives a search submit, so its navigation can be asserted', function () {
+    Native::test(SearchableScreen::class)
+        ->submitSearch('gamma rays')
+        ->assertNavigatedTo('/search?q=gamma+rays');
+});
+
+it('refuses a search submit on screens without onSearchSubmit', function () {
+    Native::test(CounterScreen::class)->submitSearch('anything');
+})->throws(AssertionFailedError::class);
+
 // ── Platform variants ───────────────────────────────
 
 it('applies ios tailwind variants on ios', function () {

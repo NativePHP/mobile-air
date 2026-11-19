@@ -665,6 +665,33 @@ class TestableComponent
         return $this->afterInteraction();
     }
 
+    /**
+     * Submit the search tab's field (the keyboard's Search key) with
+     * this text: runs the screen's onSearchSubmit() as the runloop does
+     * for the field's SUBMIT event, so its navigation can be asserted.
+     */
+    public function submitSearch(string $query): static
+    {
+        $this->startInteraction();
+
+        $overridden = $this->scoped(function () {
+            /** @var NativeComponent $this */
+            return $this->hasOnSearchSubmitOverride();
+        });
+
+        Assert::assertTrue(
+            $overridden,
+            get_class($this->component).' does not override onSearchSubmit() — there is no search submit to drive.'
+        );
+
+        $this->guard(fn () => $this->scoped(function () use ($query) {
+            /** @var NativeComponent $this */
+            $this->onSearchSubmit($query);
+        }));
+
+        return $this->afterInteraction();
+    }
+
     /** The staged results from the last search() call. */
     public function searchResults(): array
     {
