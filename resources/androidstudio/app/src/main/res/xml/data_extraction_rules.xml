@@ -23,7 +23,6 @@
         <!-- Compiled views, the file cache, Laravel sessions and the native route list -->
         <exclude domain="root" path="app_storage/persisted_data/storage/framework/" />
         <exclude domain="root" path="app_storage/persisted_data/storage/logs/" />
-        <exclude domain="root" path="app_storage/php_sessions/" />
         <!-- Written again on every launch -->
         <exclude domain="file" path="cacert.pem" />
         <exclude domain="file" path="php.ini" />
@@ -41,7 +40,6 @@
         <exclude domain="root" path="app_storage/laravel/" />
         <exclude domain="root" path="app_storage/persisted_data/storage/framework/" />
         <exclude domain="root" path="app_storage/persisted_data/storage/logs/" />
-        <exclude domain="root" path="app_storage/php_sessions/" />
         <exclude domain="file" path="cacert.pem" />
         <exclude domain="file" path="php.ini" />
         <exclude domain="root" path="app_webview/" />
