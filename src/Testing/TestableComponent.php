@@ -719,6 +719,7 @@ class TestableComponent
             $result = $this->runAction('onSearchQuery', [$query], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
+                $this->pendingSearchQuery = $query;
             }
         }));
 

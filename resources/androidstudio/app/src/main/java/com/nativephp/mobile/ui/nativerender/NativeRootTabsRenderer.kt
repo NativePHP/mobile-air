@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Badge
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -248,6 +249,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val searchDebounceMs = node.props.getInt("nav_search_debounce_ms", 250)
     val searchOnQueryCb = node.props.getCallbackId("nav_search_on_query")
     val searchOnSubmitCb = node.props.getCallbackId("nav_search_on_submit")
+    // The query the published search items answer (absent before the first),
+    // so the results wait rather than say "No results" for an unanswered query.
+    val searchAnsweredQuery: String? = if (node.props.has("nav_search_answered_query")) {
+        node.props.getString("nav_search_answered_query", "")
+    } else {
+        null
+    }
     val hasInlineSearch = searchTabIdx < 0 && searchPlaceholder.isNotEmpty()
 
     // a bar carrying only actions (or only a search field) must still render.
@@ -669,6 +677,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 mode = searchMode,
                 onQueryCallbackId = searchOnQueryCb,
                 onSubmitCallbackId = searchOnSubmitCb,
+                answeredQuery = searchAnsweredQuery,
                 debounceMs = searchDebounceMs,
                 modifier = Modifier.fillMaxSize().padding(padding),
             )
@@ -820,6 +829,7 @@ private fun AndroidSearchTabRoot(
     mode: String,
     onQueryCallbackId: Int,
     onSubmitCallbackId: Int,
+    answeredQuery: String?,
     debounceMs: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -862,7 +872,15 @@ private fun AndroidSearchTabRoot(
         )
         HorizontalDivider()
 
-        if (itemNodes.isEmpty()) {
+        if (itemNodes.isEmpty() && mode == "dynamic" && query.isNotEmpty() && answeredQuery != query) {
+            // PHP hasn't answered this query yet: no items isn't no results.
+            Box(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.padding(top = 64.dp))
+            }
+        } else if (itemNodes.isEmpty()) {
             val (icon, headline, body) = when {
                 mode == "dynamic" && query.isEmpty() ->
                     Triple("search", "Type to search", "")

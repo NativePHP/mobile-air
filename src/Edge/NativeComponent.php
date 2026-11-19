@@ -1128,6 +1128,11 @@ abstract class NativeComponent
 
             if ($hasDynamicQuery) {
                 $attrs['navSearchOnQueryMethod'] = 'onSearchQuery';
+
+                // Which query the published rows answer (null before the first).
+                if ($this->pendingSearchQuery !== null) {
+                    $attrs['navSearchAnsweredQuery'] = $this->pendingSearchQuery;
+                }
             }
 
             // The search field's submit (the keyboard's Search key) goes
@@ -1453,6 +1458,15 @@ abstract class NativeComponent
      * @var list<mixed>|null
      */
     protected ?array $pendingSearchResults = null;
+
+    /**
+     * The query `$pendingSearchResults` answers: the text `onSearchQuery()`
+     * was last called with. Published as `nav_search_answered_query`, so
+     * the search tab can tell "no results for this query" from "this
+     * query's results haven't arrived yet" and show a spinner instead of
+     * "No Results" while it waits.
+     */
+    protected ?string $pendingSearchQuery = null;
 
     /**
      * Override to provide structured per-screen NavBar overrides that
@@ -5581,6 +5595,7 @@ abstract class NativeComponent
             $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
+                $this->pendingSearchQuery = (string) ($eventArgs[0] ?? '');
             }
 
             return;
