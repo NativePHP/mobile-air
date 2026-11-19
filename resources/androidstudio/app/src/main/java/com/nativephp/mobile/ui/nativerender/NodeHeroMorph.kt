@@ -67,6 +67,15 @@ fun Modifier.heroMorph(node: NativeUINode): Modifier {
 
     val spec = node.boundsSpec()
 
+    // Text keeps its own layout and is scaled to the moving bounds. The
+    // default re-measures content at every in-between size, which re-wraps a
+    // title word by word as its box grows ("Plu / gin / s").
+    val resize = if (node.type == "text") {
+        SharedTransitionScope.ResizeMode.scaleToBounds()
+    } else {
+        SharedTransitionScope.ResizeMode.RemeasureToBounds
+    }
+
     // Root scopes: the full-screen swap in NativeUIContent.
     val rootShared = LocalSharedTransitionScope.current
     val rootVisibility = LocalAnimatedVisibilityScope.current
@@ -112,7 +121,8 @@ fun Modifier.heroMorph(node: NativeUINode): Modifier {
             modifier.sharedBounds(
                 sharedContentState = rememberSharedContentState(key = ref),
                 animatedVisibilityScope = rootVisibility,
-                boundsTransform = BoundsTransform { _, _ -> spec }
+                boundsTransform = BoundsTransform { _, _ -> spec },
+                resizeMode = resize,
             )
         }
     }
@@ -121,7 +131,8 @@ fun Modifier.heroMorph(node: NativeUINode): Modifier {
             modifier.sharedBounds(
                 sharedContentState = rememberSharedContentState(key = ref),
                 animatedVisibilityScope = chrome.paneScope,
-                boundsTransform = BoundsTransform { _, _ -> spec }
+                boundsTransform = BoundsTransform { _, _ -> spec },
+                resizeMode = resize,
             )
         }
     }
