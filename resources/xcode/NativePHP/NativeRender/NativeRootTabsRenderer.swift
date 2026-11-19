@@ -350,6 +350,7 @@ struct NativeRootTabsRenderer: View {
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
         .modifier(TabBarAccessoryModifier(accessory: customPresenter == nil ? accessory : nil))
+        .modifier(SearchTabActivationModifier())
         .modifier(CustomTabPresentationModifier(
             presenter: customPresenter,
             context: presentationContext,
@@ -1179,6 +1180,28 @@ private struct TabBarAccessoryModifier: ViewModifier {
             } else {
                 content
             }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+/// Keeps the search tab as its own round button beside the bar, and makes
+/// tapping it open the search field, as iOS 26 did by default.
+///
+/// From the iOS 27 SDK, the default activation (`.automatic`) puts a
+/// `Tab(role: .search)` inside the bar as an ordinary tab, and selecting it
+/// no longer brings up the field. An app built with Xcode 26 keeps the old
+/// look even on iOS 27, so the change only shows once an app is rebuilt with
+/// Xcode 27. Asking for `.searchTabSelection` restores the iOS 26 behaviour.
+private struct SearchTabActivationModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.tabViewSearchActivation(.searchTabSelection)
         } else {
             content
         }
