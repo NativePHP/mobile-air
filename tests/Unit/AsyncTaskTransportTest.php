@@ -133,6 +133,20 @@ it('looks up no file for an id that is not a task id', function () {
     unlink($outside);
 });
 
+it('forgets no file for an id that is not a task id', function () {
+    // A failed task's id comes back in an event, and the id becomes part of
+    // a path, so forgetting its payload must not reach outside the spool.
+    File::ensureDirectoryExists(AsyncTaskTransport::directory());
+    $outside = AsyncTaskTransport::directory('outside.task');
+    file_put_contents($outside, 'not a task');
+
+    AsyncTaskTransport::forgetPayload('../outside');
+
+    expect(is_file($outside))->toBeTrue();
+
+    unlink($outside);
+});
+
 it('fails the dispatch when the app has no key to seal the task with', function () {
     config(['app.key' => null]);
     app()->forgetInstance('encrypter');
@@ -210,7 +224,7 @@ it('drops the spooled payload when the background lane refuses the task', functi
     $bridge = FakeBridge::enable();
     $bridge->respondTo('AsyncTask.Dispatch', ['success' => false, 'error' => 'executor not running']);
 
-    $id = 'refused-'.uniqid();
+    $id = (string) Str::uuid();
 
     expect(AsyncTaskTransport::dispatch($id, serialize(['kind' => 'closure'])))->toBeFalse()
         ->and(is_file(AsyncTaskTransport::directory('payload').DIRECTORY_SEPARATOR.$id.'.task'))->toBeFalse();

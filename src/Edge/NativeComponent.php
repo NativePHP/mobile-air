@@ -44,6 +44,7 @@ use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\PendingAsyncTask;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\System;
@@ -2673,6 +2674,16 @@ abstract class NativeComponent
 
         $failed = $eventClass === AsyncTaskFailed::class;
         $scope = AsyncTaskRegistry::scope($id);
+
+        // A task fails before it has run when its watchdog fires while it still
+        // waits for a free background context, as every one can be when a server
+        // takes requests and never answers them. Without its payload it does
+        // nothing once a context frees up, rather than doing work the screen
+        // has already been told failed, such as sending a write it handed back
+        // to be sent again. A task that ran has read its payload already.
+        if ($failed) {
+            AsyncTaskTransport::forgetPayload($id);
+        }
 
         // Shared: deliver as a named event to whatever component is active.
         if ($scope !== null && $scope['shared'] !== null) {
