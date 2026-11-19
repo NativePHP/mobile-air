@@ -12,6 +12,7 @@ use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Concerns\TracksInstallFailures;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\PhpVersions;
 use Native\Mobile\Support\TransferFailure;
 
 use function Laravel\Prompts\error;
@@ -486,8 +487,6 @@ class InstallCommand extends Command
 
     protected function detectPhpVersion(): string
     {
-        $supported = ['8.6', '8.5', '8.4', '8.3'];
-
         // Check nativephp.lock first (committed by the user or written by a previous install)
         $lockPath = base_path('nativephp.lock');
         if (file_exists($lockPath)) {
@@ -495,27 +494,21 @@ class InstallCommand extends Command
             $lockVersion = $lock['php']['version'] ?? null;
 
             if (is_string($lockVersion)) {
-                $minor = implode('.', array_slice(explode('.', $lockVersion), 0, 2));
-                if (in_array($minor, $supported, true)) {
+                $minor = PhpVersions::minor($lockVersion);
+                if (PhpVersions::isSupported($minor)) {
                     return $minor;
                 }
             }
         }
 
         // Fall back to the host PHP — Composer resolves against it.
-        $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+        return PhpVersions::forHost($this->hostPhpVersion());
+    }
 
-        if (in_array($minor, $supported, true)) {
-            return $minor;
-        }
-
-        foreach ($supported as $version) {
-            if (version_compare($minor, $version, '>=')) {
-                return $version;
-            }
-        }
-
-        return '8.3';
+    /** The host's PHP minor. A seam for tests, which can't change the PHP they run on. */
+    protected function hostPhpVersion(): string
+    {
+        return PhpVersions::host();
     }
 
     protected function writeNativephpLock(string $minor, bool $icu): void
