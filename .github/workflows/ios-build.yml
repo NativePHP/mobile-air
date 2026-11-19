@@ -32,10 +32,15 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 30
 
-    name: iOS Build - Xcode 27.0
+    strategy:
+      fail-fast: false
+      matrix:
+        xcode: ["27.0", "27.1"]
+
+    name: iOS Build - Xcode ${{ matrix.xcode }}
 
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
       # CocoaPods refuses to run without a UTF-8 locale.
       LANG: en_US.UTF-8
       LC_ALL: en_US.UTF-8
@@ -50,6 +55,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: NativePHP/mobile-ui
+          ref: fix/xcode27-reserved-regions
           path: mobile-ui
 
       - name: Setup PHP
@@ -65,6 +71,7 @@ jobs:
           php --version
           pod --version
           git -C mobile-ui log -1 --format='mobile-ui %h %s'
+          for sdk in iphonesimulator iphoneos; do echo "$sdk $(xcrun --sdk $sdk --show-sdk-version): $(grep -ho 'user-module-version [0-9.]*' $(xcrun --sdk $sdk --show-sdk-path)/System/Library/Frameworks/SwiftUICore.framework/Modules/SwiftUICore.swiftmodule/*.swiftinterface | sort -u)"; done
 
       # The app lives outside the workspace: native:build copies the app into
       # the Xcode project, and vendor/nativephp/mobile is a symlink back here.
