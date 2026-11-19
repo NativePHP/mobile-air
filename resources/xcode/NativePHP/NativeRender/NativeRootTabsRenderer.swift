@@ -151,6 +151,7 @@ struct NativeRootTabsRenderer: View {
         let searchMode = node.props.getString("nav_search_mode", default: "static")
         let searchDebounceMs = node.props.getInt("nav_search_debounce_ms", default: 250)
         let searchOnQueryCb = Int(node.props.getCallbackId("nav_search_on_query"))
+        let searchOnSubmitCb = Int(node.props.getCallbackId("nav_search_on_submit"))
         // Each search item is a `search_item` child node of the tabs
         // root (parallel to `bottom_nav_item`). PHP couldn't carry the
         // mixed string/object/element item shapes through the prop
@@ -333,6 +334,7 @@ struct NativeRootTabsRenderer: View {
                         itemNodes: searchItemNodes,
                         mode: searchMode,
                         onQueryCallbackId: searchOnQueryCb,
+                        onSubmitCallbackId: searchOnSubmitCb,
                         debounceMs: searchDebounceMs
                     )
                     .modifier(SystemTabBarSuppressionModifier(
@@ -1325,12 +1327,15 @@ struct SearchableNavBarModifier: ViewModifier {
 ///
 /// Debounced query changes forward to PHP's `onSearchQuery` via the
 /// existing TEXT_CHANGE event (dynamic mode); static mode filters
-/// locally inside `NativeSearchTabRoot`.
+/// locally inside `NativeSearchTabRoot`. Submitting the field (the
+/// keyboard's Search key) sends its text to PHP's `onSearchSubmit` as a
+/// SUBMIT event, when the screen defines one.
 private struct SearchTabContainer: View {
     let placeholder: String
     let itemNodes: [NativeUINode]
     let mode: String
     let onQueryCallbackId: Int
+    let onSubmitCallbackId: Int
     let debounceMs: Int
 
     @State private var query: String = ""
@@ -1347,6 +1352,13 @@ private struct SearchTabContainer: View {
                 .modifier(WindowBackgroundModifier())
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
+        .onSubmit(of: .search) {
+            guard onSubmitCallbackId != 0 else { return }
+            // The submit carries the whole query, so a keystroke still
+            // waiting on the debounce has nothing left to add.
+            debounceTask?.cancel()
+            NativeElementBridge.sendSubmitEvent(onSubmitCallbackId, nodeId: 0, text: query)
+        }
         .onChange(of: query) { _, newValue in
             guard mode == "dynamic", onQueryCallbackId != 0 else { return }
             debounceTask?.cancel()

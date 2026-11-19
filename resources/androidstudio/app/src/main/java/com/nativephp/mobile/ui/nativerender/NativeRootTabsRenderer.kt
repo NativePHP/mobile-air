@@ -239,6 +239,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val searchMode = node.props.getString("nav_search_mode", "static")
     val searchDebounceMs = node.props.getInt("nav_search_debounce_ms", 250)
     val searchOnQueryCb = node.props.getCallbackId("nav_search_on_query")
+    val searchOnSubmitCb = node.props.getCallbackId("nav_search_on_submit")
 
     val shouldShowSearchTab = searchMode == "dynamic"
         || searchItemNodes.isNotEmpty()
@@ -536,6 +537,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 itemNodes = searchItemNodes,
                 mode = searchMode,
                 onQueryCallbackId = searchOnQueryCb,
+                onSubmitCallbackId = searchOnSubmitCb,
                 debounceMs = searchDebounceMs,
                 modifier = Modifier.fillMaxSize().padding(padding),
             )
@@ -676,7 +678,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
  * `mode = "static"` filters locally against the typed query (string/
  * object items only — element items always pass through). `mode =
  * "dynamic"` fires a debounced TEXT_CHANGE to PHP's `onSearchQuery($q)`
- * which republishes new `search_item` children.
+ * which republishes new `search_item` children. The keyboard's Search
+ * action sends the query to PHP's `onSearchSubmit($q)` as a SUBMIT event,
+ * when the screen defines one.
  */
 @Composable
 private fun AndroidSearchTabRoot(
@@ -684,6 +688,7 @@ private fun AndroidSearchTabRoot(
     itemNodes: List<NativeUINode>,
     mode: String,
     onQueryCallbackId: Int,
+    onSubmitCallbackId: Int,
     debounceMs: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -718,6 +723,11 @@ private fun AndroidSearchTabRoot(
             placeholder = placeholder,
             value = query,
             onValueChange = { query = it },
+            onSubmit = {
+                if (onSubmitCallbackId != 0) {
+                    NativeUIBridge.sendSubmitEvent(onSubmitCallbackId, 0, query)
+                }
+            },
         )
         HorizontalDivider()
 
@@ -781,6 +791,7 @@ private fun SearchHeaderField(
     placeholder: String,
     value: String,
     onValueChange: (String) -> Unit,
+    onSubmit: () -> Unit = {},
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -808,7 +819,7 @@ private fun SearchHeaderField(
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { /* IME submits via debounce */ }),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
                 decorationBox = { inner ->
                     if (value.isEmpty() && placeholder.isNotEmpty()) {
                         Text(

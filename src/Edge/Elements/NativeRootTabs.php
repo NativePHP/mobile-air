@@ -42,6 +42,14 @@ class NativeRootTabs extends Element
      */
     private ?string $navSearchOnQueryMethod = null;
 
+    /**
+     * Method name on the active screen that handles the search field's
+     * submit (the keyboard's Search key), with the field's text. Set by
+     * `wrapWithNativeChrome` when the active component overrides
+     * `onSearchSubmit`. A plain callback: its return is discarded.
+     */
+    private ?string $navSearchOnSubmitMethod = null;
+
     public static function make(): static
     {
         return new static;
@@ -154,6 +162,10 @@ class NativeRootTabs extends Element
         if (isset($attrs['navSearchOnQueryMethod'])) {
             $this->navSearchOnQueryMethod = $attrs['navSearchOnQueryMethod'];
         }
+
+        if (isset($attrs['navSearchOnSubmitMethod'])) {
+            $this->navSearchOnSubmitMethod = $attrs['navSearchOnSubmitMethod'];
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
@@ -166,6 +178,11 @@ class NativeRootTabs extends Element
                 $this->navSearchOnQueryMethod,
                 kind: 'search_query'
             );
+        }
+
+        // The submit handler is fire-and-forget: it typically navigates.
+        if ($this->navSearchOnSubmitMethod !== null) {
+            $this->props['nav_search_on_submit'] = $registry->register($this->navSearchOnSubmitMethod);
         }
 
         // Hoist the search-role tab's config up to the root and adopt
