@@ -39,8 +39,11 @@ import androidx.compose.ui.geometry.Rect
  *
  * Compose does the heavy lifting here that iOS does not: `SharedTransitionLayout`
  * wrapped around the screen-swapping `AnimatedContent` matches keys across the
- * two panes and animates the bounds itself. There is no overlay to manage, no
- * frames to collect, and no timing race — all of which the iOS side needs.
+ * two panes and animates the bounds itself. There is no overlay to manage and
+ * no frames to collect, which the iOS side needs. Compose does still need the
+ * outgoing element's bounds from a layout that ran before the transition
+ * started; [rememberMorphHeldTarget] provides that frame. Without it the
+ * overlay is sometimes born already at the destination.
  *
  * A ref present on only one pane never matches and renders normally, so
  * unmatched elements are inert without any pairing set.
@@ -263,19 +266,22 @@ internal class ChromeMorphTracker {
 }
 
 /**
- * The key a native-chrome renderer's `AnimatedContent` should target.
+ * The target a morphing `AnimatedContent` should show.
  *
- * A morphing change holds the old key for two frames so the outgoing pane
- * can join the chrome scope and be laid out there before the transition
- * starts; Compose takes the flight's start bounds from that layout. Any
- * other change goes through at once, as before.
+ * A morphing change holds the old target for two frames so the outgoing
+ * pane is laid out with its shared-element registrations before the
+ * transition starts. Compose takes the flight's start bounds from that
+ * layout. Without the hold, the shared element is sometimes created
+ * already at its destination bounds while the screen cross-fade is still
+ * at its start. Any other change goes through at once.
  *
  * Arming from the staged `pendingTransition` before the tree lands is not
- * enough on its own: both come from the PHP thread, and whether a frame
- * runs between them is a race.
+ * enough on its own: that write comes from the PHP thread, and whether a
+ * frame runs between it and the new screen is a race. Callers pass a
+ * [morphing] flag that is true for the navigation being shown.
  */
 @Composable
-internal fun rememberChromeTransitionKey(target: String, morphing: Boolean): String {
+internal fun <T> rememberMorphHeldTarget(target: T, morphing: Boolean): T {
     var shown by remember { mutableStateOf(target) }
     LaunchedEffect(target, morphing) {
         if (morphing && shown != target) {
@@ -286,6 +292,14 @@ internal fun rememberChromeTransitionKey(target: String, morphing: Boolean): Str
     }
     return if (morphing) shown else target
 }
+
+/**
+ * The key a native-chrome renderer's `AnimatedContent` should target.
+ * See [rememberMorphHeldTarget].
+ */
+@Composable
+internal fun rememberChromeTransitionKey(target: String, morphing: Boolean): String =
+    rememberMorphHeldTarget(target, morphing)
 
 /**
  * Publishes the chrome shared-element scopes to one pane of a native-chrome
