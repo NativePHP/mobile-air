@@ -107,3 +107,67 @@ it('still emits REUSE markers for subtrees that stay mounted and unchanged', fun
 
     expect($reused)->not->toBe([]);
 });
+
+class SubtreeMemoRekeyComponent extends SubtreeMemoPruneComponent
+{
+    /** @var list<string> */
+    public array $keys = ['a'];
+
+    public function render(): Element
+    {
+        return Column::make(
+            Text::make('Header'),
+            Column::make(...array_map(
+                fn (string $key): Element => Column::make(Text::make('Row'))->key($key),
+                $this->keys,
+            )),
+        );
+    }
+}
+
+/**
+ * The tree the native reader builds from a frame: a REUSE marker takes the
+ * node with its id from the tree it built last, as both readers do.
+ *
+ * @param  array<string, mixed>  $frame
+ * @param  array<string, mixed>|null  $previous
+ * @return array<string, mixed>
+ */
+function nativeTreeFrom(array $frame, ?array $previous): array
+{
+    $index = [];
+    foreach ($previous === null ? [] : flattenMemoNodes($previous) as $node) {
+        $index[$node['id']] = $node;
+    }
+
+    $build = function (array $node) use (&$build, $index): array {
+        if (($node['flags'] ?? 0) === 1) {
+            return $index[$node['id']] ?? throw new RuntimeException("REUSE marker for id {$node['id']}, which the native side doesn't have");
+        }
+
+        if (isset($node['children'])) {
+            $node['children'] = array_map($build, $node['children']);
+        }
+
+        return $node;
+    };
+
+    return $build($frame);
+}
+
+it('builds the right tree on the native side when a row is re-keyed and its list then changes', function () {
+    $component = new SubtreeMemoRekeyComponent;
+    $native = nativeTreeFrom($component->publishFrame(), null);
+
+    // The row's key changes, its content doesn't.
+    $component->keys = ['b'];
+    $native = nativeTreeFrom($component->publishFrame(), $native);
+
+    // The list around it changes, the row doesn't.
+    $component->keys = ['b', 'c'];
+    $native = nativeTreeFrom($component->publishFrame(), $native);
+
+    $rowIds = fn (array $tree): array => array_column($tree['children'][1]['children'], 'id');
+
+    expect($rowIds($native))->toBe([Element::fnv1a32('/b'), Element::fnv1a32('/c')]);
+});

@@ -72,6 +72,15 @@ abstract class NativeComponent
      */
     const EVENT_SHUTDOWN = 16;
 
+    /**
+     * The native reader couldn't build a frame from what it holds: a REUSE
+     * marker named a node it doesn't have, or it had to drop frames. It
+     * keeps the screen as it was, and takes no frame with REUSE markers
+     * until one without arrives. The runloop forgets what it published and
+     * renders, so the next frame goes out in full.
+     */
+    const EVENT_FULL_FRAME = 17;
+
     const EVENT_NATIVE = 20;
 
     private static bool $dumpHandlerRegistered = false;
@@ -195,10 +204,9 @@ abstract class NativeComponent
     private int $publishCount = 0;
 
     /**
-     * Opt out of subtree memoization for this component — every publish emits
-     * all nodes FULL (no REUSE markers), sidestepping the PHP↔native id desync
-     * that can truncate a growing/reordering dynamic list. Set to true in a
-     * subclass whose screen mutates a list frequently (e.g. a live roster).
+     * Opt out of subtree memoization for this component: every publish emits
+     * all nodes FULL (no REUSE markers), at the cost of serializing the whole
+     * tree every frame.
      */
     protected bool $forceFullFrames = false;
 
@@ -305,14 +313,11 @@ abstract class NativeComponent
 
         if (! $memoEnabled || $this->forceFullFrames) {
             // Throwaway array — never read across frames. Emits every node FULL
-            // (no REUSE markers), so there's no PHP↔native id desync to truncate
-            // the tree. Components with heavy dynamic lists opt in via
-            // $forceFullFrames to trade a little serialization cost for
-            // correctness while the keyed/positional REUSE desync is unsolved.
+            // (no REUSE markers).
             $throwaway = [];
 
             $tree = $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
-            $fingerprint = self::frameFingerprint($tree, $emitted);
+            $fingerprint = self::frameFingerprint($tree);
 
             return $tree;
         }
@@ -362,27 +367,37 @@ abstract class NativeComponent
         // frame guarantees a remounting node always re-emits FULL.
         $this->lastNodeHashes = array_intersect_key($this->lastNodeHashes, $emitted);
 
-        $fingerprint = self::frameFingerprint($tree, $emitted);
+        $fingerprint = self::frameFingerprint($tree);
 
         return $tree;
     }
 
     /**
      * What a built frame looks like to the native side, cheaply. toArray()
-     * folds every node's type, layout, style, props, callbacks and children
-     * into the root's `_hash`; node ids aren't in it, so they are added in
-     * emit order. Two frames with the same fingerprint publish the same tree.
+     * folds every node's id, type, layout, style, props, callbacks and
+     * children into the root's `_hash`, so two frames with the same
+     * fingerprint publish the same tree.
      *
      * @param  array<string, mixed>  $tree
-     * @param  array<int, true>  $emittedIds
      */
-    private static function frameFingerprint(array $tree, array $emittedIds): ?string
+    private static function frameFingerprint(array $tree): ?string
     {
-        if (! isset($tree['_hash'])) {
-            return null;
-        }
+        return $tree['_hash'] ?? null;
+    }
 
-        return $tree['_hash'].':'.hash('xxh3', implode(',', array_keys($emittedIds)));
+    /**
+     * Forget what the native side holds, so the next frame is published
+     * and goes out in full. For a tree published without memoizedToArray()
+     * (an overlay, the farewell frame, a streamed frame), and for when the
+     * native reader asks for a full frame. Their ids aren't what
+     * $lastNodeHashes records, and the overlays' positional ids are the
+     * screen's own, so a REUSE marker after one would splice an overlay
+     * node into the screen.
+     */
+    private function forgetPublishedTree(): void
+    {
+        $this->lastNodeHashes = [];
+        $this->publishedFrame = null;
     }
 
     /**
@@ -3198,7 +3213,7 @@ abstract class NativeComponent
             if (! $this->nativeHasError && ! $skipRender) {
                 try {
                     if ($this->renderStreaming()) {
-                        $this->publishedFrame = null;
+                        $this->forgetPublishedTree();
                     } else {
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element, $fingerprint);
@@ -3252,7 +3267,7 @@ abstract class NativeComponent
             // Broadcast user-facing frames to observers; system frames like
             // hot reload / shutdown are dev-loop noise, not user actions.
             if (TreeObservers::any()
-                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN, self::EVENT_FULL_FRAME], true)) {
                 TreeObservers::event(
                     $event,
                     $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
@@ -3268,6 +3283,12 @@ abstract class NativeComponent
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
                 );
                 $this->stop();
+
+                continue;
+            }
+
+            if (($event['type'] ?? -1) === self::EVENT_FULL_FRAME) {
+                $this->forgetPublishedTree();
 
                 continue;
             }
@@ -3441,7 +3462,7 @@ abstract class NativeComponent
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
-                        $this->publishedFrame = null;
+                        $this->forgetPublishedTree();
                         $this->nativeRouter?->flushDeferredTransition();
                         if ($perf) {
                             NativeRouter::debugLog(sprintf(
@@ -3518,7 +3539,7 @@ abstract class NativeComponent
             // Broadcast user-facing frames to observers; system frames like
             // hot reload / shutdown are dev-loop noise, not user actions.
             if (TreeObservers::any()
-                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN, self::EVENT_FULL_FRAME], true)) {
                 TreeObservers::event(
                     $event,
                     $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
@@ -3536,6 +3557,12 @@ abstract class NativeComponent
                 NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=".count($stack).')');
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
                 $this->stop();
+
+                continue;
+            }
+
+            if (($event['type'] ?? -1) === self::EVENT_FULL_FRAME) {
+                $this->forgetPublishedTree();
 
                 continue;
             }
@@ -3822,7 +3849,7 @@ abstract class NativeComponent
         try {
             $element = $this->renderToElement();
             $tree = self::closeSheetsAndModals($element->toArray($this->nativeCallbacks));
-            $this->publishedFrame = null;
+            $this->forgetPublishedTree();
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             // Render failure on the way out — outgoing component is
@@ -4140,7 +4167,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
-            $this->publishedFrame = null;
+            $this->forgetPublishedTree();
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Error screen render failed: '.$renderError->getMessage());
@@ -4203,7 +4230,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
-            $this->publishedFrame = null;
+            $this->forgetPublishedTree();
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Dump screen render failed: '.$renderError->getMessage());
