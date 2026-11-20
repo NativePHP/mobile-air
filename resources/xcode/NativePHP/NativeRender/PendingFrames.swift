@@ -8,21 +8,18 @@ import Foundation
 /// reader leaves the next one splicing in nodes it never built: rows land
 /// under the wrong parent, or old content stays.
 ///
-/// A zero-copy frame reads the producer's A/B buffer in place, and the
-/// publish after next writes over it. So when a frame is queued, the one
-/// queued before it is detached (copied out) while its buffer is still
-/// intact. When `capacity` frames are already waiting, they are dropped
+/// Each frame holds its own copy of PHP's buffers (see
+/// `NativeElementBridge.postTreeUpdate`), so it can wait here for as long as
+/// it takes. When `capacity` frames are already waiting, they are dropped
 /// instead, and `take()` reports it with the next frame.
 final class PendingFrames<Frame> {
     private let capacity: Int
-    private let detach: (Frame) -> Frame
     private let lock = NSLock()
     private var frames: [Frame] = []
     private var dropped = false
 
-    init(capacity: Int, detach: @escaping (Frame) -> Frame) {
+    init(capacity: Int) {
         self.capacity = capacity
-        self.detach = detach
     }
 
     func add(_ frame: Frame) {
@@ -32,8 +29,6 @@ final class PendingFrames<Frame> {
         if frames.count >= capacity {
             frames.removeAll()
             dropped = true
-        } else if let last = frames.popLast() {
-            frames.append(detach(last))
         }
         frames.append(frame)
     }

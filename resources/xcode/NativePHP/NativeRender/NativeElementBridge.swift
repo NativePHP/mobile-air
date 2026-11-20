@@ -136,17 +136,6 @@ final class NativeElementBridge {
         let typeTable: [String]
         let nodeCount: Int
         let isNav: Bool
-        /// The buffers are read in place from the producer's A/B ring.
-        let zeroCopy: Bool
-
-        /// This frame with its buffers copied out of the producer's, if they're read in place.
-        func detached() -> ShadowUpdate {
-            guard zeroCopy else { return self }
-            return ShadowUpdate(
-                flatData: Data([UInt8](flatData)), propData: propData.map { Data([UInt8]($0)) },
-                typeTable: typeTable, nodeCount: nodeCount, isNav: isNav, zeroCopy: false
-            )
-        }
     }
 
     /// Frames that can wait before the reader gives up on them. Parsing is
@@ -156,7 +145,7 @@ final class NativeElementBridge {
     private static let maxPendingFrames = 8
 
     /// Frames waiting to be parsed, oldest first. See PendingFrames.
-    private static let pendingFrames = PendingFrames<ShadowUpdate>(capacity: maxPendingFrames) { $0.detached() }
+    private static let pendingFrames = PendingFrames<ShadowUpdate>(capacity: maxPendingFrames)
 
     /// Set when a frame couldn't be built from the previous tree, or frames
     /// were dropped: the screen keeps the last tree that was built, and
@@ -296,40 +285,18 @@ final class NativeElementBridge {
         propPtr: UnsafeRawPointer?, propSize: Int,
         typeTable: [String], nodeCount: Int
     ) {
-        // Phase 3 — when NPHP_FLAG_DOUBLE_BUFFER is on, wrap the C-side
-        // buffer pointer as a no-copy Data view. The producer alternates
-        // between buffer A and B, so the buffer we're viewing is
-        // guaranteed to be untouched until the publish AFTER the next
-        // one — safe as long as parse < 2× average publish interval.
-        // Single-buffer + zero-copy would be use-after-overwrite unsafe,
-        // hence the flag gate. Re-read runtime_flags each call so the
-        // toggle takes effect on the next frame.
-        let zeroCopy = (nphp_get_runtime_flags() & 0x04) != 0
-
-        let flatData: Data
-        let propData: Data?
-        if zeroCopy {
-            flatData = Data(
-                bytesNoCopy: UnsafeMutableRawPointer(mutating: flatPtr),
-                count: flatSize,
-                deallocator: .none
-            )
-            propData = if let propPtr, propSize > 0 {
-                Data(
-                    bytesNoCopy: UnsafeMutableRawPointer(mutating: propPtr),
-                    count: propSize,
-                    deallocator: .none
-                )
-            } else {
-                nil
-            }
+        // Copy the frame out of PHP's buffers. With NPHP_FLAG_DOUBLE_BUFFER
+        // the producer alternates between two buffers, so a frame read in
+        // place is only safe until the publish after next. The shadow thread
+        // parses every frame in order and can fall behind by more than that,
+        // and a frame that outgrows its buffer reallocates it, so a frame
+        // read in place could be written over or freed while it's parsed.
+        // A copy costs well under a millisecond, even for a large frame.
+        let flatData = Data(bytes: flatPtr, count: flatSize)
+        let propData: Data? = if let propPtr, propSize > 0 {
+            Data(bytes: propPtr, count: propSize)
         } else {
-            flatData = Data(bytes: flatPtr, count: flatSize)
-            propData = if let propPtr, propSize > 0 {
-                Data(bytes: propPtr, count: propSize)
-            } else {
-                nil
-            }
+            nil
         }
 
         let isNav = NativeUIBridge.shared.navigationPending
@@ -339,7 +306,7 @@ final class NativeElementBridge {
 
         let update = ShadowUpdate(
             flatData: flatData, propData: propData,
-            typeTable: typeTable, nodeCount: nodeCount, isNav: isNav, zeroCopy: zeroCopy
+            typeTable: typeTable, nodeCount: nodeCount, isNav: isNav
         )
 
         pendingFrames.add(update)
@@ -1093,6 +1060,13 @@ final class NativeElementBridge {
     /// one all the way down, so a positional id that now names a different
     /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
+        // A REUSE marker puts the previous tree's node itself in the new
+        // tree, so there's nothing under it to compare. Without this, a
+        // frame that changes one row still walks every row.
+        if old === new {
+            return old
+        }
+
         guard old.id == new.id, old.type == new.type else {
             return new
         }
