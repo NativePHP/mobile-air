@@ -52,20 +52,26 @@ use Native\Mobile\Edge\SharedValue;
  *
  * Bounded — a zoomable picture that can't be lost off screen. With
  * `bounded`, pan stops where the zoomed content's edges meet the area's
- * edges, and an axis on which the zoomed content fits stays centred, so
- * at 1x the content can't be moved at all. A drag past an edge moves
- * with resistance and springs back into place when released, and so
- * does a pinch that ends with the content out of place. A pinch zooms
- * around the point between the fingers. The content is the area itself,
- * or, with `content-ratio` (width over height), that ratio fitted
- * inside the area, which is where an image with `fit="contain"` draws.
- * Bind both pan axes and the zoom, and bind the content's transform to
- * the same values:
+ * edges, and an axis on which the zoomed content fits stays centred. A
+ * drag past an edge moves with resistance and springs back into place
+ * when released, and so does a pinch that ends with the content out of
+ * place. The content is the area itself, or, with `content-ratio` (width
+ * over height), that ratio fitted inside the area, which is where an
+ * image with `fit="contain"` draws. Bind both pan axes and the zoom, and
+ * bind the content's transform to the same values:
  *
  *     <native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" :pan-x="$x" :pan-y="$y"
  *         bounded :content-ratio="$width / $height">
  *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
  *     </native:gesture-area>
+ *
+ * A bounded area only takes a one-finger drag while the zoomed content
+ * has room to move. At its whole size the content has nowhere to go, so
+ * drags are left to whatever is around the area, such as a pager or a
+ * drag to close. Zoomed in, the same drags pan it. A zoom that ends a
+ * hair past whole size still counts as whole size. So leave the pans
+ * bound all the time. A pinch moves the bound pans too, keeping the
+ * point between the fingers where it is.
  *
  * Double tap to zoom — `@doubleTap.zoom="2"` zooms content at its whole
  * size to that scale on a double tap, bringing the tapped point to the
@@ -74,26 +80,14 @@ use Native\Mobile\Edge\SharedValue;
  * modifier makes the value the scale rather than a handler: the phone
  * zooms on its own and PHP isn't asked. Both ways animate, and
  * `@zoomEnd` fires with the new scale once the zoom settles, as it does
- * after a pinch, so one handler hears every zoom.
- *
- * Aiming a zoom moves the pan, so the zoom needs the pan's SharedValues
- * even while the area isn't panning. A photo pager binds `pan-x` and
- * `pan-y` only once the picture is zoomed, because a bound pan takes
- * every one-finger drag and the pager would stop paging. `zoom-pan-x`
- * and `zoom-pan-y` give the zoom those same values without taking any
- * drags: a pinch keeps the point between the fingers where it is, and a
- * double tap aims at the tapped point, while drags at whole size are
- * left to whatever is around the area. Once `pan-x` / `pan-y` are bound
- * as well, to the same values, everything carries on from where the zoom
- * left it:
+ * after a pinch, so one handler hears every zoom. Like a pinch, the
+ * double tap aims by moving the bound pans, so bind `pan-x` and `pan-y`
+ * with it. A page in a photo pager:
  *
  *     <native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" @doubleTap.zoom="2"
- *         :pan-x="$zoomed ? $x : null" :pan-y="$zoomed ? $y : null" :zoom-pan-x="$x" :zoom-pan-y="$y"
- *         bounded :content-ratio="$ratio" @zoomEnd="zoomEnded">
+ *         :pan-x="$x" :pan-y="$y" bounded :content-ratio="$ratio">
  *         <native:image :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" ... />
  *     </native:gesture-area>
- *
- *     public function zoomEnded(float $scale): void   // $zoomed = $scale > 1
  *
  * Snapping — a pan that settles on set points, the swipe-to-reveal
  * pattern. With `snap-x` (or `snap-y`) the bound axis moves with the
@@ -191,16 +185,6 @@ class GestureArea extends Element
      *  a double tap does nothing. */
     private ?float $doubleTapZoom = null;
 
-    /** The pan a zoom moves when the area isn't panning, per axis (see
-     *  the class docblock). */
-    private ?int $zoomPanXId = null;
-
-    private float $zoomPanXInitial = 0.0;
-
-    private ?int $zoomPanYId = null;
-
-    private float $zoomPanYInitial = 0.0;
-
     /** Keep the zoomed content inside the area's edges. */
     private bool $bounded = false;
 
@@ -243,14 +227,6 @@ class GestureArea extends Element
 
                 break;
             }
-        }
-
-        if (isset($attrs['zoom-pan-x']) && $attrs['zoom-pan-x'] instanceof SharedValue) {
-            $this->zoomPanX($attrs['zoom-pan-x']);
-        }
-
-        if (isset($attrs['zoom-pan-y']) && $attrs['zoom-pan-y'] instanceof SharedValue) {
-            $this->zoomPanY($attrs['zoom-pan-y']);
         }
 
         // `@doubleTap.zoom="2"`, which the precompiler leaves as this attr
@@ -363,25 +339,6 @@ class GestureArea extends Element
         return $this;
     }
 
-    /** The horizontal pan a pinch or a double tap moves to aim the zoom,
-     *  without the area taking drags (see the class docblock). */
-    public function zoomPanX(SharedValue $value): static
-    {
-        $this->zoomPanXId = $value->id;
-        $this->zoomPanXInitial = $value->value();
-
-        return $this;
-    }
-
-    /** The vertical pan a pinch or a double tap moves to aim the zoom. */
-    public function zoomPanY(SharedValue $value): static
-    {
-        $this->zoomPanYId = $value->id;
-        $this->zoomPanYInitial = $value->value();
-
-        return $this;
-    }
-
     /** Keep the zoomed content inside the area's edges (see the class
      *  docblock). */
     public function bounded(bool $bounded = true): static
@@ -474,18 +431,6 @@ class GestureArea extends Element
         if ($this->pinchId !== null) {
             $props['pinch-id'] = $this->pinchId;
             $props['pinch-initial'] = $this->pinchInitial;
-        }
-
-        // The zoom's own pan. Seeded like a pan, so a zoom aimed before
-        // anything else has touched the value starts from where PHP put it.
-        if ($this->zoomPanXId !== null) {
-            $props['zoom-pan-x-id'] = $this->zoomPanXId;
-            $props['zoom-pan-x-initial'] = $this->zoomPanXInitial;
-        }
-
-        if ($this->zoomPanYId !== null) {
-            $props['zoom-pan-y-id'] = $this->zoomPanYId;
-            $props['zoom-pan-y-initial'] = $this->zoomPanYInitial;
         }
 
         if ($this->doubleTapZoom !== null) {

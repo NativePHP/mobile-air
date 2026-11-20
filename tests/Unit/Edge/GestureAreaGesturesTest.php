@@ -185,29 +185,22 @@ it('omits bounded and content-ratio unless bounded is set', function () {
 
 // ── Double tap to zoom ──────────────────────────────
 
-it('carries @doubleTap.zoom and the zoom pan to the wire', function () {
+it('carries @doubleTap.zoom to the wire beside the bound pans it aims with', function () {
     $x = SharedValue::make(8.0);
     $y = SharedValue::make(-2.0);
 
     $area = GestureArea::make();
-    $area->applyAttributes(['_doubleTap.zoom' => '2', 'zoom-pan-x' => $x, 'zoom-pan-y' => $y]);
+    $area->applyAttributes(['_doubleTap.zoom' => '2', 'pan-x' => $x, 'pan-y' => $y, 'bounded' => true]);
 
     $props = $area->getResolvedProps(new CallbackRegistry);
 
     expect($props['double-tap-zoom'])->toBe(2.0)
-        ->and($props['zoom-pan-x-id'])->toBe($x->id)
-        ->and($props['zoom-pan-x-initial'])->toBe(8.0)
-        ->and($props['zoom-pan-y-id'])->toBe($y->id)
-        ->and($props['zoom-pan-y-initial'])->toBe(-2.0);
-});
-
-it('leaves the zoom pan apart from a pan, which still takes drags', function () {
-    $x = SharedValue::make();
-
-    $props = GestureArea::make()->zoomPanX($x)->getResolvedProps(new CallbackRegistry);
-
-    expect($props['zoom-pan-x-id'])->toBe($x->id)
-        ->and($props)->not->toHaveKey('pan-x-id')
+        ->and($props['pan-x-id'])->toBe($x->id)
+        ->and($props['pan-x-initial'])->toBe(8.0)
+        ->and($props['pan-y-id'])->toBe($y->id)
+        ->and($props['pan-y-initial'])->toBe(-2.0)
+        ->and($props['bounded'])->toBeTrue()
+        ->and($props)->not->toHaveKey('zoom-pan-x-id')
         ->and($props)->not->toHaveKey('zoom-pan-y-id');
 });
 

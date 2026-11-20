@@ -174,8 +174,8 @@ it('renders a bounded zoom and pan area from Blade', function () {
 it('renders a photo page that zooms on a double tap from Blade', function () {
     file_put_contents(
         __DIR__.'/views/gesture-double-tap.blade.php',
-        '<native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" @doubleTap.zoom="2" :zoom-pan-x="$x" :zoom-pan-y="$y" bounded @zoomEnd="zoomEnded">'
-        .'<native:image src="https://example.com/a.png" :scale="$zoom" :translate-x="$x" :translate-y="$y" />'
+        '<native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" @doubleTap.zoom="2" :pan-x="$x" :pan-y="$y" bounded :content-ratio="$ratio" @zoomEnd="zoomEnded">'
+        .'<native:image src="https://example.com/a.png" :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" />'
         .'</native:gesture-area>'
     );
 
@@ -185,16 +185,19 @@ it('renders a photo page that zooms on a double tap from Blade', function () {
     $registry = new CallbackRegistry;
 
     NativeElementCollector::reset();
-    view('gesture-double-tap', ['zoom' => $zoom, 'x' => $x, 'y' => $y])->render();
+    view('gesture-double-tap', ['zoom' => $zoom, 'x' => $x, 'y' => $y, 'ratio' => 3 / 2])->render();
     $tree = NativeElementCollector::collect()->toArray($registry);
 
     expect($tree['props']['double-tap-zoom'])->toBe(2.0)
         ->and($tree['props']['pinch-id'])->toBe($zoom->id)
         ->and($tree['props']['pinch-min'])->toBe(1.0)
         ->and($tree['props']['pinch-max'])->toBe(4.0)
-        ->and($tree['props']['zoom-pan-x-id'])->toBe($x->id)
-        ->and($tree['props']['zoom-pan-y-id'])->toBe($y->id)
-        ->and($tree['props'])->not->toHaveKey('pan-x-id')
+        ->and($tree['props']['pan-x-id'])->toBe($x->id)
+        ->and($tree['props']['pan-y-id'])->toBe($y->id)
+        ->and($tree['props']['bounded'])->toBeTrue()
+        ->and($tree['props']['content-ratio'])->toBe(3 / 2)
+        ->and($tree['props'])->not->toHaveKey('zoom-pan-x-id')
+        ->and($tree['props'])->not->toHaveKey('zoom-pan-y-id')
         ->and($tree['props'])->not->toHaveKey('on_double_tap')
         ->and($tree['props'])->not->toHaveKey('_doubleTap.zoom')
         ->and($registry->resolve($tree['props']['on_pinch_end'])['method'])->toBe('zoomEnded');
