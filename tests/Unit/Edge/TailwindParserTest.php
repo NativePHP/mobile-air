@@ -1109,6 +1109,27 @@ it('resolves theme tokens as gradient stops', function () {
     TailwindParser::setThemeResolver(null);
 });
 
+it('gives theme gradient stops their dark hex, like bg-theme-*', function () {
+    TailwindParser::setThemeResolver(fn (string $token) => ['surface' => '#FFF8EE', 'primary' => '#9BE500'][$token] ?? null);
+    TailwindParser::setThemeDarkResolver(fn (string $token) => ['surface' => '#1C1917', 'primary' => '#9BE500'][$token] ?? null);
+
+    // Only `surface` changes in dark mode; the palette stop and `primary`
+    // (same hex both ways) keep their light colour in the dark list.
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-b from-theme-surface via-black/10 to-theme-primary')))->toBe([
+        'gradient_dx' => 0.0,
+        'gradient_dy' => 1.0,
+        'gradient_stops' => '#FFF8EE,#1A000000,#9BE500',
+        'dark_gradient_stops' => '#1C1917,#1A000000,#9BE500',
+    ]);
+
+    // Nothing differs in dark mode: no dark list at all.
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-b from-theme-primary to-black')))
+        ->not->toHaveKey('dark_gradient_stops');
+
+    TailwindParser::setThemeResolver(null);
+    TailwindParser::setThemeDarkResolver(null);
+});
+
 it('does not let a gradient swallow the plain bg- branch', function () {
     expect(TailwindParser::parse('bg-black'))->toBe(['bg' => '#000000']);
 });
