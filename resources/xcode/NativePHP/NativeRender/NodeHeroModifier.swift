@@ -27,6 +27,7 @@ struct NodeHeroModifier: ViewModifier {
 
     @Environment(\.heroIsOutgoing) private var isOutgoing
     @Environment(\.heroIsFlyingCopy) private var isFlyingCopy
+    @Environment(\.heroScreen) private var screen
     @ObservedObject private var store = HeroFlightStore.shared
 
     func body(content: Content) -> some View {
@@ -51,7 +52,7 @@ struct NodeHeroModifier: ViewModifier {
                 .onGeometryChange(for: CGRect.self) { proxy in
                     proxy.frame(in: .global)
                 } action: { rect in
-                    store.report(ref: ref, rect: rect, isOutgoing: isOutgoing)
+                    store.report(ref: ref, rect: rect, isOutgoing: isOutgoing, screen: screen)
                 }
         )
     }

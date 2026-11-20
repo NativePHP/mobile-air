@@ -497,6 +497,18 @@ final class NativeElementBridge {
                 // invisibly beneath the opaque new screen. Staging order is
                 // guaranteed: `NativeUI.Transition.Set` runs via main.sync
                 // before PHP publishes the tree.
+                // Tell the morph store what this navigation staged, tied to
+                // the URI it lands on. A push or pop inside native chrome is
+                // morphed (or not) by the coordinator's path change that
+                // follows, and that must read THIS navigation's transition,
+                // not whatever `pendingTransition` was left holding.
+                if isNav {
+                    HeroFlightStore.shared.stageNavigation(
+                        uri: nativeChromeContinuation && !newUri.isEmpty ? newUri : nil,
+                        transition: bridge.pendingTransition
+                    )
+                }
+
                 if isNav && !nativeChromeContinuation {
                     if wasActive, let oldTree = bridge.currentTree {
                         let outgoingKey = bridge.screenKey
@@ -524,6 +536,13 @@ final class NativeElementBridge {
                     // matched elements are hidden before the incoming screen's
                     // very first layout — otherwise they paint once at their
                     // destination before taking off.
+                    //
+                    // Navigation INSIDE native chrome never reaches this
+                    // branch: it is a NavigationStack push or pop, not a
+                    // swap. Its morph is started by the coordinators when
+                    // their `path` changes (`HeroFlightStore.stackChanged`),
+                    // because only they know which level is on top and the
+                    // chevron and swipe-back never come through here first.
                     if bridge.pendingTransition == "morph" {
                         HeroFlightStore.shared.beginSwap(
                             incomingNodes: Self.collectRefNodes(finalTree.root)

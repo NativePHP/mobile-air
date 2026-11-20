@@ -68,8 +68,7 @@ private struct HeroFlightView: View {
     var body: some View {
         let rect = arrived ? flight.to : flight.from
 
-        NodeView(node: flight.node)
-            .frame(width: rect.width, height: rect.height)
+        flyingCopy(in: rect)
             .position(x: rect.midX, y: rect.midY)
             // Declared on the value that moves, NOT wrapped around the
             // mutation. `withAnimation` around an @Published change does not
@@ -81,7 +80,31 @@ private struct HeroFlightView: View {
                 // A LATER runloop turn than the mount. Setting this inline
                 // coalesces with the insertion, so the copy appears already at
                 // its destination and never travels.
-                DispatchQueue.main.async { arrived = true }
+                DispatchQueue.main.async {
+                    arrived = true
+                    HeroFlightStore.shared.flightTookOff(flight)
+                }
             }
+    }
+
+    /// Text is laid out once, at its destination size, and scaled to the
+    /// moving rect. Laying it out at every in-between size re-wraps a title
+    /// word by word as its box grows ("Plu / gin / s"). Everything else keeps
+    /// resizing for real, so a container's children re-flow as before.
+    @ViewBuilder
+    private func flyingCopy(in rect: CGRect) -> some View {
+        let target = flight.to
+        if flight.node.type == "text", target.width > 0, target.height > 0 {
+            NodeView(node: flight.node)
+                .frame(width: target.width, height: target.height)
+                // One factor for both axes, from the width (as Compose's
+                // ScaleToBounds does), so a title that wraps on one side and
+                // not the other isn't squashed.
+                .scaleEffect(rect.width / target.width)
+                .frame(width: rect.width, height: rect.height)
+        } else {
+            NodeView(node: flight.node)
+                .frame(width: rect.width, height: rect.height)
+        }
     }
 }

@@ -11,7 +11,7 @@ use PHPUnit\Framework\TestCase;
  */
 class PhpBinariesIntegrityTest extends TestCase
 {
-    private const URL = 'https://bin.nativephp.com/main/8.4/ios/ios-4.2.1-php8.4.27.zip';
+    private const URL = 'https://bin.nativephp.com/main/8.4/ios/ios-4.2.2-php8.4.28.zip';
 
     private string $file;
 
@@ -37,7 +37,7 @@ class PhpBinariesIntegrityTest extends TestCase
         $this->assertSame(
             ['sha256' => str_repeat('a', 64), 'size' => 123],
             PhpBinaries::expectedFile($this->manifest([
-                ['url' => 'https://bin.nativephp.com/main/8.4/ios/ios-4.2.1-php8.4.27-icu.zip', 'sha256' => str_repeat('b', 64), 'size' => 456],
+                ['url' => 'https://bin.nativephp.com/main/8.4/ios/ios-4.2.2-php8.4.28-icu.zip', 'sha256' => str_repeat('b', 64), 'size' => 456],
                 ['url' => self::URL, 'sha256' => str_repeat('A', 64), 'size' => 123],
             ]), '8.4', 'ios', self::URL)
         );
@@ -49,7 +49,7 @@ class PhpBinariesIntegrityTest extends TestCase
      */
     public function test_a_manifest_without_checksums_publishes_none(): void
     {
-        $manifest = ['versions' => ['8.4' => ['php_version' => '8.4.27', 'ios' => [self::URL]]]];
+        $manifest = ['versions' => ['8.4' => ['php_version' => '8.4.28', 'ios' => [self::URL]]]];
 
         $this->assertNull(PhpBinaries::expectedFile($manifest, '8.4', 'ios', self::URL));
         $this->assertNull(PhpBinaries::expectedFile(null, '8.4', 'ios', self::URL));
@@ -167,7 +167,7 @@ class PhpBinariesIntegrityTest extends TestCase
     private function manifest(array $files): array
     {
         return ['versions' => ['8.4' => [
-            'php_version' => '8.4.27',
+            'php_version' => '8.4.28',
             'ios' => [self::URL],
             'files' => ['ios' => $files],
         ]]];

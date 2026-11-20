@@ -105,8 +105,8 @@ class InstalledBinaries
     }
 
     /**
-     * A release as a developer would want to read it: `4.2.1`, or
-     * `4.2.1 (feat/opcache branch)` when it isn't main's.
+     * A release as a developer would want to read it: `4.2.2`, or
+     * `4.2.2 (feat/opcache branch)` when it isn't main's.
      *
      * @param  array{release: string, branch: string}  $binaries
      */

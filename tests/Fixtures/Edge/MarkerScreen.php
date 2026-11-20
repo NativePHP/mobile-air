@@ -12,6 +12,9 @@ use Native\Mobile\Edge\NativeComponent;
  */
 class MarkerScreen extends NativeComponent
 {
+    /** Bumped by tests to render another frame. */
+    public int $frame = 0;
+
     public function render(): View
     {
         return view('marker-screen');

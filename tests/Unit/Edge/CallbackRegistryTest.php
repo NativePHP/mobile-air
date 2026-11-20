@@ -112,3 +112,51 @@ it('falls back to no arguments for an expression it cannot parse', function () {
     expect(CallbackRegistry::parse('save(this is not a literal)'))
         ->toBe(['method' => 'save', 'args' => []]);
 });
+
+// ── Property handlers ($open = true) ──────────────────
+
+it('parses a property handler with a literal value', function (string $expression, string $property, mixed $value) {
+    expect(CallbackRegistry::parse($expression))
+        ->toBe(['method' => CallbackRegistry::ASSIGN, 'args' => [$property, $value]]);
+})->with([
+    ['$open = true', 'open', true],
+    ['$open=false', 'open', false],
+    ['$open = FALSE', 'open', false],
+    ['$note = null', 'note', null],
+    ['$count = 0', 'count', 0],
+    ['$count = 42', 'count', 42],
+    ['$ratio = -2.5', 'ratio', -2.5],
+    ["\$tab = 'settings'", 'tab', 'settings'],
+    ['$tab = "it\'s"', 'tab', "it's"],
+    ["\$tab = ''", 'tab', ''],
+    ['  $open = true  ', 'open', true],
+]);
+
+it('parses a toggle of the same property', function () {
+    expect(CallbackRegistry::parse('$open = !$open'))
+        ->toBe(['method' => CallbackRegistry::TOGGLE, 'args' => ['open']])
+        ->and(CallbackRegistry::parse('$open = ! $open'))
+        ->toBe(['method' => CallbackRegistry::TOGGLE, 'args' => ['open']]);
+});
+
+it('evaluates nothing, leaving any other expression as an unknown method', function (string $expression) {
+    expect(CallbackRegistry::parse($expression))
+        ->toBe(['method' => trim($expression), 'args' => []]);
+})->with([
+    '$open = !$other',
+    '$open == true',
+    '$open = foo()',
+    "\$tab = 'a' . 'b'",
+    "\$tab = 'a', 'b'",
+    '$open = $other',
+    '$open',
+    '$1 = true',
+    '$open = 01',
+    '$open = 1e3',
+    '$this->open = true',
+]);
+
+it('still parses method handlers as before', function () {
+    expect(CallbackRegistry::parse('save'))->toBe(['method' => 'save', 'args' => []])
+        ->and(CallbackRegistry::parse("open('a', 2)"))->toBe(['method' => 'open', 'args' => ['a', 2]]);
+});

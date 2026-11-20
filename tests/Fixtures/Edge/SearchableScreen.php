@@ -22,6 +22,11 @@ class SearchableScreen extends NativeComponent
             ->all();
     }
 
+    public function onSearchSubmit(string $query): void
+    {
+        $this->navigate('/search?q='.urlencode($query));
+    }
+
     public function render(): Element|View
     {
         return Column::make(Text::make('Searchable'));

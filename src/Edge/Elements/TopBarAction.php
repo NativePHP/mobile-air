@@ -22,6 +22,9 @@ class TopBarAction extends Element
      */
     private IosSymbol|string|null $iosIcon = null;
 
+    /** Screen-swap transition for the URL auto-navigate (see applyAttributes). */
+    private ?string $urlTransition = null;
+
     private AndroidSymbol|string|null $androidIcon = null;
 
     public static function make(): static
@@ -42,6 +45,12 @@ class TopBarAction extends Element
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
+        }
+
+        // Screen-swap transition for the auto-wired URL navigation
+        // (e.g. `transition="slide_from_bottom"` for a modal-style push).
+        if (isset($attrs['transition'])) {
+            $this->urlTransition = (string) $attrs['transition'];
         }
 
         $this->iosIcon = $attrs['ios-icon'] ?? $attrs['iosIcon'] ?? $attrs['ios'] ?? $this->iosIcon;
@@ -83,7 +92,7 @@ class TopBarAction extends Element
                 'type' => 'navigate',
                 'uri' => $this->props['url'],
                 'data' => [],
-                'transition' => 'none',
+                'transition' => $this->urlTransition ?? 'none',
             ]);
         }
 

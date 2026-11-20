@@ -5,6 +5,7 @@ use Illuminate\Contracts\Http\Kernel as HttpKernelContract;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
@@ -204,7 +205,49 @@ it('lets an app opt its own middleware out of per-navigation runs', function () 
     expect(AllowMiddleware::$seen)->toBe([]);
 });
 
+it('skips the web group\'s CSRF middleware, so a missing APP_KEY does not refuse the screen', function (string $csrf) {
+    // Every CSRF middleware takes the Encrypter in its constructor, so just
+    // resolving one with no APP_KEY throws MissingAppKeyException. The guard
+    // then fails closed and replaces the screen with `/`. A device always has
+    // a key, but an app's own test suite often does not. Laravel 11 and 12
+    // put ValidateCsrfToken in the web group and Laravel 13 puts
+    // PreventRequestForgery there, so matching only the exact VerifyCsrfToken
+    // class let both through.
+    if (! class_exists($csrf)) {
+        $this->markTestSkipped("{$csrf} does not exist in this Laravel version");
+    }
+
+    config(['app.key' => null]);
+    app()->forgetInstance('encrypter');
+
+    registerWebGroup([$csrf]);
+
+    Route::middleware('web')->group(function () {
+        Route::native('/guarded', GuardedScreen::class);
+    });
+
+    Native::visit('/guarded')->assertSee('Guarded screen content');
+
+    expect(GuardedScreen::$mounts)->toBe(1);
+})->with([
+    'VerifyCsrfToken' => VerifyCsrfToken::class,
+    'ValidateCsrfToken' => 'Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken',
+    'PreventRequestForgery' => 'Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery',
+]);
+
 // ── Guard failure must not fail open ────────────────
+
+it('sends a guest to the login screen when the auth middleware refuses them', function () {
+    $reported = captureReports();
+
+    Route::native('/login', CounterScreen::class)->name('login');
+    Route::native('/guarded', GuardedScreen::class)->middleware('auth');
+
+    Native::visit('/guarded')->assertReplacedWith('/login');
+
+    expect(GuardedScreen::$mounts)->toBe(0);
+    expect($reported)->toHaveCount(0);
+});
 
 it('sends the user to the start_url when the middleware itself blows up', function () {
     // An unresolvable alias throws inside the pipeline. Failing OPEN here
@@ -312,7 +355,7 @@ function captureReports(): ArrayObject
  * `withRouting(web: routes/mobile.php)` puts every native route inside it —
  * so this is the shape the guard actually meets in production.
  */
-function registerWebGroup(): void
+function registerWebGroup(array $extra = []): void
 {
     // Build the kernel first. Its constructor syncs its own groups onto the
     // router, which would replace this one if it were built afterwards.
@@ -324,5 +367,6 @@ function registerWebGroup(): void
         StartSession::class,
         ShareErrorsFromSession::class,
         SubstituteBindings::class,
+        ...$extra,
     ]);
 }

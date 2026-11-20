@@ -93,9 +93,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // The https URL behind pendingDeepLink when it came from an app link, so a
     // cold start can still give an unrouted link back to the browser.
     private var pendingDeepLinkUrl: String? = null
-    // An app link that launched the app (route to URL), held until the start
-    // screen's native loop is running and PHP can decide where it goes.
-    private var coldAppLink: Pair<String, String>? = null
+    // A link with no native screen that launched the app (route to its https
+    // URL, which only an app link has), held until the start screen's native
+    // loop is running and PHP can decide where it goes.
+    private var coldAppLink: Pair<String, String?>? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
 
@@ -168,6 +169,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // Watch OS thermal status (Android 10+). Seed-callback on register is
         // skipped inside the monitor so launch doesn't look like a change.
         ThermalStateMonitor.start(this)
+
+        // Tell PHP when the app goes to the background and comes back.
+        AppLifecycleMonitor.start(application)
 
         // Android 15 edge-to-edge compatibility fix
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -257,19 +261,20 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 var target = pendingDeepLink ?: startUrl
                 var plan = BootPlanner.plan(this, target)
 
-                // An app link to a path with no native screen could be a web
-                // route or nothing at all, and only PHP can tell. Loading it
-                // straight into the WebView shows a local 404 for the second
-                // kind. Boot the start screen instead and hand the link over
-                // once its native loop is running, the same as a link that
-                // arrives while the app is open: PHP navigates to it or gives it
-                // back to the browser.
-                val appLinkUrl = pendingDeepLinkUrl
-                if (pendingDeepLink != null && appLinkUrl != null &&
+                // A link to a path with no native screen could be a web route
+                // or nothing at all, and only PHP can tell. Loading it straight
+                // into the WebView shows a local 404 for the second kind, with
+                // no way back into the app. Boot the start screen instead and
+                // hand the link over once its native loop is running, the same
+                // as a link that arrives while the app is open: PHP navigates
+                // to it, gives an app link back to the browser, or drops it and
+                // stays on the start screen. Custom-scheme links and tapped
+                // notifications go this way too.
+                if (pendingDeepLink != null &&
                     plan == BootPlanner.Entry.WEB_LEGACY &&
                     BootPlanner.plan(this, startUrl) == BootPlanner.Entry.NATIVE_DIRECT) {
                     Log.d("DeepLink", "⏳ No native screen for $target, booting $startUrl and handing the link to PHP")
-                    coldAppLink = target to appLinkUrl
+                    coldAppLink = target to pendingDeepLinkUrl
                     target = startUrl
                     plan = BootPlanner.Entry.NATIVE_DIRECT
                 }

@@ -151,6 +151,7 @@ struct NativeRootTabsRenderer: View {
         let searchMode = node.props.getString("nav_search_mode", default: "static")
         let searchDebounceMs = node.props.getInt("nav_search_debounce_ms", default: 250)
         let searchOnQueryCb = Int(node.props.getCallbackId("nav_search_on_query"))
+        let searchOnSubmitCb = Int(node.props.getCallbackId("nav_search_on_submit"))
         // Each search item is a `search_item` child node of the tabs
         // root (parallel to `bottom_nav_item`). PHP couldn't carry the
         // mixed string/object/element item shapes through the prop
@@ -333,6 +334,7 @@ struct NativeRootTabsRenderer: View {
                         itemNodes: searchItemNodes,
                         mode: searchMode,
                         onQueryCallbackId: searchOnQueryCb,
+                        onSubmitCallbackId: searchOnSubmitCb,
                         debounceMs: searchDebounceMs
                     )
                     .modifier(SystemTabBarSuppressionModifier(
@@ -350,6 +352,7 @@ struct NativeRootTabsRenderer: View {
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
         .modifier(TabBarAccessoryModifier(accessory: customPresenter == nil ? accessory : nil))
+        .modifier(SearchTabActivationModifier())
         .modifier(CustomTabPresentationModifier(
             presenter: customPresenter,
             context: presentationContext,
@@ -530,10 +533,19 @@ private struct PerTabContent: View {
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
+                // Each level names itself to the morph store (`heroScreen`),
+                // scoped by tab so two tabs can't collide. See
+                // `HeroFlightStore`.
                 levelView(uri: coordinator.rootLevelUri, isRoot: true)
+                    .environment(\.heroScreen, HeroFlightStore.screenId(
+                        stack: coordinator.rootUri, uri: coordinator.rootLevelUri
+                    ))
                     .navigationDestination(for: String.self) { uri in
                         StackLevelView(level: coordinator.level(for: uri)) {
                             levelView(uri: uri, isRoot: false)
+                                .environment(\.heroScreen, HeroFlightStore.screenId(
+                                    stack: coordinator.rootUri, uri: uri
+                                ))
                         }
                     }
             }
@@ -572,6 +584,7 @@ private struct PerTabContent: View {
                 .modifier(TabsToolbarModifier(
                     showBack: fallbackShowBack && isRoot,
                     title: fallbackTitle,
+                    subtitle: "",
                     titleNode: nil,
                     actions: [],
                     textArgb: fallbackTextArgb,
@@ -585,6 +598,7 @@ private struct PerTabContent: View {
     @ViewBuilder
     private func renderLevel(_ root: NativeUINode, isRoot: Bool) -> some View {
         let title = root.props.getString("nav_title", default: fallbackTitle)
+        let subtitle = root.props.getString("nav_subtitle", default: "")
         // Per-screen explicit hide signal (PHP-side `$hidesTabBar` /
         // `tabBarOptions()->hidden()`). Unions with the `!isRoot`
         // path-depth signal in `HideTabBarOnPushModifier` so either can
@@ -658,9 +672,17 @@ private struct PerTabContent: View {
             // blanking it renders those entries as empty glass pills.
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(titleDisplayMode)
+            // Large and automatic bars take the subtitle from the system
+            // (iOS 26+); inline bars stack it under the title in the
+            // `.principal` slot, as the stack renderer does.
+            .modifier(NavigationSubtitleModifier(
+                subtitle: subtitle,
+                showsAsPrincipal: titleDisplayMode == .inline
+            ))
             .modifier(TabsToolbarModifier(
                 showBack: manualBack,
                 title: title,
+                subtitle: subtitle,
                 titleNode: titleNode,
                 actions: actions,
                 textArgb: textArgb,
@@ -734,6 +756,7 @@ private struct PerTabContent: View {
 private struct TabsToolbarModifier: ViewModifier {
     let showBack: Bool
     let title: String
+    let subtitle: String
     let titleNode: NativeUINode?
     let actions: [NativeUINode]
     let textArgb: Int
@@ -779,6 +802,20 @@ private struct TabsToolbarModifier: ViewModifier {
                             ForEach(titleNode.children) { child in
                                 NodeView(node: child).equatable()
                             }
+                        }
+                    }
+                } else if inline && !subtitle.isEmpty {
+                    // The system inline title has no subtitle line, so draw
+                    // both in the principal slot, matching the stack
+                    // renderer's inline title.
+                    ToolbarItem(placement: .principal) {
+                        VStack(spacing: 0) {
+                            Text(title)
+                                .font(.headline)
+                                .foregroundColor(textColor)
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundColor(textColor.opacity(0.7))
                         }
                     }
                 }
@@ -1163,6 +1200,28 @@ private struct TabBarAccessoryModifier: ViewModifier {
     }
 }
 
+/// Keeps the search tab as its own round button beside the bar, and makes
+/// tapping it open the search field, as iOS 26 did by default.
+///
+/// From the iOS 27 SDK, the default activation (`.automatic`) puts a
+/// `Tab(role: .search)` inside the bar as an ordinary tab, and selecting it
+/// no longer brings up the field. An app built with Xcode 26 keeps the old
+/// look even on iOS 27, so the change only shows once an app is rebuilt with
+/// Xcode 27. Asking for `.searchTabSelection` restores the iOS 26 behaviour.
+private struct SearchTabActivationModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.tabViewSearchActivation(.searchTabSelection)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 /// Replaces only the visual tab strip. The underlying TabView and every
 /// per-tab NavigationStack remain mounted and owned by NativePHP.
 private struct CustomTabPresentationModifier: ViewModifier {
@@ -1268,12 +1327,15 @@ struct SearchableNavBarModifier: ViewModifier {
 ///
 /// Debounced query changes forward to PHP's `onSearchQuery` via the
 /// existing TEXT_CHANGE event (dynamic mode); static mode filters
-/// locally inside `NativeSearchTabRoot`.
+/// locally inside `NativeSearchTabRoot`. Submitting the field (the
+/// keyboard's Search key) sends its text to PHP's `onSearchSubmit` as a
+/// SUBMIT event, when the screen defines one.
 private struct SearchTabContainer: View {
     let placeholder: String
     let itemNodes: [NativeUINode]
     let mode: String
     let onQueryCallbackId: Int
+    let onSubmitCallbackId: Int
     let debounceMs: Int
 
     @State private var query: String = ""
@@ -1290,6 +1352,13 @@ private struct SearchTabContainer: View {
                 .modifier(WindowBackgroundModifier())
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
+        .onSubmit(of: .search) {
+            guard onSubmitCallbackId != 0 else { return }
+            // The submit carries the whole query, so a keystroke still
+            // waiting on the debounce has nothing left to add.
+            debounceTask?.cancel()
+            NativeElementBridge.sendSubmitEvent(onSubmitCallbackId, nodeId: 0, text: query)
+        }
         .onChange(of: query) { _, newValue in
             guard mode == "dynamic", onQueryCallbackId != 0 else { return }
             debounceTask?.cancel()
