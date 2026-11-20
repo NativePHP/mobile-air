@@ -125,7 +125,7 @@ struct NodeStyleModifier: ViewModifier {
     /// The `.background(_ view:)` overload stops at the safe area, which left
     /// the platform default (black in dark mode) showing in those insets.
     private func backgroundFill(dark: Bool) -> AnyShapeStyle {
-        if let gradient = linearGradient {
+        if let gradient = linearGradient(dark: dark) {
             AnyShapeStyle(gradient)
         } else {
             AnyShapeStyle(backgroundColor(dark: dark))
@@ -145,8 +145,11 @@ struct NodeStyleModifier: ViewModifier {
     /// variable-length stop list. `gradient_stops` is a comma-joined list of
     /// two or three `#AARRGGBB` values; `gradient_dx`/`gradient_dy` are the
     /// unit vector the gradient travels toward, in view space (y grows down).
-    private var linearGradient: LinearGradient? {
-        let raw = props.getString("gradient_stops", default: "")
+    /// `dark_gradient_stops`, set when a stop is a theme token, replaces the
+    /// list in dark mode, as `dark_bg_color` replaces the flat colour.
+    private func linearGradient(dark: Bool) -> LinearGradient? {
+        let darkRaw = dark ? props.getString("dark_gradient_stops", default: "") : ""
+        let raw = darkRaw.isEmpty ? props.getString("gradient_stops", default: "") : darkRaw
         guard !raw.isEmpty else { return nil }
 
         let colors = raw

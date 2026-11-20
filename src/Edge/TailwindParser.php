@@ -1318,6 +1318,10 @@ class TailwindParser
      * stop. Accepts the full colour grammar (palette names, hex, `/N` opacity)
      * plus `theme-<token>`, so a gradient can be themed like any other fill.
      *
+     * A theme stop also carries its dark hex (`darkFrom` / `darkVia` / `darkTo`)
+     * when it differs, the way `bg-theme-*` carries `dark.bg`. It stays in the
+     * `gradient` bucket because that bucket merges by key, stop by stop.
+     *
      * A stop with no gradient direction is inert: the native side only paints
      * when it has both an axis and at least two stops.
      *
@@ -1325,7 +1329,8 @@ class TailwindParser
      */
     private static function parseGradientStop(string $position, string $value): ?array
     {
-        $hex = str_starts_with($value, 'theme-')
+        $isTheme = str_starts_with($value, 'theme-');
+        $hex = $isTheme
             ? self::resolveThemeToken(substr($value, 6), false)
             : self::resolveColorValue($value);
 
@@ -1333,7 +1338,13 @@ class TailwindParser
             return null;
         }
 
-        return ['gradient' => [$position => $hex]];
+        $out = ['gradient' => [$position => $hex]];
+        $dark = $isTheme ? self::resolveThemeToken(substr($value, 6), true) : null;
+        if ($dark !== null && $dark !== $hex) {
+            $out['gradient']['dark'.ucfirst($position)] = $dark;
+        }
+
+        return $out;
     }
 
     private static function parseBgColor(string $value): ?array

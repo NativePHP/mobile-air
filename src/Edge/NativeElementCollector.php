@@ -867,7 +867,10 @@ class NativeElementCollector
      * of painting something the author never asked for. When present, the
      * native style modifiers draw this INSTEAD of `bg_color`.
      *
-     * @return array{gradient_dx?: float, gradient_dy?: float, gradient_stops?: string}
+     * `dark_gradient_stops` is added when a theme stop has a dark hex; stops
+     * without one repeat their light colour, so both lists line up.
+     *
+     * @return array{gradient_dx?: float, gradient_dy?: float, gradient_stops?: string, dark_gradient_stops?: string}
      */
     public static function buildGradientProps(array $attrs): array
     {
@@ -888,13 +891,25 @@ class NativeElementCollector
             return [];
         }
 
-        return [
+        $darkStops = array_values(array_filter([
+            $gradient['darkFrom'] ?? $gradient['from'] ?? null,
+            $gradient['darkVia'] ?? $gradient['via'] ?? null,
+            $gradient['darkTo'] ?? $gradient['to'] ?? null,
+        ]));
+
+        $props = [
             'gradient_dx' => (float) $direction[0],
             'gradient_dy' => (float) $direction[1],
             // Comma-joined so the stop list stays a single string prop; the
             // native side splits it. Two or three `#AARRGGBB` entries.
             'gradient_stops' => implode(',', $stops),
         ];
+
+        if ($darkStops !== $stops) {
+            $props['dark_gradient_stops'] = implode(',', $darkStops);
+        }
+
+        return $props;
     }
 
     /**
