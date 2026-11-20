@@ -31,9 +31,12 @@ class AppUpdateManager {
         try? FileManager.default.createDirectory(atPath: updatesPath, withIntermediateDirectories: true)
         #endif
 
-        // Also covers installs from before the flag was set at all.
+        // Also covers installs from before the flag was set at all. Only the
+        // OTA path creates the updates folder, so only it needs excluding.
         excludeFromBackup(appPath)
+        #if NATIVEPHP_OTA
         excludeFromBackup(updatesPath)
+        #endif
     }
 
     /// Documents/app is unpacked from the app.zip inside the .app bundle, and
