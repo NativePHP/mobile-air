@@ -768,6 +768,23 @@ abstract class Element
     }
 
     /**
+     * The type name this element is sent to the device as.
+     *
+     * Almost always the same as getType(). It differs for an element that
+     * exists only on the PHP side and should reach the renderers as one
+     * they already know, such as a package's own container that paints
+     * as a plain `column`. getType() stays the PHP identity, so hoisting,
+     * validation and anything else that asks "what is this?" still sees
+     * the real type. Every path that hands a type name to
+     * native (toArray() for the flat buffer and Jump, and the streaming
+     * collector) reads this instead.
+     */
+    public function wireType(): string
+    {
+        return $this->type;
+    }
+
+    /**
      * @return Element[]
      */
     public function getChildren(): array
@@ -961,12 +978,17 @@ abstract class Element
         }
 
         // A #[Memo] child's root, unchanged since it was built. Put back in
-        // the same place (same registry, positional id, key path and index),
-        // its walk gives the same ids and hashes as last time; when the native
-        // side still holds that subtree (its hash is what we recorded for it
-        // last frame) and none of its ids is taken, answer with the REUSE
-        // marker the walk would end in, without walking it.
-        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F{$nextId}\x1F{$parentKeyPath}\x1F{$indexInParent}";
+        // the same place (same registry, positional id, key path, and its key,
+        // or its index when it has none), its walk gives the same ids and
+        // hashes as last time; when the native side still holds that subtree
+        // (its hash is what we recorded for it last frame) and none of its ids
+        // is taken, answer with the REUSE marker the walk would end in,
+        // without walking it. A keyed root's ids come from parent/key, and so
+        // do its descendants', so its index doesn't matter: a row moved by an
+        // insert before it still answers without a walk. Nothing under a key
+        // takes a positional id either, so the nextId restored below is the
+        // one it came in with.
+        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F{$nextId}\x1F{$parentKeyPath}\x1F".($this->key !== null ? "k\x1F{$this->key}" : $indexInParent);
         $last = $this->lastWalk;
 
         if ($last !== null
@@ -978,7 +1000,7 @@ abstract class Element
 
             return [
                 'id' => $last['id'],
-                'type' => $this->type,
+                'type' => $this->wireType(),
                 'flags' => 1, // NPHP_NODE_FLAG_REUSE
                 '_hash' => $last['hash'],
             ];
@@ -1113,7 +1135,7 @@ abstract class Element
         if ($prior !== null && $prior === $contentHash) {
             return [
                 'id' => $id,
-                'type' => $this->type, // kept for native-side debug logging
+                'type' => $this->wireType(), // kept for native-side debug logging
                 'flags' => 1,          // NPHP_NODE_FLAG_REUSE
                 '_hash' => $contentHash,
             ];
@@ -1125,7 +1147,7 @@ abstract class Element
 
         $node = [
             'id' => $id,
-            'type' => $this->type,
+            'type' => $this->wireType(),
             '_hash' => $contentHash,
         ];
 

@@ -172,6 +172,16 @@ class NativeRouter
     protected static array $routes = [];
 
     /**
+     * Named route tables a package fills at runtime, see setRouteTable().
+     * Matched only after every app route, in the order the tables were
+     * first set, so a table can add a screen and never replace one of the
+     * app's.
+     *
+     * @var array<string, array<string, array{class: string, layout: ?string, route: IlluminateRoute, context: mixed, table: string}>>
+     */
+    protected static array $routeTables = [];
+
+    /**
      * Layout class active during a Route::nativeGroup(layout: ..., ...) closure.
      * Applied to any Route::native() registered while the group is open.
      */
@@ -321,6 +331,105 @@ class NativeRouter
     }
 
     /**
+     * Replace the named route table with these entries, keyed by URI
+     * pattern: `['/promos/{id}' => ['class' => PromoScreen::class,
+     * 'context' => 'promos.show']]`. An empty list removes the table.
+     *
+     * For a package that learns its screens while the app runs. The
+     * entry's `context` is handed to the screen it opens through
+     * NativeComponent::setRouteContext() before it mounts, so one screen
+     * class can serve many routes. An optional `layout` sets its chrome.
+     *
+     * Tables are matched only after every app route, so a table route
+     * never shadows one of the app's, even a parameterized one. An entry
+     * whose pattern an app route already has, or whose class is not a
+     * NativeComponent, is dropped and logged. Returns how many entries
+     * were kept. clearRoutes() clears every table.
+     *
+     * @param  array<string, array{class: class-string<NativeComponent>, context?: mixed, layout?: ?string}>  $entries
+     */
+    public static function setRouteTable(string $name, array $entries): int
+    {
+        $kept = [];
+
+        foreach ($entries as $uri => $entry) {
+            $class = is_array($entry) ? ($entry['class'] ?? null) : null;
+
+            if (! is_string($uri) || $uri === '' || ! is_string($class) || ! is_subclass_of($class, NativeComponent::class)) {
+                static::debugLog("route table [{$name}]: dropped a malformed entry for ".json_encode($uri));
+
+                continue;
+            }
+
+            $pattern = '/'.ltrim($uri, '/');
+
+            if (isset(static::$routes[$pattern])) {
+                static::debugLog("route table [{$name}]: dropped {$pattern}, the app has a route there");
+
+                continue;
+            }
+
+            $route = new IlluminateRoute(['GET'], ltrim($pattern, '/'), fn () => null);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+
+            $kept[$pattern] = [
+                'class' => $class,
+                'layout' => $entry['layout'] ?? null,
+                'route' => $route,
+                'context' => $entry['context'] ?? null,
+                'table' => $name,
+            ];
+        }
+
+        if ($kept === []) {
+            unset(static::$routeTables[$name]);
+        } else {
+            static::$routeTables[$name] = $kept;
+        }
+
+        return count($kept);
+    }
+
+    /**
+     * The named route table's entries, keyed by URI pattern.
+     *
+     * @return array<string, array{class: string, context: mixed}>
+     */
+    public static function routeTable(string $name): array
+    {
+        return array_map(
+            fn (array $entry) => ['class' => $entry['class'], 'context' => $entry['context']],
+            static::$routeTables[$name] ?? [],
+        );
+    }
+
+    /**
+     * The route table entry a URI opens, as `['table' => ..., 'class' =>
+     * ..., 'context' => ...]`, or null when it matches an app route or no
+     * route at all. Nothing is bound, so it is safe to ask.
+     *
+     * @return array{table: string, class: string, context: mixed}|null
+     */
+    public static function routeEntryFor(string $uri): ?array
+    {
+        try {
+            $entry = static::matchRoute($uri)['entry'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (! isset($entry['table'])) {
+            return null;
+        }
+
+        return ['table' => $entry['table'], 'class' => $entry['class'], 'context' => $entry['context']];
+    }
+
+    /**
      * Every registered native route, keyed by URI pattern — each value a
      * ['class' => ..., 'layout' => ...] pair. Powers app-wide test sweeps
      * (smoke tests, accessibility audits) that should cover new screens
@@ -406,6 +515,7 @@ class NativeRouter
             'params' => $route->parametersWithoutNulls(),
             'query' => static::queryOf($uri),
             'route' => $route,
+            'context' => $entry['context'] ?? null,
         ];
     }
 
@@ -420,18 +530,26 @@ class NativeRouter
         // from parsing it here, where too many parameters would throw.
         $request = Request::create(static::pathOf($uri), 'GET');
 
-        $literalRoutes = [];
-        $parameterizedRoutes = [];
+        // App routes first, all of them, then each route table in turn: a
+        // table route never shadows an app route, even a parameterized one.
+        $ordered = [];
 
-        foreach (static::$routes as $entry) {
-            if ($entry['route']->parameterNames() === []) {
-                $literalRoutes[] = $entry;
-            } else {
-                $parameterizedRoutes[] = $entry;
+        foreach ([static::$routes, ...array_values(static::$routeTables)] as $table) {
+            $literalRoutes = [];
+            $parameterizedRoutes = [];
+
+            foreach ($table as $entry) {
+                if ($entry['route']->parameterNames() === []) {
+                    $literalRoutes[] = $entry;
+                } else {
+                    $parameterizedRoutes[] = $entry;
+                }
             }
+
+            array_push($ordered, ...$literalRoutes, ...$parameterizedRoutes);
         }
 
-        foreach ([...$literalRoutes, ...$parameterizedRoutes] as $entry) {
+        foreach ($ordered as $entry) {
             $registeredRoute = $entry['route'];
 
             if (function_exists('app') && app()->bound('router')) {
@@ -533,6 +651,7 @@ class NativeRouter
     public static function clearRoutes(): void
     {
         static::$routes = [];
+        static::$routeTables = [];
         static::$currentGroupLayout = null;
     }
 
@@ -617,6 +736,7 @@ class NativeRouter
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
                     query: $resolved['query'],
+                    context: $resolved['context'],
                 );
                 if (! empty($resolved['layout'])) {
                     $component->setLayout($resolved['layout']);
@@ -661,11 +781,16 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params, query: static::queryOf($uri));
+
+            // A route table entry hands its screen a context only the route
+            // knows, so it is looked up before the component is made.
+            $resolved = $uri !== '' ? static::resolve($uri) : null;
+            $context = ($resolved['class'] ?? null) === $class ? ($resolved['context'] ?? null) : null;
+
+            $component = $this->createComponent($class, $params, query: static::queryOf($uri), context: $context);
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
-            $resolved = $uri !== '' ? static::resolve($uri) : null;
             if ($resolved !== null && ! empty($resolved['layout'])) {
                 $component->setLayout($resolved['layout']);
             }
@@ -832,6 +957,7 @@ class NativeRouter
                         $resolved['params'],
                         $intent->data,
                         $resolved['query'],
+                        $resolved['context'],
                     );
                     if (! empty($resolved['layout'])) {
                         $next->setLayout($resolved['layout']);
@@ -899,6 +1025,7 @@ class NativeRouter
                             $resolved['params'],
                             $intent->data,
                             $resolved['query'],
+                            $resolved['context'],
                         );
                         if (! empty($resolved['layout'])) {
                             $next->setLayout($resolved['layout']);
@@ -1006,9 +1133,11 @@ class NativeRouter
         }
     }
 
-    protected function createComponent(string $class, array $params = [], array $data = [], array $query = []): NativeComponent
+    /** `$context` is the route table entry's context, null for an app route. */
+    protected function createComponent(string $class, array $params = [], array $data = [], array $query = [], mixed $context = null): NativeComponent
     {
         $component = new $class;
+        $component->setRouteContext($context);
         $component->setRouter($this);
         $component->setParams($params);
         $component->setData($data);

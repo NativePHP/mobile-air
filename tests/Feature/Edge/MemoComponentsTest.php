@@ -8,6 +8,8 @@ use Native\Mobile\Testing\TestableComponent;
 use Tests\Fixtures\Edge\MemoClosureChild;
 use Tests\Fixtures\Edge\MemoHostScreen;
 use Tests\Fixtures\Edge\MemoItem;
+use Tests\Fixtures\Edge\MemoListRowChild;
+use Tests\Fixtures\Edge\MemoListScreen;
 use Tests\Fixtures\Edge\MemoObjectChild;
 use Tests\Fixtures\Edge\MemoRowChild;
 use Tests\Fixtures\Edge\MemoTallyChild;
@@ -24,6 +26,7 @@ beforeEach(function () {
         'memo-tally-child' => MemoTallyChild::class,
         'memo-closure-child' => MemoClosureChild::class,
         'memo-object-child' => MemoObjectChild::class,
+        'memo-list-row-child' => MemoListRowChild::class,
     ]);
 
     MemoRowChild::$rendered = [];
@@ -196,3 +199,101 @@ it('publishes the same frames when a kept row answers from its last walk as when
         ->and(json_encode($answered))->toBe(json_encode($walked))
         ->and(substr_count(json_encode(end($answered)), '"flags":1'))->toBeGreaterThan(0);
 });
+
+/** The root element MemoListScreen's row `$slug` keeps between frames. */
+function memoListRoot(TestableComponent $screen, string $slug): Element
+{
+    $children = (new ReflectionProperty(NativeComponent::class, 'nativeChildComponents'))->getValue($screen->instance());
+    $memoRoots = new ReflectionProperty(NativeComponent::class, 'nativeMemoRoots');
+
+    foreach ($children as $child) {
+        if ($child instanceof MemoListRowChild && $child->slug === $slug) {
+            return $memoRoots->getValue($child)[0];
+        }
+    }
+
+    throw new RuntimeException("No kept root for row {$slug}");
+}
+
+/**
+ * Tags a kept root's last walk. toArray() replaces lastWalk whenever it walks
+ * the subtree, so the tag survives a frame only if the root answered without walking.
+ */
+function tagLastWalk(Element $root): void
+{
+    $lastWalk = new ReflectionProperty(Element::class, 'lastWalk');
+    $lastWalk->setValue($root, ['tagged' => true] + $lastWalk->getValue($root));
+}
+
+function walkedSinceTagged(Element $root): bool
+{
+    return ! isset((new ReflectionProperty(Element::class, 'lastWalk'))->getValue($root)['tagged']);
+}
+
+/** Publishes from MemoListScreen across frames that move kept rows to new indexes. */
+function memoListPublishes(bool $keyed, bool $walkEveryRow): array
+{
+    $bridge = Native::fakeBridge();
+    $bridge->runtimeFlags = 2;
+    $from = count($bridge->publishes);
+
+    $screen = Native::test(MemoListScreen::class)->set('keyed', $keyed);
+    $frames = [
+        fn (TestableComponent $s) => $s->set('title', 'One'),
+        fn (TestableComponent $s) => $s->set('rows', ['a' => 'Alpha', 'b' => 'Bravo', 'c' => 'Charlie']),
+        fn (TestableComponent $s) => $s->set('title', 'Two'),
+        fn (TestableComponent $s) => $s->set('rows', ['a' => 'Alpha', 'b' => 'Bravo', 'c' => 'Charlie two']),
+        fn (TestableComponent $s) => $s->set('rows', ['z' => 'Zulu', 'a' => 'Alpha', 'c' => 'Charlie']),
+        fn (TestableComponent $s) => $s->set('title', 'Three'),
+    ];
+
+    foreach ($frames as $frame) {
+        if ($walkEveryRow) {
+            forgetLastWalks($screen->instance());
+        }
+
+        $frame($screen);
+    }
+
+    return array_slice($bridge->publishes, $from);
+}
+
+it('answers a keyed kept row from its last walk when a row is inserted before it', function () {
+    $bridge = Native::fakeBridge();
+    $bridge->runtimeFlags = 2;
+    $screen = Native::test(MemoListScreen::class)->set('title', 'One');
+    $bravo = memoListRoot($screen, 'b');
+    $charlie = memoListRoot($screen, 'c');
+    tagLastWalk($bravo);
+    tagLastWalk($charlie);
+
+    $screen->set('rows', ['a' => 'Alpha', 'b' => 'Bravo', 'c' => 'Charlie'])->assertSee('Row: Alpha T0');
+
+    $list = end($bridge->publishes)['children'][1]['children'];
+
+    expect(walkedSinceTagged($bravo))->toBeFalse()
+        ->and(walkedSinceTagged($charlie))->toBeFalse()
+        ->and(array_column($list, 'flags'))->toBe([1, 1])
+        ->and($list[0])->not->toHaveKey('flags');
+});
+
+it('walks an unkeyed kept row again when a row is inserted before it', function () {
+    Native::fakeBridge()->runtimeFlags = 2;
+    $screen = Native::test(MemoListScreen::class)->set('keyed', false)->set('title', 'One');
+    $charlie = memoListRoot($screen, 'c');
+    tagLastWalk($charlie);
+
+    $screen->set('title', 'Two');
+    expect(walkedSinceTagged($charlie))->toBeFalse();
+
+    $screen->set('rows', ['a' => 'Alpha', 'b' => 'Bravo', 'c' => 'Charlie'])->assertSee('Row: Charlie T0');
+    expect(walkedSinceTagged($charlie))->toBeTrue();
+});
+
+it('publishes the same frames when moved kept rows answer from their last walk as when they are walked', function (bool $keyed) {
+    $answered = memoListPublishes($keyed, walkEveryRow: false);
+    $walked = memoListPublishes($keyed, walkEveryRow: true);
+
+    expect(count($answered))->toBeGreaterThanOrEqual(7)
+        ->and(json_encode($answered))->toBe(json_encode($walked));
+})->with(['keyed rows' => true, 'unkeyed rows' => false]);
