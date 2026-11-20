@@ -515,7 +515,8 @@ struct StackRootEdgeSwipeBack: UIViewRepresentable {
 /// didn't supply a bottom bar for this level. Mirrors the tabs
 /// renderer's `BottomBarInsetModifier`: iOS 26 uses `.safeAreaBar`
 /// (first-class floating glass bar primitive), pre-26 falls back to
-/// `.safeAreaInset(.bottom)`.
+/// `.safeAreaInset(.bottom)`. A `bottom_bar` carrying `glass` gets soft
+/// glass behind the whole bar (see `BottomBarSoftGlass`).
 private struct StackBottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -534,16 +535,17 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // The `#if` keeps `.safeAreaBar` out of the compilation entirely
             // on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
             // `LiquidGlassAvailability.swift`.
+            let glass = bottomBar.props.getInt("glass", default: 0)
             #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 content.safeAreaBar(edge: .bottom) {
-                    barContent(inner)
+                    barContent(inner, glass: glass)
                 }
             } else {
-                fallback(content, inner)
+                fallback(content, inner, glass: glass)
             }
             #else
-            fallback(content, inner)
+            fallback(content, inner, glass: glass)
             #endif
         } else {
             content
@@ -553,9 +555,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// Pre-26 placement: a plain bottom safe-area inset, no floating glass
     /// bar primitive.
     @ViewBuilder
-    private func fallback(_ content: Content, _ inner: NativeUINode) -> some View {
+    private func fallback(_ content: Content, _ inner: NativeUINode, glass: Int) -> some View {
         content.safeAreaInset(edge: .bottom, spacing: 0) {
-            barContent(inner)
+            barContent(inner, glass: glass)
         }
     }
 
@@ -566,11 +568,14 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// through the bottom safe area (the iMessage treatment). Bars without
     /// an explicit background keep `.clear` and are unaffected.
     @ViewBuilder
-    private func barContent(_ inner: NativeUINode) -> some View {
+    private func barContent(_ inner: NativeUINode, glass: Int) -> some View {
         NodeView(node: inner)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity)
             .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+            .background(alignment: .top) {
+                BottomBarSoftGlass(flags: glass)
+            }
     }
 
     /// The bar root's resolved background color for the active appearance —
