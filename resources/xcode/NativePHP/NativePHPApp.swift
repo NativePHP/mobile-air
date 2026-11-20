@@ -47,6 +47,7 @@ struct NativePHPApp: App {
         registerBridgeFunctions()
         ThermalStateMonitor.start()
         AppLifecycleMonitor.start()
+        SystemFunctions.startAppearanceOverride()
 
         DebugLogger.shared.log("📱 NativePHPApp.init() completed (minimal)")
     }

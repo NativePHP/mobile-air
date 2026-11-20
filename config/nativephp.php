@@ -136,7 +136,8 @@ return [
     |          'light'  - Always light
     |
     | iOS only for now: written to the Info.plist as UIUserInterfaceStyle at
-    | build time.
+    | build time. To let users pick a theme while the app runs (on iOS and
+    | Android), call System::setAppearance('system'|'light'|'dark').
     |
     */
 
