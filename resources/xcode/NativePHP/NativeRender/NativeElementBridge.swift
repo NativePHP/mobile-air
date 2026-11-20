@@ -1060,6 +1060,13 @@ final class NativeElementBridge {
     /// one all the way down, so a positional id that now names a different
     /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
+        // A REUSE marker puts the previous tree's node itself in the new
+        // tree, so there's nothing under it to compare. Without this, a
+        // frame that changes one row still walks every row.
+        if old === new {
+            return old
+        }
+
         guard old.id == new.id, old.type == new.type else {
             return new
         }

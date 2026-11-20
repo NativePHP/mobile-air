@@ -954,6 +954,14 @@ class NativeElementBridge private constructor() {
          * (reference equality = fast Compose skip).
          */
         private fun diffNodeWithStats(old: NativeUINode, new: NativeUINode, stats: DiffStats): NativeUINode {
+            // A REUSE marker puts the previous tree's node itself in the new
+            // tree, so there's nothing under it to compare. Without this, a
+            // frame that changes one row still walks every row.
+            if (old === new) {
+                stats.reused++
+                return old
+            }
+
             // Structural mismatch — use new node entirely
             if (old.id != new.id || old.type != new.type || old.children.size != new.children.size) {
                 stats.replaced += countNodes(new)
