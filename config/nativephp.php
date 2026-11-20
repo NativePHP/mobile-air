@@ -268,7 +268,12 @@ return [
     | Ship the app's PHP code as one compressed phar built by Parcel instead
     | of as a tree of files. PHP reads the code straight out of the archive
     | on the device, so it is never unpacked. .env and public/ stay outside
-    | it. 'binary' is the parcel command to run.
+    | it.
+    |
+    | Parcel is a separate tool: install it with `composer global require
+    | nativephp/parcel` (1.0 or later). It isn't a dependency of this package
+    | because Box, which it builds on, doesn't support Symfony 8 yet. 'binary'
+    | is the parcel command to run, if it isn't on your PATH.
     |
     | With 'sign' on, `parcel sign` signs the bundle (ECDSA P-256) and the app
     | refuses to run code that no longer matches it. Parcel either asks

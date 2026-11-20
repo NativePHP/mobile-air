@@ -50,7 +50,8 @@
         "spatie/laravel-ray": "^1.40"
     },
     "suggest": {
-        "ext-zip": "Required by native:install to validate and extract the downloaded Android PHP binary archives"
+        "ext-zip": "Required by native:install to validate and extract the downloaded Android PHP binary archives",
+        "nativephp/parcel": "Install globally (composer global require nativephp/parcel) to ship an iOS app's PHP as one signed phar with NATIVEPHP_PARCEL=true"
     },
     "conflict": {
         "nativephp/mobile-device": "*",

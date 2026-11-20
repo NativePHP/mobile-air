@@ -1072,6 +1072,7 @@ class BuildIosAppCommand extends Command
         $phar = $this->containerPath.self::PARCEL_BUNDLE;
         $zipPath = $this->containerPath.'app.zip';
 
+        $this->ensureParcelIsInstalled();
         $this->removeParcelBundle();
 
         $this->components->task('Bundling PHP code with Parcel', function () use ($release, $workPath, $sourcePath, $payloadPath, $phar) {
@@ -1198,6 +1199,35 @@ class BuildIosAppCommand extends Command
             file_put_contents($this->logPath, 'ERROR: parcel '.$arguments[0].' failed with exit code '.$result->exitCode().PHP_EOL, FILE_APPEND);
 
             throw new \Exception("parcel {$arguments[0]} failed: ".(trim($result->errorOutput()) ?: trim($result->output())));
+        }
+    }
+
+    /**
+     * Parcel is a separate tool, installed globally rather than required by
+     * this package: Box, which it builds on, doesn't support Symfony 8 yet,
+     * so requiring it would stop apps on Symfony 8 installing NativePHP at
+     * all. Check it's there, and new enough, before the build relies on it.
+     */
+    private function ensureParcelIsInstalled(): void
+    {
+        $binary = (string) config('nativephp.parcel.binary', 'parcel');
+
+        try {
+            $result = Process::run([$binary, 'list', '--format=json']);
+        } catch (\Throwable) {
+            $result = null;
+        }
+
+        if (! $result?->successful()) {
+            throw new \Exception("NATIVEPHP_PARCEL is on, but Parcel isn't installed at `{$binary}`. Install it with `composer global require nativephp/parcel`, or set NATIVEPHP_PARCEL_BINARY to where it is.");
+        }
+
+        // `parcel --version` has no number to compare, but `sign` and mobile
+        // bundles both arrived in 1.0, so an older Parcel lacks `sign`.
+        $commands = array_column(json_decode($result->output(), true)['commands'] ?? [], 'name');
+
+        if (! in_array('sign', $commands, true)) {
+            throw new \Exception("The Parcel at `{$binary}` is too old to build mobile bundles. Update it to 1.0 or later with `composer global require nativephp/parcel:^1.0`.");
         }
     }
 

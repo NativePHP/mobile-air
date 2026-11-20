@@ -234,6 +234,45 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertFileExists($container.'app.zip');
     }
 
+    public function test_a_parcel_build_stops_early_when_parcel_is_not_installed(): void
+    {
+        config(['nativephp.parcel.binary' => 'parcel']);
+        Process::preventStrayProcesses()->fake(['*' => Process::result(errorOutput: 'parcel: command not found', exitCode: 127)]);
+
+        $this->expectExceptionMessage('composer global require nativephp/parcel');
+
+        $this->checkParcelIsInstalled();
+    }
+
+    public function test_a_parcel_build_stops_early_when_parcel_is_older_than_1_0(): void
+    {
+        // Parcel before 1.0 has no `sign` command and no mobile bundles.
+        Process::preventStrayProcesses()->fake(['*' => Process::result(json_encode(['commands' => [
+            ['name' => 'compile'], ['name' => 'prepare'], ['name' => 'push-stubs'],
+        ]]))]);
+
+        $this->expectExceptionMessage('1.0 or later');
+
+        $this->checkParcelIsInstalled();
+    }
+
+    public function test_a_parcel_build_goes_ahead_with_parcel_1_0(): void
+    {
+        Process::preventStrayProcesses()->fake(['*' => Process::result(json_encode(['commands' => [
+            ['name' => 'compile'], ['name' => 'prepare'], ['name' => 'push-stubs'], ['name' => 'sign'],
+        ]]))]);
+
+        $this->checkParcelIsInstalled();
+
+        Process::assertRan(fn ($process) => $process->command === ['parcel', 'list', '--format=json']);
+    }
+
+    private function checkParcelIsInstalled(): void
+    {
+        $command = app(BuildIosAppCommand::class);
+        (new \ReflectionMethod($command, 'ensureParcelIsInstalled'))->invoke($command);
+    }
+
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
     {
         // storage/framework is excluded from the copy, but composer install
