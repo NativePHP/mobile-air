@@ -3,6 +3,7 @@
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\PestExpectations;
+use Native\Mobile\Testing\TestDumpHandler;
 use PHPUnit\Framework\AssertionFailedError;
 use Tests\Fixtures\Edge\ChromeColumnLayout;
 use Tests\Fixtures\Edge\ChromeScreen;
@@ -333,9 +334,29 @@ it('matches the wire tree snapshot', function () {
 
 // ── dd() capture ────────────────────────────────────
 
+// Locally this can't run under Herd's CLI dump interception or with
+// VAR_DUMPER_FORMAT set: dd() would end the whole test run. CI has neither.
+// The expectation lives in the body because Pest's skip exception is itself
+// an AssertionFailedError, which ->throws() would catch.
 it('turns a component dd() into a readable failure', function () {
-    Native::test(CounterScreen::class)->call('boom');
-})->throws(AssertionFailedError::class, 'kaboom');
+    expect(fn () => Native::test(CounterScreen::class)->call('boom'))
+        ->toThrow(AssertionFailedError::class, 'kaboom');
+})->skip(fn () => ! TestDumpHandler::canCapture(), 'dd() can\'t be caught in this process (Herd\'s CLI dump interception or VAR_DUMPER_FORMAT)');
+
+it('knows dd() can\'t be caught while VAR_DUMPER_FORMAT is set', function () {
+    $original = $_SERVER['VAR_DUMPER_FORMAT'] ?? null;
+    $_SERVER['VAR_DUMPER_FORMAT'] = 'cli';
+
+    try {
+        expect(TestDumpHandler::canCapture())->toBeFalse();
+    } finally {
+        if ($original === null) {
+            unset($_SERVER['VAR_DUMPER_FORMAT']);
+        } else {
+            $_SERVER['VAR_DUMPER_FORMAT'] = $original;
+        }
+    }
+});
 
 // ── Pest expectations ───────────────────────────────
 
