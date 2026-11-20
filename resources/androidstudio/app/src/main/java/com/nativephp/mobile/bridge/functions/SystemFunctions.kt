@@ -1,11 +1,13 @@
 package com.nativephp.mobile.bridge.functions
 
 import android.app.Activity
+import android.app.UiModeManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import com.nativephp.mobile.bridge.BridgeError
@@ -125,6 +127,40 @@ object SystemFunctions {
             val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
             return mapOf("appearance" to if (night) "dark" else "light")
+        }
+    }
+
+    /**
+     * Pin the app to light or dark, or follow the device again, through the
+     * per-app night mode (`UiModeManager.setApplicationNightMode`, the API
+     * AppCompat's `setDefaultNightMode` uses on API 31+). The system applies it
+     * as a uiMode configuration change, so Compose redraws in the new scheme and
+     * MainActivity pushes AppearanceChanged as it does for a device switch. The
+     * system persists the mode for this app, so nothing re-applies it at launch.
+     * Parameters:
+     *   - mode: string - "system", "light" or "dark"
+     * Returns:
+     *   - success: boolean - False below API 31, which has no per-app night mode
+     */
+    class SetAppearance(private val context: Context) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val nightMode = when (parameters["mode"] as? String) {
+                // AUTO at the app level means no override: follow the device.
+                "system" -> UiModeManager.MODE_NIGHT_AUTO
+                "light" -> UiModeManager.MODE_NIGHT_NO
+                "dark" -> UiModeManager.MODE_NIGHT_YES
+                else -> throw BridgeError.InvalidParameters("mode must be system, light or dark")
+            }
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                Log.w("System.SetAppearance", "Per-app night mode needs API 31, the app keeps following the device")
+                return mapOf("success" to false)
+            }
+
+            val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
+            uiModeManager.setApplicationNightMode(nightMode)
+
+            return mapOf("success" to true)
         }
     }
 

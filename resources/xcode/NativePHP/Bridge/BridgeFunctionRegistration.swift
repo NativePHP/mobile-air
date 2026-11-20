@@ -28,6 +28,7 @@ func registerBridgeFunctions() {
     // plugin). Android twin: bridge/functions/SystemFunctions.kt.
     registry.register("System.OpenAppSettings", function: SystemFunctions.OpenAppSettings())
     registry.register("System.GetAppearance", function: SystemFunctions.GetAppearance())
+    registry.register("System.SetAppearance", function: SystemFunctions.SetAppearance())
     registry.register("System.GetOrientation", function: SystemFunctions.GetOrientation())
 
     // UI.* — core built-in. Android twin: bridge/functions/UIFunctions.kt

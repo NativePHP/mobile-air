@@ -4,7 +4,11 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Alert\ButtonPressed;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Events\System\AppearanceChanged;
+use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\System;
+use Native\Mobile\Testing\FakeBridge;
+
+afterEach(fn () => FakeBridge::disable());
 
 /**
  * Reactive appearance: the query side (System cache) + the global-dispatch
@@ -30,6 +34,38 @@ it('caches appearance and answers isDark/isLight off it', function () {
 it('ignores a bogus appearance value', function () {
     System::rememberAppearance('dark');
     System::rememberAppearance('chartreuse'); // not light/dark → no change
+    expect((new System)->appearance())->toBe('dark');
+});
+
+it('sends the chosen appearance to the device', function (string $mode) {
+    $bridge = FakeBridge::enable();
+
+    SystemFacade::setAppearance($mode);
+
+    expect($bridge->callsTo('System.SetAppearance'))->toHaveCount(1)
+        ->and($bridge->callsTo('System.SetAppearance')[0]['params'])->toBe(['mode' => $mode]);
+})->with(['system', 'light', 'dark']);
+
+it('rejects an appearance the device does not know without calling it', function (string $mode) {
+    $bridge = FakeBridge::enable();
+
+    expect(fn () => (new System)->setAppearance($mode))->toThrow(InvalidArgumentException::class);
+
+    $bridge->assertNotCalled('System.SetAppearance');
+})->with(['auto', 'Dark', '']);
+
+it('leaves the appearance cache to the AppearanceChanged event', function () {
+    FakeBridge::enable();
+    System::rememberAppearance('light');
+
+    (new System)->setAppearance('dark');
+
+    // The device answers with AppearanceChanged once its windows have
+    // actually flipped; until then theme() must keep matching what is drawn.
+    expect((new System)->appearance())->toBe('light');
+
+    AppearanceChanged::dispatch('dark');
+
     expect((new System)->appearance())->toBe('dark');
 });
 
