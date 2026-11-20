@@ -52,10 +52,14 @@ use Native\Mobile\Edge\SharedValue;
  *
  * Bounded — a zoomable picture that can't be lost off screen. With
  * `bounded`, pan stops where the zoomed content's edges meet the area's
- * edges, and an axis on which the zoomed content fits stays centred. A
- * drag past an edge moves with resistance and springs back into place
- * when released, and so does a pinch that ends with the content out of
- * place. The content is the area itself, or, with `content-ratio` (width
+ * edges, an axis on which the zoomed content fits stays centred, and the
+ * content is clipped to the area. Let go, it glides on at the finger's
+ * speed and bounces off an edge it reaches. A drag that reaches an edge
+ * carries on into a pager or scroll view around the area, so the next
+ * picture slides in. With nothing around to take it, it moves with
+ * resistance and springs back into place when released, and so does a
+ * pinch that ends with the content out of place. The content is the
+ * area itself, or, with `content-ratio` (width
  * over height), that ratio fitted inside the area, which is where an
  * image with `fit="contain"` draws. Bind both pan axes and the zoom, and
  * bind the content's transform to the same values:
@@ -66,12 +70,14 @@ use Native\Mobile\Edge\SharedValue;
  *     </native:gesture-area>
  *
  * A bounded area only takes a one-finger drag while the zoomed content
- * has room to move. At its whole size the content has nowhere to go, so
- * drags are left to whatever is around the area, such as a pager or a
- * drag to close. Zoomed in, the same drags pan it. A zoom that ends a
- * hair past whole size still counts as whole size. So leave the pans
- * bound all the time. A pinch moves the bound pans too, keeping the
- * point between the fingers where it is.
+ * has room to move the way the finger is going. At its whole size the
+ * content has nowhere to go, so drags are left to whatever is around the
+ * area, such as a pager or a drag to close. Zoomed in, the same drags pan
+ * it, and at an edge a drag that way goes to the pager. A drag to close
+ * only gets drags at whole size. A zoom that ends a hair past whole size
+ * still counts as whole size. So leave the pans bound all the time. A
+ * pinch moves the bound pans too, keeping the point between the fingers
+ * where it is.
  *
  * Double tap to zoom — `@doubleTap.zoom="2"` zooms content at its whole
  * size to that scale on a double tap, bringing the tapped point to the
