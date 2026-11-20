@@ -151,7 +151,7 @@ class NativeElementBridge private constructor() {
         /* ── Shadow Thread ── */
 
         /** Frames waiting to be parsed, oldest first. See PendingFrames. */
-        private val pendingFrames = PendingFrames<ShadowUpdate>(MAX_PENDING_FRAMES) { it.detached() }
+        private val pendingFrames = PendingFrames<ShadowUpdate>(MAX_PENDING_FRAMES)
 
         /**
          * Frames that can wait before the reader gives up on them. Parsing is
@@ -239,37 +239,21 @@ class NativeElementBridge private constructor() {
                 }
                 val propDirect = nativeGetPropBuffer()
 
-                // Phase 3 — when NPHP_FLAG_DOUBLE_BUFFER is on, skip the
-                // heap copy entirely. The producer alternates between
-                // buffer A and B per publish, so the buffer we're about
-                // to parse is guaranteed to be untouched until the
-                // publish AFTER the next one — plenty of time for the
-                // shadow thread to finish parse, assuming parse < 2×
-                // average publish interval. Re-read runtime_flags here
-                // (not the latched startWatching value) so the toggle
-                // takes effect on the next frame.
-                //
-                // When the flag is off, fall back to the original byte[]
-                // copy — single-buffer + zero-copy is use-after-overwrite
-                // unsafe.
-                val zeroCopy = (nativeGetRuntimeFlags() and 0x04) != 0
-
-                val flatBuf = if (zeroCopy) {
-                    flatDirect.order(ByteOrder.LITTLE_ENDIAN)
-                } else {
-                    val flatBytes = ByteArray(flatDirect.capacity())
-                    flatDirect.get(flatBytes)
-                    ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
-                }
+                // Copy the frame out of PHP's buffers. With NPHP_FLAG_DOUBLE_BUFFER
+                // the producer alternates between two buffers, so a frame read in
+                // place is only safe until the publish after next. The shadow
+                // thread parses every frame in order and can fall behind by more
+                // than that, and a frame that outgrows its buffer reallocates it,
+                // so a frame read in place could be written over or freed while
+                // it's parsed.
+                val flatBytes = ByteArray(flatDirect.capacity())
+                flatDirect.get(flatBytes)
+                val flatBuf = ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
 
                 val propBuf = if (propDirect != null && propDirect.capacity() > 0) {
-                    if (zeroCopy) {
-                        propDirect.order(ByteOrder.LITTLE_ENDIAN)
-                    } else {
-                        val propBytes = ByteArray(propDirect.capacity())
-                        propDirect.get(propBytes)
-                        ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
-                    }
+                    val propBytes = ByteArray(propDirect.capacity())
+                    propDirect.get(propBytes)
+                    ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
                 } else null
 
                 // Snapshot navigation flag on PHP thread (avoid race with next update)
@@ -1036,18 +1020,7 @@ private data class ShadowUpdate(
     val navTransition: String?,  // what PHP staged for this navigation; null when not one
     val t0: Long,   // nanoTime at postTreeUpdate entry
     val t1: Long,   // nanoTime after JNI + buffer copy
-) {
-    /** This frame with its buffers copied out of the producer's, if they're read in place (zero-copy). */
-    fun detached(): ShadowUpdate =
-        if (!flatBuf.isDirect && propBuf?.isDirect != true) this
-        else copy(flatBuf = flatBuf.copied(), propBuf = propBuf?.copied())
-}
-
-private fun ByteBuffer.copied(): ByteBuffer {
-    val bytes = ByteArray(remaining())
-    duplicate().get(bytes)
-    return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-}
+)
 
 /** A REUSE marker named a node the previous tree doesn't have. */
 internal class MissingReuseException(val id: Int) : Exception("REUSE marker for id=$id, which the previous tree doesn't have")

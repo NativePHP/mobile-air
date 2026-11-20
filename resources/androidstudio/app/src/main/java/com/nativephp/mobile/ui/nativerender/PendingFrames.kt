@@ -9,15 +9,13 @@ package com.nativephp.mobile.ui.nativerender
  * reader leaves the next one splicing in nodes it never built: rows land
  * under the wrong parent, or old content stays.
  *
- * A zero-copy frame reads the producer's A/B buffer in place, and the
- * publish after next writes over it. So when a frame is queued, the one
- * queued before it is detached (copied out) while its buffer is still
- * intact. When [capacity] frames are already waiting, they are dropped
+ * Each frame holds its own copy of PHP's buffers (see
+ * NativeElementBridge.postTreeUpdate), so it can wait here for as long as it
+ * takes. When [capacity] frames are already waiting, they are dropped
  * instead, and [take] reports it with the next frame.
  */
 internal class PendingFrames<T : Any>(
     private val capacity: Int,
-    private val detach: (T) -> T,
 ) {
     private val frames = ArrayDeque<T>()
     private var dropped = false
@@ -27,8 +25,6 @@ internal class PendingFrames<T : Any>(
         if (frames.size >= capacity) {
             frames.clear()
             dropped = true
-        } else if (frames.isNotEmpty()) {
-            frames.addLast(detach(frames.removeLast()))
         }
         frames.addLast(frame)
     }

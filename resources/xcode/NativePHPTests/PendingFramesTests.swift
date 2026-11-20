@@ -5,7 +5,6 @@ struct PendingFramesTests {
 
     struct Frame: Equatable {
         let n: Int
-        var detached = false
     }
 
     func drain(_ frames: PendingFrames<Frame>) -> [(frame: Frame, droppedBefore: Bool)] {
@@ -15,7 +14,7 @@ struct PendingFramesTests {
     }
 
     @Test func everyFrameIsTakenInTheOrderItWasPublished() {
-        let frames = PendingFrames<Frame>(capacity: 8) { Frame(n: $0.n, detached: true) }
+        let frames = PendingFrames<Frame>(capacity: 8)
 
         frames.add(Frame(n: 1))
         frames.add(Frame(n: 2))
@@ -25,19 +24,8 @@ struct PendingFramesTests {
         #expect(frames.isEmpty)
     }
 
-    /// The publish after next writes over frame 1's buffer, frame 2's is
-    /// still the producer's to keep.
-    @Test func aQueuedFrameIsDetachedWhenTheNextOneArrives() {
-        let frames = PendingFrames<Frame>(capacity: 8) { Frame(n: $0.n, detached: true) }
-
-        frames.add(Frame(n: 1))
-        frames.add(Frame(n: 2))
-
-        #expect(drain(frames).map(\.frame.detached) == [true, false])
-    }
-
     @Test func framesOverCapacityAreDroppedAndReportedWithTheNextOne() {
-        let frames = PendingFrames<Frame>(capacity: 2) { $0 }
+        let frames = PendingFrames<Frame>(capacity: 2)
 
         frames.add(Frame(n: 1))
         frames.add(Frame(n: 2))
