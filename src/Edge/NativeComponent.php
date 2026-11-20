@@ -4541,6 +4541,31 @@ abstract class NativeComponent
         error_log('NativePHP: '.$e->getMessage());
     }
 
+    /**
+     * `native:model` and `@change` on the same element: sync the property
+     * exactly as `native:model` alone does, then call the authored handler
+     * with the same value, exactly as `@change` alone would.
+     *
+     * The handler runs even when the sync throws (a ValidationException
+     * from an updated*() hook, a #[Locked] property), because the element's
+     * value changed either way. Each step is its own interaction, so
+     * ValidatesInput keeps the messages from both.
+     */
+    public function __syncPropertyThen(string $property, string $handler, mixed $value): void
+    {
+        try {
+            $this->__invokeInteraction('__syncProperty', [$property, $value]);
+        } finally {
+            $callback = CallbackRegistry::parse($handler);
+
+            if (method_exists($this, $callback['method'])) {
+                $this->__invokeInteraction($callback['method'], [...$callback['args'], $value]);
+            } else {
+                $this->reportInvalidHandler(InvalidHandlerException::unknown($this, $callback['method']));
+            }
+        }
+    }
+
     /** @internal State pipeline hook dispatch, scoped inside the component. */
     final public function __invokeStateHook(string $method, array $parameters): void
     {
@@ -5320,6 +5345,7 @@ abstract class NativeComponent
             '__overlayDismiss',
             '__overlaySetFontSize',
             '__syncProperty',
+            '__syncPropertyThen',
             CallbackRegistry::ASSIGN,
             CallbackRegistry::TOGGLE,
         ];
