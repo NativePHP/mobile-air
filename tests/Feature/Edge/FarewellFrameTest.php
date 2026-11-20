@@ -7,6 +7,7 @@ use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\BottomSheet;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
 
 /**
@@ -106,3 +107,71 @@ it('closes every sheet, modal and opted-in plugin overlay of the leaving screen 
     'navigate()' => ['navigate', ['/next']],
     'back()' => ['back', []],
 ]);
+
+/**
+ * The tree the native reader builds from a frame: a REUSE marker takes the
+ * node with its id from the tree before.
+ *
+ * @param  array<string, mixed>  $frame
+ * @param  array<string, mixed>  $previous
+ * @return array<string, mixed>
+ */
+function farewellNativeTree(array $frame, array $previous): array
+{
+    $held = [];
+    $index = function (array $node) use (&$index, &$held): void {
+        $held[$node['id']] = $node;
+        foreach ($node['children'] ?? [] as $child) {
+            $index($child);
+        }
+    };
+    $index($previous);
+
+    $build = function (array $node) use (&$build, $held): array {
+        if (($node['flags'] ?? 0) === 1) {
+            return $held[$node['id']] ?? throw new RuntimeException("REUSE marker for id {$node['id']}, which the native side doesn't have");
+        }
+
+        if (isset($node['children'])) {
+            $node['children'] = array_map($build, $node['children']);
+        }
+
+        return $node;
+    };
+
+    return $build($frame);
+}
+
+/** @return list<array<string, mixed>> */
+function farewellReuseMarkers(array $node): array
+{
+    if (($node['flags'] ?? 0) === 1) {
+        return [$node];
+    }
+
+    return array_merge([], ...array_map(farewellReuseMarkers(...), $node['children'] ?? []));
+}
+
+it('sends what the native side already holds as REUSE markers in the farewell frame, and the overlays it closes in full', function (string $method, array $args) {
+    FakeBridge::enable()->runtimeFlags = 0x02; // subtree memo, as on a device
+
+    $screen = Native::test(FarewellSheetsScreen::class);
+    $before = $screen->bridge()->lastPublish();
+
+    $screen->call($method, ...$args);
+    $farewell = $screen->bridge()->lastPublish();
+
+    // The sheet's text didn't change, so it isn't sent again.
+    expect(farewellReuseMarkers($farewell))->not->toBe([])
+        ->and(overlayVisibility(farewellNativeTree($farewell, $before)))->toBe([false, false, false, false, true]);
+})->with([
+    'replace()' => ['replace', ['/next']],
+    'navigate()' => ['navigate', ['/next']],
+    'back()' => ['back', []],
+]);
+
+it('sends the farewell frame in full while subtree memo is off', function () {
+    $screen = Native::test(FarewellSheetsScreen::class)->call('navigate', '/next');
+
+    expect(farewellReuseMarkers($screen->bridge()->lastPublish()))->toBe([]);
+});

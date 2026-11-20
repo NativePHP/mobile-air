@@ -3849,6 +3849,13 @@ abstract class NativeComponent
         try {
             $element = $this->renderToElement();
             $tree = self::closeSheetsAndModals($element->toArray($this->nativeCallbacks));
+
+            if ($this->subtreeMemoEnabled()
+                && ! $this->forceFullFrames
+                && nativephp_force_full_frame_epoch() === $this->lastSeenForceFullFrameEpoch) {
+                $tree = $this->reuseWhatNativeHolds($tree);
+            }
+
             $this->forgetPublishedTree();
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
@@ -3863,20 +3870,61 @@ abstract class NativeComponent
      * components' too, along with any plugin element whose class opts in
      * through Element::closesOnNavigation(). All are presented over the
      * whole window, so one still open would cover the next screen until
-     * its first frame arrives. The frame is a full emit (no REUSE
+     * its first frame arrives. The frame is built as a full emit (no REUSE
      * markers), so each of them is in it with all of its props.
+     *
+     * A node closed here, and every node above it, loses its `_hash`: it
+     * no longer shows what the hash says, so it must not be sent as REUSE.
      *
      * `bottom_sheet` and `modal` are listed by type because the UI plugin
      * that registers them may not declare closesOnNavigation().
      */
-    private static function closeSheetsAndModals(array $node): array
+    private static function closeSheetsAndModals(array $node, bool &$closed = false): array
     {
+        $closed = false;
+
         if (in_array($node['type'], ['bottom_sheet', 'modal'], true) || ElementRegistry::closesOnNavigation($node['type'])) {
             $node['props']['visible'] = false;
+            $closed = true;
         }
 
         foreach ($node['children'] ?? [] as $index => $child) {
-            $node['children'][$index] = self::closeSheetsAndModals($child);
+            $childClosed = false;
+            $node['children'][$index] = self::closeSheetsAndModals($child, $childClosed);
+            $closed = $closed || $childClosed;
+        }
+
+        if ($closed) {
+            unset($node['_hash']);
+        }
+
+        return $node;
+    }
+
+    /**
+     * The farewell frame as memoizedToArray() sends any frame: a subtree
+     * the native side already holds, by id and hash, goes as a REUSE
+     * marker. Without this, every navigation away from a screen whose
+     * frames went out partially sent the whole screen once more, because
+     * its bytes no longer matched the last frame's and the extension's
+     * identical-frame check let it through.
+     *
+     * @param  array<string, mixed>  $node
+     * @return array<string, mixed>
+     */
+    private function reuseWhatNativeHolds(array $node): array
+    {
+        if (isset($node['_hash']) && ($this->lastNodeHashes[$node['id']] ?? null) === $node['_hash']) {
+            return [
+                'id' => $node['id'],
+                'type' => $node['type'],
+                'flags' => 1, // NPHP_NODE_FLAG_REUSE
+                '_hash' => $node['_hash'],
+            ];
+        }
+
+        foreach ($node['children'] ?? [] as $index => $child) {
+            $node['children'][$index] = $this->reuseWhatNativeHolds($child);
         }
 
         return $node;
