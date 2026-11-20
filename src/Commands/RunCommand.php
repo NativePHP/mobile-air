@@ -13,6 +13,7 @@ use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\PhpVersions;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\error;
@@ -337,6 +338,12 @@ class RunCommand extends Command
         $this->newLine();
     }
 
+    /** The host's PHP minor. A seam for tests, which can't change the PHP they run on. */
+    protected function hostPhpVersion(): string
+    {
+        return PhpVersions::host();
+    }
+
     protected function ensureHostPhpMatchesLock(): bool
     {
         $lockPath = base_path('nativephp.lock');
@@ -352,8 +359,8 @@ class RunCommand extends Command
             return true;
         }
 
-        $lockedMinor = implode('.', array_slice(explode('.', $lockedVersion), 0, 2));
-        $hostMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+        $lockedMinor = PhpVersions::minor($lockedVersion);
+        $hostMinor = $this->hostPhpVersion();
 
         if ($lockedMinor === $hostMinor) {
             return true;
@@ -371,9 +378,7 @@ class RunCommand extends Command
             return false;
         }
 
-        $supported = ['8.6', '8.5', '8.4', '8.3'];
-
-        if (! in_array($hostMinor, $supported, true)) {
+        if (! PhpVersions::isSupported($hostMinor)) {
             note("Your host PHP {$hostMinor} is not supported by NativePHP. Switch your host to PHP {$lockedMinor}.x and retry.");
 
             return false;
