@@ -99,8 +99,8 @@ final class AsyncTaskExecutor {
         starting = true
         lock.unlock()
 
-        let appPath = AppUpdateManager.shared.getAppPath()
-        let bootstrapPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
+        let codePath = AppUpdateManager.shared.getCodePath()
+        let bootstrapPath = codePath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
 
         bootFinished.enter()
 

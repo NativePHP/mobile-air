@@ -192,6 +192,87 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertSame(1, $meta['version_code']);
     }
 
+    public function test_ios_bundle_meta_carries_parcel_signing_only_for_a_signed_bundle(): void
+    {
+        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+
+        $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
+        File::ensureDirectoryExists(dirname($zipPath));
+
+        $command = app(BuildIosAppCommand::class);
+        $write = new \ReflectionMethod($command, 'createBundledVersionFile');
+        $signing = new \ReflectionProperty($command, 'parcelSigning');
+
+        $write->invoke($command, $zipPath);
+        $unsigned = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $signing->setValue($command, ['project' => 'project-uuid', 'keys' => ['bifrost-1' => 'cHVibGljLWtleQ==']]);
+        $write->invoke($command, $zipPath);
+        $signed = json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true);
+
+        $this->assertArrayNotHasKey('parcel_signing', $unsigned);
+        $this->assertArrayHasKey('bifrost_app_id', $unsigned);
+        $this->assertSame(['project' => 'project-uuid', 'keys' => ['bifrost-1' => 'cHVibGljLWtleQ==']], $signed['parcel_signing']);
+    }
+
+    public function test_a_build_without_parcel_removes_a_phar_left_by_one_with_it(): void
+    {
+        // The device runs a phar shipped in the .app in preference to
+        // app.zip, so a stale one would ship the previous build's code.
+        $container = $this->testProjectPath.'/nativephp/ios/NativePHP/';
+        File::ensureDirectoryExists($container);
+        File::put($container.'__nativephp_app_bundle.phar', 'old code');
+        File::put($container.'__nativephp_app_bundle.phar.sig', 'old signature');
+        File::put($container.'app.zip', 'zip');
+
+        $command = app(BuildIosAppCommand::class);
+        (new \ReflectionProperty($command, 'containerPath'))->setValue($command, $container);
+        (new \ReflectionMethod($command, 'removeParcelBundle'))->invoke($command);
+
+        $this->assertFileDoesNotExist($container.'__nativephp_app_bundle.phar');
+        $this->assertFileDoesNotExist($container.'__nativephp_app_bundle.phar.sig');
+        $this->assertFileExists($container.'app.zip');
+    }
+
+    public function test_a_parcel_build_stops_early_when_parcel_is_not_installed(): void
+    {
+        config(['nativephp.parcel.binary' => 'parcel']);
+        Process::preventStrayProcesses()->fake(['*' => Process::result(errorOutput: 'parcel: command not found', exitCode: 127)]);
+
+        $this->expectExceptionMessage('composer global require nativephp/parcel');
+
+        $this->checkParcelIsInstalled();
+    }
+
+    public function test_a_parcel_build_stops_early_when_parcel_is_older_than_1_0(): void
+    {
+        // Parcel before 1.0 has no `sign` command and no mobile bundles.
+        Process::preventStrayProcesses()->fake(['*' => Process::result(json_encode(['commands' => [
+            ['name' => 'compile'], ['name' => 'prepare'], ['name' => 'push-stubs'],
+        ]]))]);
+
+        $this->expectExceptionMessage('1.0 or later');
+
+        $this->checkParcelIsInstalled();
+    }
+
+    public function test_a_parcel_build_goes_ahead_with_parcel_1_0(): void
+    {
+        Process::preventStrayProcesses()->fake(['*' => Process::result(json_encode(['commands' => [
+            ['name' => 'compile'], ['name' => 'prepare'], ['name' => 'push-stubs'], ['name' => 'sign'],
+        ]]))]);
+
+        $this->checkParcelIsInstalled();
+
+        Process::assertRan(fn ($process) => $process->command === ['parcel', 'list', '--format=json']);
+    }
+
+    private function checkParcelIsInstalled(): void
+    {
+        $command = app(BuildIosAppCommand::class);
+        (new \ReflectionMethod($command, 'ensureParcelIsInstalled'))->invoke($command);
+    }
+
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
     {
         // storage/framework is excluded from the copy, but composer install

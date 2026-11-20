@@ -6,11 +6,14 @@ trait CleansEnvFile
 {
     /**
      * Removed whatever the app's config says. Each device generates its own
-     * encryption key, so the developer's must never ship in the bundle.
+     * encryption key, so the developer's must never ship in the bundle, and
+     * the key that signs a Parcel bundle has no business on a device either.
      */
     protected array $alwaysCleanedEnvKeys = [
         'APP_KEY',
         'APP_PREVIOUS_KEYS',
+        'PARCEL_SIGNING_KEY',
+        'PARCEL_SIGNING_TOKEN',
     ];
 
     protected function cleanEnvFile(string $path): void

@@ -486,8 +486,9 @@ struct NativePHPApp: App {
 
         let argc = Int32(argv.count)
 
-        let appPath = AppUpdateManager.shared.getAppPath()
-        let phpFilePath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
+        let codePath = AppUpdateManager.shared.getCodePath()
+        AppUpdateManager.shared.prepareCodeEnvironment()
+        let phpFilePath = codePath + "/vendor/nativephp/mobile/bootstrap/ios/native.php"
 
         print()
         print("=== FORWARDING REQUEST TO LARAVEL ===")
@@ -710,8 +711,9 @@ struct NativePHPApp: App {
 
         let argc = Int32(argv.count)
 
-        let appPath = AppUpdateManager.shared.getAppPath()
-        let phpFilePath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/artisan.php"
+        let codePath = AppUpdateManager.shared.getCodePath()
+        AppUpdateManager.shared.prepareCodeEnvironment()
+        let phpFilePath = codePath + "/vendor/nativephp/mobile/bootstrap/ios/artisan.php"
 
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)
