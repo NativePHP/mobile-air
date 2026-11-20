@@ -242,3 +242,161 @@ func nativeScreenTransition(for type: String?) -> AnyTransition {
             .animation(.easeInOut(duration: 0.3))
     }
 }
+
+/// The interactive edge swipe from the root of a stack session back to the
+/// tabs screen beneath it (`NativeUIBridge.backdropScreen`).
+///
+/// `StackRootEdgeSwipeBack`'s pan drives it. While the finger moves, the
+/// stack screen follows it and the tabs screen comes into view underneath,
+/// drifting in from a third of the width and brightening, as a system pop
+/// looks. Released so that it `commits(...)`, the stack screen slides off
+/// and the back goes to PHP. When PHP publishes the tabs level,
+/// the bridge makes the revealed view the current screen with no further
+/// animation (`finish()`). Otherwise the stack screen slides back.
+///
+/// If PHP doesn't go back (an `onBackPressed()` override that keeps the
+/// screen publishes nothing), the stack screen slides back after a second.
+final class RootBackSwipe: ObservableObject {
+    static let shared = RootBackSwipe()
+
+    /// Horizontal offset of the current screen in points, positive to the
+    /// right. 0 while no swipe is in progress.
+    @Published private(set) var offset: CGFloat = 0
+
+    /// From the start of a swipe until the stack screen is back in place or
+    /// PHP has popped. The backdrop screen is only visible while this is set.
+    @Published private(set) var isActive = false
+
+    /// Set once a committed swipe has sent the back to PHP. The bridge
+    /// completes the swipe when the backdrop's level is published.
+    private(set) var isAwaitingPop = false
+
+    /// Width of the swiping screen, captured when the swipe begins.
+    private(set) var width: CGFloat = 1
+
+    /// Bumped by every begin and finish, so the completion of an animation
+    /// that a later swipe or a publish superseded does nothing.
+    private var generation = 0
+
+    private init() {}
+
+    /// How far the swipe has gone, from 0 (in place) to 1 (fully off).
+    var progress: CGFloat { min(abs(offset) / width, 1) }
+
+    func begin(width: CGFloat) {
+        generation += 1
+        self.width = max(width, 1)
+        isAwaitingPop = false
+        offset = 0
+        isActive = true
+    }
+
+    /// `direction` is 1 when the swipe moves the screen to the right (a
+    /// left-edge swipe) and -1 in right-to-left layouts.
+    func update(translation: CGFloat, direction: CGFloat) {
+        guard isActive, !isAwaitingPop else { return }
+        offset = direction * min(max(translation * direction, 0), width)
+    }
+
+    func end(velocity: CGFloat, direction: CGFloat) {
+        guard isActive, !isAwaitingPop else { return }
+        let distance = offset * direction
+        let speed = velocity * direction
+        if Self.commits(distance: distance, speed: speed, width: width) {
+            commit(direction: direction, distance: distance, speed: speed)
+        } else {
+            cancel()
+        }
+    }
+
+    /// Whether a swipe released `distance` points in, moving at `speed`
+    /// points per second (both positive in the back direction), goes back,
+    /// as a system pop decides: a flick toward the far edge goes back from
+    /// anywhere, and a release past the middle goes back unless the finger
+    /// was heading back toward the edge.
+    static func commits(distance: CGFloat, speed: CGFloat, width: CGFloat) -> Bool {
+        distance > 0 && (speed > 500 || (distance > width / 2 && speed >= 0))
+    }
+
+    /// Slide the stack screen back into place.
+    func cancel() {
+        guard isActive else { return }
+        isAwaitingPop = false
+        let started = generation
+        withAnimation(.easeOut(duration: 0.25)) {
+            offset = 0
+        } completion: { [weak self] in
+            guard let self, self.generation == started else { return }
+            self.isActive = false
+        }
+    }
+
+    /// PHP has published the revealed level and the bridge made it the
+    /// current screen. Call inside the bridge's no-animation transaction.
+    func finish() {
+        generation += 1
+        isAwaitingPop = false
+        isActive = false
+        offset = 0
+    }
+
+    private func commit(direction: CGFloat, distance: CGFloat, speed: CGFloat) {
+        let started = generation
+        // Keep the finger's pace for the rest of the way, within limits.
+        let duration = min(max((width - distance) / max(speed, 1), 0.12), 0.3)
+        withAnimation(.easeOut(duration: duration)) {
+            offset = direction * width
+        } completion: { [weak self] in
+            guard let self, self.generation == started, self.isActive else { return }
+            self.isAwaitingPop = true
+            NativeElementBridge.sendSystemBackEvent()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self, self.generation == started, self.isAwaitingPop else { return }
+                self.cancel()
+            }
+        }
+    }
+}
+
+/// Moves a native screen for `RootBackSwipe`. ContentView applies it to every
+/// screen layer, with the same structure for every role, so a layer changing
+/// role (the backdrop becoming the current screen) keeps its identity.
+struct RootBackSwipeModifier: ViewModifier {
+    enum Role {
+        /// The screen on top: follows the finger.
+        case current
+        /// The kept tabs screen beneath a stack session: hidden unless a
+        /// swipe is in progress, never hit-testable.
+        case backdrop
+        /// The outgoing layer of a router-level swap: unaffected.
+        case other
+    }
+
+    let role: Role
+
+    @ObservedObject private var swipe = RootBackSwipe.shared
+    @Environment(\.layoutDirection) private var layoutDirection
+
+    func body(content: Content) -> some View {
+        let revealing = role == .backdrop && swipe.isActive
+        let remaining = 1 - swipe.progress
+        let direction: CGFloat = swipe.offset < 0 ? -1 : 1
+        // The swipe is in screen coordinates; SwiftUI mirrors offsets in a
+        // right-to-left layout, so mirror them back.
+        let screen: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
+
+        content
+            .overlay(
+                Color.black
+                    .opacity(revealing ? 0.15 * remaining : 0)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            )
+            .offset(x: screen * (role == .current
+                ? swipe.offset
+                : revealing ? -direction * swipe.width * 0.3 * remaining : 0))
+            .opacity(role == .backdrop && !swipe.isActive ? 0 : 1)
+            .allowsHitTesting(role != .backdrop)
+            .accessibilityHidden(role == .backdrop)
+    }
+}

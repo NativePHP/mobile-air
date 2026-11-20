@@ -54,6 +54,7 @@ struct NativeRootStackRenderer: View {
             // pushed to are told apart. See `HeroFlightStore`.
             destination(uri: rootUri, isRoot: true)
                 .environment(\.heroScreen, HeroFlightStore.screenId(stack: "stack", uri: rootUri))
+                .background(StackRootEdgeSwipeBack())
                 .navigationDestination(for: String.self) { uri in
                     StackLevelView(level: coordinator.level(for: uri)) {
                         destination(uri: uri, isRoot: false)
@@ -402,6 +403,109 @@ struct NativeRootStackRenderer: View {
             }
             .disabled(disabled)
             .modifier(TopBarActionA11yLabelModifier(action: action))
+        }
+    }
+}
+
+/// Edge swipe back from the root of a stack session that PHP entered from
+/// another chrome.
+///
+/// Pushing a stack-layout screen from a tabs layout swaps the chrome and
+/// starts a new `NavigationStack` whose root is that screen, so the system
+/// edge swipe has nothing to pop. PHP's router still has the tabs level
+/// beneath, and the root's back chevron goes back to it. This adds a
+/// leading-edge pan to the navigation controller that does the same.
+///
+/// When the bridge kept the tabs screen beneath the stack
+/// (`NativeUIBridge.backdropScreen`), the swipe is interactive: the screen
+/// follows the finger over the tabs, as a system pop does (`RootBackSwipe`).
+/// Otherwise a swipe that commits (`RootBackSwipe.commits`) sends the back
+/// when it ends, and PHP's back animation plays.
+///
+/// The pan only begins while `NavigationCoordinator.canGoBackFromRoot`, so
+/// pushed levels keep the system's interactive edge swipe, and the root of
+/// an app's first stack (nothing beneath it in PHP) is unchanged.
+struct StackRootEdgeSwipeBack: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView { Probe() }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    private final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            var responder: UIResponder? = self
+            while let current = responder, !(current is UINavigationController) {
+                responder = current.next
+            }
+            guard let navigationController = responder as? UINavigationController,
+                  let view = navigationController.view,
+                  !(view.gestureRecognizers ?? []).contains(where: { $0 is RootEdgePan })
+            else { return }
+            view.addGestureRecognizer(RootEdgePan(navigationController: navigationController))
+        }
+    }
+
+    private final class RootEdgePan: UIScreenEdgePanGestureRecognizer, UIGestureRecognizerDelegate {
+        private weak var navigationController: UINavigationController?
+
+        /// Whether this pan moves the screen (a backdrop is kept) or only
+        /// sends the back when it ends.
+        private var isInteractive = false
+
+        init(navigationController: UINavigationController) {
+            self.navigationController = navigationController
+            super.init(target: nil, action: nil)
+            edges = navigationController.view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                ? .right : .left
+            delegate = self
+            addTarget(self, action: #selector(handle))
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let navigationController else { return false }
+
+            return NavigationCoordinator.shared.canGoBackFromRoot
+                && navigationController.viewControllers.count <= 1
+                && navigationController.transitionCoordinator == nil
+                && !RootBackSwipe.shared.isActive
+        }
+
+        @objc private func handle() {
+            // Measured in the window: the navigation controller's view moves
+            // with the screen during an interactive swipe, so in its own
+            // coordinates the finger would only seem to travel half as far.
+            guard let view, let window = view.window else { return }
+            let direction: CGFloat = edges == .right ? -1 : 1
+            let swipe = RootBackSwipe.shared
+
+            switch state {
+            case .began:
+                isInteractive = NativeUIBridge.shared.backdropScreen != nil
+                if isInteractive {
+                    swipe.begin(width: window.bounds.width)
+                }
+            case .changed:
+                if isInteractive {
+                    swipe.update(translation: translation(in: window).x, direction: direction)
+                }
+            case .ended:
+                if isInteractive {
+                    swipe.update(translation: translation(in: window).x, direction: direction)
+                    swipe.end(velocity: velocity(in: window).x, direction: direction)
+                } else {
+                    let distance = translation(in: window).x * direction
+                    let speed = velocity(in: window).x * direction
+                    if RootBackSwipe.commits(distance: distance, speed: speed, width: window.bounds.width) {
+                        NativeElementBridge.sendSystemBackEvent()
+                    }
+                }
+            case .cancelled, .failed:
+                if isInteractive {
+                    swipe.cancel()
+                }
+            default:
+                break
+            }
         }
     }
 }
