@@ -481,12 +481,18 @@ class TestableComponent
     }
 
     /**
-     * Fire a gesture-area pinch-end bound to `@pinchEnd`, delivering the
-     * final scale factor (1.0 = identity) as a float.
+     * Fire a gesture-area zoom-end bound to `@zoomEnd` (or `@pinchEnd`),
+     * delivering the final scale factor (1.0 = identity) as a float.
      */
-    public function pinch(string $target, float $scale): static
+    public function zoom(string $target, float $scale): static
     {
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
+    }
+
+    /** The older name of zoom(). */
+    public function pinch(string $target, float $scale): static
+    {
+        return $this->zoom($target, $scale);
     }
 
     /**
