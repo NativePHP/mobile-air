@@ -378,12 +378,6 @@ class RunCommand extends Command
             return false;
         }
 
-        if (! PhpVersions::isSupported($hostMinor)) {
-            note("Your host PHP {$hostMinor} is not supported by NativePHP. Switch your host to PHP {$lockedMinor}.x and retry.");
-
-            return false;
-        }
-
         if (! confirm("Re-run `native:install --force` to bundle PHP {$hostMinor} instead?", default: true)) {
             note("Switch your host to PHP {$lockedMinor}.x and retry, or re-install when ready.");
 
@@ -397,6 +391,20 @@ class RunCommand extends Command
 
         if ($exitCode !== 0) {
             error('native:install --force failed. Resolve the install error and retry.');
+
+            return false;
+        }
+
+        // Only the manifest knows which minors the pinned release has, so
+        // the install is what finds out. When it hasn't got the host's, the
+        // install bundles the nearest one, says so, and records that here.
+        $lock = json_decode((string) @file_get_contents($lockPath), true) ?? [];
+        $installed = $lock['php']['version'] ?? null;
+        $installedMinor = is_string($installed) ? PhpVersions::minor($installed) : null;
+
+        if ($installedMinor !== null && $installedMinor !== $hostMinor) {
+            error('PHP binaries release '.PhpBinaries::release()." has no PHP {$hostMinor} build.");
+            note("Switch your host to PHP {$installedMinor}.x and retry.");
 
             return false;
         }
