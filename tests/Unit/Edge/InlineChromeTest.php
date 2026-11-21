@@ -13,6 +13,7 @@ use Tests\Fixtures\Edge\ChromeTabsLayout;
 use Tests\Fixtures\Edge\CustomTopBarScreen;
 use Tests\Fixtures\Edge\FabScreen;
 use Tests\Fixtures\Edge\InlineBottomNavScreen;
+use Tests\Fixtures\Edge\InlineFadedGlassBottomBarScreen;
 use Tests\Fixtures\Edge\InlineGlassBottomBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarTitleScreen;
@@ -215,6 +216,26 @@ it('keeps glass on an inline bottom-bar for the renderers to draw behind the bar
     expect($tree['type'])->toBe('native_root_stack')
         ->and($bar['props']['glass'] ?? null)->toBe(1 | 8)
         ->and($bar['children'][0]['type'])->toBe('row');
+});
+
+it('carries a glass opacity on an inline bottom-bar to the bottom_bar marker', function () {
+    $tree = Native::test(InlineFadedGlassBottomBarScreen::class)
+        ->assertSee('Composer')
+        ->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    // The iOS renderers cap the soft glass's faded-in peak at this.
+    expect($bar['props']['glass'] ?? null)->toBe(1 | 8)
+        ->and($bar['props']['glass_opacity'] ?? null)->toBe(0.8);
+});
+
+it('sends no glass opacity for a glass bottom-bar without a suffix', function () {
+    $tree = Native::test(InlineGlassBottomBarScreen::class)->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    expect($bar['props'])->not->toHaveKey('glass_opacity');
 });
 
 it('hoists an inline bottom-nav into a NativeRootTabs with no layout at all', function () {

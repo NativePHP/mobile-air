@@ -536,16 +536,17 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
             // `LiquidGlassAvailability.swift`.
             let glass = bottomBar.props.getInt("glass", default: 0)
+            let glassOpacity = CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
             #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 content.safeAreaBar(edge: .bottom) {
-                    barContent(inner, glass: glass)
+                    barContent(inner, glass: glass, glassOpacity: glassOpacity)
                 }
             } else {
-                fallback(content, inner, glass: glass)
+                fallback(content, inner, glass: glass, glassOpacity: glassOpacity)
             }
             #else
-            fallback(content, inner, glass: glass)
+            fallback(content, inner, glass: glass, glassOpacity: glassOpacity)
             #endif
         } else {
             content
@@ -555,9 +556,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// Pre-26 placement: a plain bottom safe-area inset, no floating glass
     /// bar primitive.
     @ViewBuilder
-    private func fallback(_ content: Content, _ inner: NativeUINode, glass: Int) -> some View {
+    private func fallback(_ content: Content, _ inner: NativeUINode, glass: Int, glassOpacity: CGFloat) -> some View {
         content.safeAreaInset(edge: .bottom, spacing: 0) {
-            barContent(inner, glass: glass)
+            barContent(inner, glass: glass, glassOpacity: glassOpacity)
         }
     }
 
@@ -568,13 +569,13 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// through the bottom safe area (the iMessage treatment). Bars without
     /// an explicit background keep `.clear` and are unaffected.
     @ViewBuilder
-    private func barContent(_ inner: NativeUINode, glass: Int) -> some View {
+    private func barContent(_ inner: NativeUINode, glass: Int, glassOpacity: CGFloat) -> some View {
         NodeView(node: inner)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity)
             .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
             .background(alignment: .top) {
-                BottomBarSoftGlass(flags: glass)
+                BottomBarSoftGlass(flags: glass, opacity: glassOpacity)
             }
     }
 

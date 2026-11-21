@@ -769,6 +769,11 @@ class TailwindParser
             //                                        no tint backdrop (older iOS: `.ultraThinMaterial`).
             //                                        Ignored on buttons (no `.buttonStyle(.glassClear)`).
             //   glass:clear:interactive            etc. — modifiers compose freely
+            //   glass/80, glass:clear/60           an opacity suffix, as on colours, at the
+            //                                        end of the chain: the glass itself is
+            //                                        drawn at 80% (60%) while the element's
+            //                                        content stays opaque. Sent as a separate
+            //                                        `glass_opacity` prop (0..1), only when set.
             //
             // Encoded as a single int with bitflags into the existing
             // `glass` prop slot — no new wire keys:
@@ -780,7 +785,7 @@ class TailwindParser
             //
             // Unknown segments (typos like `glass:thicc`) are silently
             // ignored; the base `glass` flag still applies.
-            $class === 'glass' || str_starts_with($class, 'glass:') => self::parseGlassClass($class),
+            $class === 'glass' || str_starts_with($class, 'glass:') || str_starts_with($class, 'glass/') => self::parseGlassClass($class),
 
             // Position
             $class === 'absolute' => ['positionType' => 1],
@@ -1109,11 +1114,27 @@ class TailwindParser
      * bitflag stored in the `glass` prop. See the inline doc above for the
      * supported modifier set.
      *
-     * @return array{glass: int}
+     * An opacity suffix on the end of the chain (`glass/80`,
+     * `glass:clear:interactive/60`) comes back as `glassOpacity` (0..1).
+     * One that isn't a whole number from 0 to 100 is ignored, like an
+     * unknown modifier, and the glass is drawn as without it.
+     *
+     * @return array{glass: int, glassOpacity?: float}
      */
     private static function parseGlassClass(string $class): array
     {
         $flags = 1; // bit 0 = enabled
+        $opacity = null;
+
+        $slash = strrpos($class, '/');
+        if ($slash !== false) {
+            $suffix = substr($class, $slash + 1);
+            $class = substr($class, 0, $slash);
+
+            if (preg_match('/^\d{1,3}$/', $suffix) === 1 && (int) $suffix <= 100) {
+                $opacity = (float) $suffix / 100;
+            }
+        }
 
         $parts = explode(':', $class);
         foreach (array_slice($parts, 1) as $mod) {
@@ -1128,7 +1149,7 @@ class TailwindParser
             // base glass effect.
         }
 
-        return ['glass' => $flags];
+        return $opacity === null ? ['glass' => $flags] : ['glass' => $flags, 'glassOpacity' => $opacity];
     }
 
     private static function parseSpacingAxis(string $prop, string $axis, string $value): ?array
