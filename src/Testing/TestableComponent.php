@@ -216,8 +216,13 @@ class TestableComponent
 
         // When the URI is known (visit()/follow()), attach a router with
         // this screen on its stack so currentUri()-driven chrome behaves
-        // as on device — tab highlighting, per-URI diff props, etc.
+        // as on device — tab highlighting, per-URI diff props, etc. The
+        // router also tells a screen where its route sits in the
+        // ->children() tree, which drives the child-screen defaults.
         if ($uri !== null) {
+            $pattern = NativeRouter::patternFor($uri);
+            $component->setRouteContext($pattern, $pattern !== null ? NativeRouter::parentOf($pattern) : null);
+
             $router = new NativeRouter;
             \Closure::bind(function () use ($component, $uri, $params) {
                 /** @var NativeRouter $this */

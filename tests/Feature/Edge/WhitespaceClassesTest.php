@@ -256,9 +256,8 @@ it('never collapses non-breaking spaces, matching the browser', function () {
     expect($tree['children'][0]['props']['text'])->toBe("a\u{00A0}\u{00A0}b c");
 });
 
-// Blade captures slot content before the component template renders, so
-// EDGE elements inside a component slot emit ahead of the component's
-// own wrapper (a pre-existing placement quirk, identical on main).
+// EDGE elements written in a Blade component's slot are placed where the
+// component echoes the slot, here inside ws-panel's padded column.
 // The whitespace policy is what these pin: it resolves the same
 // through a slot as anywhere else, class and default alike.
 it('applies whitespace classes to text rendered through a blade component slot', function () {
@@ -271,11 +270,11 @@ it('applies whitespace classes to text rendered through a blade component slot',
         ['msg' => $msg]
     );
 
-    // The slot text emits as a sibling BEFORE the panel today; asserting
-    // that placement makes a future capture-order fix flip this test
-    // consciously instead of dying on a null lookup.
-    expect($tree['children'][0]['type'])->toBe('text');
-    expect($tree['children'][0]['props']['text'])->toBe("Line one\nLine two");
+    $panel = $tree['children'][0];
+
+    expect($panel['type'])->toBe('column');
+    expect($panel['children'][0]['type'])->toBe('text');
+    expect($panel['children'][0]['props']['text'])->toBe("Line one\nLine two");
 });
 
 it('collapses slot-delivered text by default inside a blade component slot', function () {
@@ -288,8 +287,11 @@ it('collapses slot-delivered text by default inside a blade component slot', fun
         ['msg' => $msg]
     );
 
-    expect($tree['children'][0]['type'])->toBe('text');
-    expect($tree['children'][0]['props']['text'])->toBe('Line one Line two');
+    $panel = $tree['children'][0];
+
+    expect($panel['type'])->toBe('column');
+    expect($panel['children'][0]['type'])->toBe('text');
+    expect($panel['children'][0]['props']['text'])->toBe('Line one Line two');
 });
 
 // ── Authoring-form parity ────────────────────────────

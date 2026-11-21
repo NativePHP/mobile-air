@@ -11,6 +11,14 @@ class BottomNav extends Element
 
     protected array $props = [];
 
+    /**
+     * The `hidden` attribute as written: true, false, or null when the
+     * blade left it out and the screen's route decides (see TabBar). Kept
+     * off the wire. Hiding a bar happens on the chrome around it, never
+     * on the drawn bar.
+     */
+    private ?bool $hiddenAttribute = null;
+
     public static function make(): static
     {
         return new static;
@@ -71,6 +79,12 @@ class BottomNav extends Element
             $this->props['tab_presentation_configuration'] = $attrs['tabPresentationConfiguration'];
         }
 
+        // `<native:bottom-nav hidden>`, `:hidden="false"`. Only written
+        // when present, so a bar without it is left to the screen's route.
+        if (isset($attrs['hidden'])) {
+            $this->hiddenAttribute = filter_var($attrs['hidden'], FILTER_VALIDATE_BOOLEAN);
+        }
+
         if (! empty($attrs['custom'])) {
             $this->markCustomChrome();
         }
@@ -85,6 +99,15 @@ class BottomNav extends Element
     public function getRawProps(): array
     {
         return $this->props;
+    }
+
+    /**
+     * Whether the blade said to hide the bar (true), to keep it (false),
+     * or nothing (null). For TabBar::fromElement().
+     */
+    public function hiddenAttribute(): ?bool
+    {
+        return $this->hiddenAttribute;
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

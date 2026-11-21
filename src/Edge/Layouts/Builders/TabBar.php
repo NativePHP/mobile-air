@@ -5,6 +5,7 @@ namespace Native\Mobile\Edge\Layouts\Builders;
 use InvalidArgumentException;
 use Native\Mobile\Edge\Elements\BottomNav;
 use Native\Mobile\Edge\Elements\BottomNavItem;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 
 /**
@@ -23,6 +24,19 @@ use Native\Mobile\Edge\NativeRouter;
  * The framework converts this to an Elements\BottomNav. Tab items
  * already auto-wire navigation from their `url` attribute via
  * BottomNavItem::resolveProps().
+ *
+ * Leave {@see hidden()} unset and the bar decides from the screen it is
+ * drawn on (see {@see forScreen()}): it hides on a child route
+ * (`Route::native(...)->children(...)`) and shows everywhere else. Who
+ * decides, from strongest to weakest:
+ *
+ *  1. The screen's own say: its `tabBarOptions()->hidden(...)`, or
+ *     `protected bool $hidesTabBar = true`. These apply to every tab
+ *     bar, the layout's and an inline `<native:bottom-nav>` alike.
+ *  2. This bar's explicit value: `->hidden(true|false)`, or a `hidden`
+ *     attribute on an inline `<native:bottom-nav>`
+ *     (`<native:bottom-nav :hidden="false">` keeps it on a child screen).
+ *  3. The bar's default from the screen's route: hidden on a child route.
  */
 class TabBar
 {
@@ -64,6 +78,21 @@ class TabBar
 
     private ?string $presentationConfiguration = null;
 
+    /**
+     * Hidden (true) or kept (false) on purpose, or null to let the screen
+     * decide. See the class docblock.
+     */
+    private ?bool $hidden = null;
+
+    /**
+     * What the screen itself says through its tab bar knobs, or null when
+     * it says nothing. Set by {@see forScreen()}.
+     */
+    private ?bool $hiddenByScreen = null;
+
+    /** Whether the screen this bar is drawn on is a child route. Set by {@see forScreen()}. */
+    private bool $onChildRoute = false;
+
     public static function make(): self
     {
         return new self;
@@ -93,6 +122,8 @@ class TabBar
         $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
         $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
         $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
+        // Null when the blade wrote no `hidden`, so the route decides.
+        $bar->hidden = $element->hiddenAttribute();
 
         foreach ($element->getChildren() as $child) {
             if ($child instanceof BottomNavItem) {
@@ -188,6 +219,58 @@ class TabBar
     }
 
     /**
+     * Hide the bar on purpose (true), keep it on purpose (false), or hand
+     * the choice back to the screen's route (null). An explicit value
+     * beats the route default, so `->hidden(false)` keeps the bar on a
+     * child screen. The screen's own `tabBarOptions()->hidden()` and
+     * `$hidesTabBar = true` still beat it.
+     */
+    public function hidden(?bool $hidden = true): self
+    {
+        $this->hidden = $hidden;
+
+        return $this;
+    }
+
+    /**
+     * Tell the bar which screen it is drawn on. The bar reads two things
+     * from it: what the screen says about its own tab bar (its
+     * `tabBarOptions()->hidden()` and `$hidesTabBar`), and whether its
+     * route is a child route, which hides the bar by default. See
+     * {@see isHidden()} for how they combine.
+     *
+     * The framework calls this for every bar it draws, the layout's and an
+     * inline `<native:bottom-nav>` alike.
+     */
+    public function forScreen(NativeComponent $screen): self
+    {
+        // tabBarOptions()->hidden() decides either way. `$hidesTabBar`
+        // (read through shouldHideTabBar()) can only hide, because false
+        // is also what it says when nobody touched it.
+        $options = $screen->tabBarOptions();
+        $this->hiddenByScreen = match (true) {
+            $options?->hidden !== null => $options->hidden,
+            $screen->shouldHideTabBar() => true,
+            default => null,
+        };
+        $this->onChildRoute = $screen->isChildScreen();
+
+        return $this;
+    }
+
+    /**
+     * Whether the bar hides: the screen's own say, else the value set on
+     * purpose, else the default from the screen's route. On native chrome
+     * this becomes the sentinel's `hide_tab_bar` (the TabView stays, so tab
+     * switching keeps working). On the hand-built path the bar is simply
+     * not drawn.
+     */
+    public function isHidden(): bool
+    {
+        return $this->hiddenByScreen ?? $this->hidden ?? $this->onChildRoute;
+    }
+
+    /**
      * iOS 26+ only. When the user scrolls content down, the tab bar
      * shrinks to a pill and the bottom accessory (if any) moves inline
      * with the active tab — Apple's Music / Podcasts pattern. Tapping a
@@ -257,20 +340,28 @@ class TabBar
     }
 
     /**
-     * Mark the tab that "owns" the current URL as active. Uses
-     * longest-prefix matching so a pushed sub-route (e.g.
-     * `/syncup-native/chat/123` under a `/syncup-native` Chats tab)
-     * still highlights the right tab even when it's not the tab's
-     * exact URL — letting native chrome route the pushed level
-     * through that tab's NavigationStack instead of replacing the
-     * whole layout.
+     * Mark the tab that "owns" the current screen as active. The native
+     * renderers use that flag to decide which tab's NavigationStack a
+     * pushed screen belongs to, so it has to be right for screens that
+     * are not a tab's own URL too.
      *
-     * Tab URLs that are an exact match OR a prefix of `currentUrl`
-     * (where the next char is `/`) are candidates; the longest
-     * matching tab wins. This is a superset of the previous
-     * exact-match behavior.
+     * The owner is picked in this order:
+     *
+     *  1. An inline `<native:bottom-nav-item>` the blade marked `active`.
+     *     The dev decided, so nothing below runs.
+     *  2. The tab whose URL is exactly `$currentUrl`.
+     *  3. The tab for the nearest ancestor route. `$ancestorRoutes` is the
+     *     screen's chain of parent route patterns, nearest first, as
+     *     declared with `Route::native(...)->children(...)`. This is what
+     *     lets `/notifications` highlight a Home tab at `/` when its
+     *     route is a child of `/`: no URL prefix could tell you that.
+     *  4. The tab whose URL is the longest prefix of `$currentUrl` (the
+     *     next character must be `/`), so `/chats/123` still falls under
+     *     a `/chats` tab without any `children()` call.
+     *
+     * @param  list<string>  $ancestorRoutes
      */
-    public function highlight(string $currentUrl): self
+    public function highlight(string $currentUrl, array $ancestorRoutes = []): self
     {
         // Respect an explicit choice: when this bar was reconstructed from
         // an inline `<native:bottom-nav>` and the blade already marks a tab
@@ -281,44 +372,121 @@ class TabBar
             }
         }
 
-        // Longest-prefix match across builder tabs AND prebuilt inline
-        // items, uniformly. A screen opened with a query string still
-        // belongs to the tab for its path, but a tab whose own URL has a
-        // query matches the full URL, and being longer, wins.
-        $bestTab = null;
-        $bestLen = -1;
-        $currentPath = NativeRouter::pathOf($currentUrl);
+        // Builder tabs AND prebuilt inline items, uniformly.
+        $tabs = [...$this->tabs, ...$this->prebuiltTabElements];
 
-        foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
+        foreach ($tabs as $tab) {
             $tab->setActive(false);
-
-            $tabUrl = $tab->getUrl();
-            if ($tabUrl === '') {
-                continue;
-            }
-
-            $isExact = $tabUrl === $currentUrl || $tabUrl === $currentPath;
-            $isPrefix = str_starts_with($currentPath, $tabUrl.'/');
-
-            if (($isExact || $isPrefix) && strlen($tabUrl) > $bestLen) {
-                $bestTab = $tab;
-                $bestLen = strlen($tabUrl);
-            }
         }
 
-        if ($bestTab !== null) {
-            $bestTab->setActive(true);
-        }
+        $owner = $this->tabAtUrl($tabs, $currentUrl)
+            ?? $this->tabForNearestAncestor($tabs, $ancestorRoutes)
+            ?? $this->tabWithLongestPrefix($tabs, $currentUrl);
+
+        $owner?->setActive(true);
 
         return $this;
     }
 
     /**
+     * The tab whose URL is exactly `$url`. A screen opened with a query
+     * string still belongs to the tab for its path, but a tab whose own
+     * URL has a query matches the full URL, and being longer, wins.
+     *
+     * @param  array<int, Tab|BottomNavItem>  $tabs
+     */
+    private function tabAtUrl(array $tabs, string $url): Tab|BottomNavItem|null
+    {
+        $path = NativeRouter::pathOf($url);
+        $bestTab = null;
+        $bestLen = -1;
+
+        foreach ($tabs as $tab) {
+            $tabUrl = $tab->getUrl();
+            if ($tabUrl === '') {
+                continue;
+            }
+
+            if (($tabUrl === $url || $tabUrl === $path) && strlen($tabUrl) > $bestLen) {
+                $bestTab = $tab;
+                $bestLen = strlen($tabUrl);
+            }
+        }
+
+        return $bestTab;
+    }
+
+    /**
+     * Walk the ancestor routes, nearest first, and return the first tab
+     * that points at one of them. A tab points at a route when its URL is
+     * the route pattern itself, or when the router matches its URL to
+     * that pattern (a tab at `/teams/5` for the route `/teams/{team}`).
+     *
+     * @param  array<int, Tab|BottomNavItem>  $tabs
+     * @param  list<string>  $ancestorRoutes
+     */
+    private function tabForNearestAncestor(array $tabs, array $ancestorRoutes): Tab|BottomNavItem|null
+    {
+        // Resolved on demand and kept, so the router is only asked about a
+        // tab when comparing the plain URL was not enough.
+        $matchedRoutes = [];
+
+        foreach ($ancestorRoutes as $pattern) {
+            foreach ($tabs as $tab) {
+                if ($tab->getUrl() !== '' && NativeRouter::pathOf($tab->getUrl()) === $pattern) {
+                    return $tab;
+                }
+            }
+
+            foreach ($tabs as $index => $tab) {
+                if ($tab->getUrl() === '') {
+                    continue;
+                }
+
+                $matchedRoutes[$index] ??= NativeRouter::patternFor($tab->getUrl()) ?? '';
+
+                if ($matchedRoutes[$index] === $pattern) {
+                    return $tab;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The tab whose URL is the longest prefix of `$url`'s path, where the
+     * prefix ends on a path segment.
+     *
+     * @param  array<int, Tab|BottomNavItem>  $tabs
+     */
+    private function tabWithLongestPrefix(array $tabs, string $url): Tab|BottomNavItem|null
+    {
+        $bestTab = null;
+        $bestLen = -1;
+        $path = NativeRouter::pathOf($url);
+
+        foreach ($tabs as $tab) {
+            $tabUrl = $tab->getUrl();
+            if ($tabUrl === '') {
+                continue;
+            }
+
+            if (str_starts_with($path, $tabUrl.'/') && strlen($tabUrl) > $bestLen) {
+                $bestTab = $tab;
+                $bestLen = strlen($tabUrl);
+            }
+        }
+
+        return $bestTab;
+    }
+
+    /**
      * Serialize the bar's declarative config as an attrs dict suitable
      * for `NativeRootTabs::applyAttributes()` (camelCase keys: `dark`,
-     * `activeColor`, `backgroundColor`, `textColor`, `labelVisibility`).
-     * Used by the native-chrome rollout path in
-     * `NativeComponent::wrapWithNativeChrome()`.
+     * `activeColor`, `backgroundColor`, `textColor`, `labelVisibility`,
+     * and `hideTabBar` when {@see isHidden()}). Used by the native-chrome
+     * rollout path in `NativeComponent::wrapWithNativeChrome()`.
      */
     public function toRootProps(): array
     {
@@ -347,6 +515,9 @@ class TabBar
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
             $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
+        }
+        if ($this->isHidden()) {
+            $attrs['hideTabBar'] = true;
         }
 
         return $attrs;
@@ -405,6 +576,11 @@ class TabBar
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
             $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
+        }
+        // Only a value set on purpose, so fromElement() reads an unset bar
+        // back as unset.
+        if ($this->hidden !== null) {
+            $attrs['hidden'] = $this->hidden;
         }
 
         $nav->applyAttributes($attrs);

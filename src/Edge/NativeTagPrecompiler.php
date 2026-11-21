@@ -97,6 +97,14 @@ class NativeTagPrecompiler
 
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
+    /** What Blade's component tag compiler leaves around a component, removed again at the end of its compile. */
+    private const COMPONENT_BEGIN = '##BEGIN-COMPONENT-CLASS##';
+
+    private const COMPONENT_END = '##END-COMPONENT-CLASS##';
+
+    /** Cheap test for a view that has anything for compileComponentSlots() to do. */
+    private const SLOT_DIRECTIVES = '/@(?:component|endComponentClass|slot|endslot|include|each)/i';
+
     /**
      * Marker stamped into every natively-compiled view (prepended to the
      * template as a raw PHP block, so it survives Blade compilation into
@@ -518,7 +526,135 @@ class NativeTagPrecompiler
             );
         }
 
-        return $value;
+        return $this->compileComponentSlots($value);
+    }
+
+    /**
+     * Bracket Blade components and their slots with collector calls, so
+     * native elements written inside `<x-card>…</x-card>` end up where the
+     * card's view echoes `{{ $slot }}` and not ahead of the card itself.
+     * NativeElementCollector::beginComponent() explains the runtime half.
+     *
+     * Blade compiles component tags before any precompiler runs, so what
+     * arrives here is its intermediate form, the same on Laravel 10 to 13:
+     *
+     *     <x-card>         ##BEGIN-COMPONENT-CLASS##@component(…)
+     *                      <?php … $component->withAttributes([…]); ?>
+     *     </x-card>         @endComponentClass##END-COMPONENT-CLASS##
+     *     <x-slot:name>     @slot('name', null, […])
+     *     </x-slot>         @endslot
+     *
+     * Only template text is touched, never the inside of a PHP block, so
+     * the same words in a native tag's attribute are left alone.
+     */
+    private function compileComponentSlots(string $value): string
+    {
+        // Most native views use no components or includes at all.
+        if (! preg_match(self::SLOT_DIRECTIVES, $value)) {
+            return $value;
+        }
+
+        $tokens = token_get_all($value);
+        $result = '';
+
+        // A component's capture begins after its withAttributes() block,
+        // the last piece of opening code Blade emits for the tag.
+        $awaitingAttributes = false;
+        $inAttributes = false;
+
+        foreach ($tokens as $index => $token) {
+            if (! is_array($token)) {
+                $result .= $token;
+
+                continue;
+            }
+
+            [$id, $text] = $token;
+
+            if ($id === T_INLINE_HTML) {
+                $result .= $this->compileSlotDirectives($text);
+
+                $begin = strrpos($text, self::COMPONENT_BEGIN);
+                $end = strrpos($text, self::COMPONENT_END);
+
+                if ($begin !== false && ($end === false || $end < $begin)) {
+                    $awaitingAttributes = true;
+                } elseif ($end !== false) {
+                    $awaitingAttributes = false;
+                }
+
+                continue;
+            }
+
+            if ($id === T_OPEN_TAG && $awaitingAttributes && $this->opensWithAttributes($tokens, $index)) {
+                $inAttributes = true;
+            }
+
+            $result .= $text;
+
+            if ($id === T_CLOSE_TAG && $inAttributes) {
+                $result .= '<?php '.self::C.'::beginComponent(); ?>';
+                $awaitingAttributes = $inAttributes = false;
+            }
+        }
+
+        return $result;
+    }
+
+    /** Whether the PHP block opening at $index is `$component->withAttributes(…)`. */
+    private function opensWithAttributes(array $tokens, int $index): bool
+    {
+        $code = '';
+
+        for ($i = $index + 1; $i < count($tokens) && strlen($code) < 30; $i++) {
+            $token = $tokens[$i];
+
+            if (is_array($token) && $token[0] === T_WHITESPACE) {
+                continue;
+            }
+
+            $code .= is_array($token) ? $token[1] : $token;
+        }
+
+        return str_starts_with($code, '$component->withAttributes(');
+    }
+
+    /** Add the collector calls around the slot directives in a stretch of template text. */
+    private function compileSlotDirectives(string $html): string
+    {
+        $C = self::C;
+
+        // Anything that opens a new output buffer: place the slots echoed
+        // so far first, because their markers cannot be seen from inside it.
+        $html = preg_replace(
+            '/(?:'.self::COMPONENT_BEGIN.')?(?<![\w@])@(?:component(?:First)?|include\w*|each)[ \t]*\(/i',
+            "<?php {$C}::flushSlots(); ?>\$0",
+            $html
+        );
+
+        // Component close: hand the default slot's marker to Blade just
+        // before it renders the component, and tidy up once it has.
+        $html = str_replace(
+            '@endComponentClass'.self::COMPONENT_END,
+            "<?php echo {$C}::endSlot(); ?>@endComponentClass".self::COMPONENT_END."<?php {$C}::endComponent(); ?>",
+            $html
+        );
+
+        // Named slot open. Only the buffered form a slot tag compiles to
+        // (content null, then attributes); `@slot('title', 'Text')` has no
+        // @endslot and must not start a capture.
+        $html = preg_replace(
+            '/(?<![\w@])@slot[ \t]*\((?:(?!@slot\b)[^\n])*?, null, \[/i',
+            "<?php {$C}::beginSlot(); ?>\$0",
+            $html
+        );
+
+        // Named slot close.
+        return preg_replace(
+            '/(?<![\w@])@endslot\b/i',
+            "<?php echo {$C}::endSlot(); ?>\$0",
+            $html
+        );
     }
 
     /**
@@ -713,7 +849,7 @@ class NativeTagPrecompiler
             $propName = self::TEXT_ELEMENTS[$tag];
             $type = $this->tagToType($tag);
 
-            $code = '<?php $__nativeSlot = preg_replace(\'/\s+/\', \' \', trim(html_entity_decode(strip_tags(ob_get_clean()), ENT_QUOTES, \'UTF-8\')));';
+            $code = '<?php $__nativeSlot = preg_replace(\'/\s+/\', \' \', trim(html_entity_decode(strip_tags('.self::C.'::takeText()), ENT_QUOTES, \'UTF-8\')));';
 
             if ($tag === 'button') {
                 $code .= " if (\$__nativeSlot !== '' && !isset(\$__nativeSlotAttrs['label'])) { \$__nativeSlotAttrs['label'] = \$__nativeSlot; }";
@@ -732,7 +868,7 @@ class NativeTagPrecompiler
 
             // No strip_tags/entity decoding — the markup is the payload. An
             // explicit attribute (e.g. `:html`) wins over the captured slot.
-            $code = '<?php $__nativeSlot = trim(ob_get_clean());';
+            $code = '<?php $__nativeSlot = trim('.self::C.'::takeText());';
             $code .= " if (\$__nativeSlot !== '' && !isset(\$__nativeSlotAttrs['{$propName}'])) { \$__nativeSlotAttrs['{$propName}'] = \$__nativeSlot; }";
             $code .= ' '.self::C."::leaf('{$type}', \$__nativeSlotAttrs); ?>";
 
