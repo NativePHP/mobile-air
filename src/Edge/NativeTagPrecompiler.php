@@ -97,6 +97,9 @@ class NativeTagPrecompiler
 
     private const C = '\\Native\\Mobile\\Edge\\NativeElementCollector';
 
+    /** Blade conditionals other than @if that take an @else. */
+    private const OTHER_ELSE_BLOCKS = ['auth', 'guest', 'can', 'cannot', 'canany', 'env', 'production', 'session', 'context', 'hasSection', 'sectionMissing'];
+
     /**
      * Marker stamped into every natively-compiled view (prepended to the
      * template as a raw PHP block, so it survives Blade compilation into
@@ -518,7 +521,166 @@ class NativeTagPrecompiler
             );
         }
 
-        return $value;
+        return $this->compileBlocks($value);
+    }
+
+    /**
+     * Mark each Blade `@if`, `@unless`, `@isset`, `@switch`, loop and
+     * `@include` so the collector gives the whole block one position among
+     * its parent's children, and numbers what it emits within the block (see
+     * NativeElementCollector::openBlock()). An element's id then only
+     * changes when something before it in its own block changes, not when
+     * an `@if` above it starts or stops rendering.
+     *
+     * Runs last, on what the tag passes left, and only touches the
+     * template's text, so a directive inside a compiled tag's attributes is
+     * left as it was.
+     */
+    private function compileBlocks(string $value): string
+    {
+        if (! str_contains($value, '@')) {
+            return $value;
+        }
+
+        // Open blocks, innermost last: [kind, branches so far].
+        $open = [];
+        $out = '';
+
+        foreach (token_get_all($value) as $token) {
+            if (! is_array($token) || $token[0] !== T_INLINE_HTML) {
+                $out .= is_array($token) ? $token[1] : $token;
+
+                continue;
+            }
+
+            // Echoes are PHP, not directives: `{{ '@if(' }}` stays as it is.
+            foreach (preg_split('/(\{\{.*?\}\}|\{!!.*?!!\})/s', $token[1], -1, PREG_SPLIT_DELIM_CAPTURE) as $i => $part) {
+                $out .= $i % 2 === 1 ? $part : $this->compileBlocksIn($part, $open);
+            }
+        }
+
+        return $out;
+    }
+
+    /** @param  list<array{0: string, 1: int}>  $open */
+    private function compileBlocksIn(string $html, array &$open): string
+    {
+        $out = '';
+        $offset = 0;
+
+        while (preg_match('/\B@(@?\w+)([ \t]*)/', $html, $m, PREG_OFFSET_CAPTURE, $offset)) {
+            $start = $m[0][1];
+            $name = $m[1][0];
+            $end = $start + strlen($m[0][0]);
+
+            if ($args = (($html[$end] ?? '') === '(')) {
+                $end = $this->endOfParentheses($html, $end) ?? $end;
+            } else {
+                // Only the name belongs to the directive.
+                $end = $start + 1 + strlen($name);
+            }
+
+            [$before, $after] = $this->blockCalls($name, $args, $open);
+            $out .= substr($html, $offset, $start - $offset).$before.substr($html, $start, $end - $start).$after;
+            $offset = $end;
+        }
+
+        return $out.substr($html, $offset);
+    }
+
+    /**
+     * The collector calls to put before and after one directive.
+     *
+     * @param  list<array{0: string, 1: int}>  $open
+     * @return array{0: string, 1: string}
+     */
+    private function blockCalls(string $name, bool $args, array &$open): array
+    {
+        $C = self::C;
+        $top = $open === [] ? null : $open[count($open) - 1][0];
+        $block = "<?php {$C}::openBlock(); ?>";
+        $close = "<?php {$C}::closeBlock(); ?>";
+
+        switch (true) {
+            case $args && in_array($name, ['if', 'unless', 'isset'], true):
+                $open[] = ['if', 0];
+
+                return [$block, "<?php {$C}::blockSegment(0); ?>"];
+
+            case $top === 'if' && (($name === 'elseif' && $args) || $name === 'else'):
+            case $top === 'switch' && (($name === 'case' && $args) || $name === 'default'):
+                $branch = ++$open[count($open) - 1][1];
+
+                return ['', "<?php {$C}::blockSegment({$branch}); ?>"];
+
+            case $top === 'if' && in_array($name, ['endif', 'endunless', 'endisset'], true):
+            case $top === 'loop' && in_array($name, ['endforeach', 'endfor', 'endwhile', 'endforelse'], true):
+            case $top === 'switch' && $name === 'endswitch':
+                array_pop($open);
+
+                return ['', $close];
+
+            case $args && in_array($name, ['foreach', 'forelse', 'for', 'while'], true):
+                $open[] = ['loop', 0];
+
+                return [$block, "<?php {$C}::blockSegment(); ?>"];
+
+            case $top === 'loop' && $name === 'empty' && ! $args:
+                // @forelse's empty branch.
+                return ['', "<?php {$C}::blockSegment('empty'); ?>"];
+
+            case $args && $name === 'switch':
+                // Nothing may sit between @switch and its first @case, so
+                // the branches are marked after each case instead.
+                $open[] = ['switch', -1];
+
+                return [$block, ''];
+
+            case $args && preg_match('/^(include(If|When|Unless|First)?|each)$/', $name) === 1:
+                return [$block, $close];
+
+                // Blocks with an @else of their own: tracked so their @else isn't
+                // taken for an enclosing @if's.
+            case in_array($name, self::OTHER_ELSE_BLOCKS, true) || ($args && $name === 'empty'):
+                $open[] = [$name, 0];
+
+                return ['', ''];
+
+            case $top !== null && $name === 'end'.$top:
+                array_pop($open);
+
+                return ['', ''];
+        }
+
+        return ['', ''];
+    }
+
+    /** Offset just past the `)` closing the `(` at $offset, or null if none. */
+    private function endOfParentheses(string $html, int $offset): ?int
+    {
+        $depth = 0;
+        $quote = null;
+        $length = strlen($html);
+
+        for ($i = $offset; $i < $length; $i++) {
+            $c = $html[$i];
+
+            if ($quote !== null) {
+                if ($c === '\\') {
+                    $i++;
+                } elseif ($c === $quote) {
+                    $quote = null;
+                }
+            } elseif ($c === '"' || $c === "'") {
+                $quote = $c;
+            } elseif ($c === '(') {
+                $depth++;
+            } elseif ($c === ')' && --$depth === 0) {
+                return $i + 1;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -665,12 +827,15 @@ class NativeTagPrecompiler
             \$__vlTo = (int)(\$__vlAttrs['to'] ?? \$__vlAttrs['window_to'] ?? \$__vlAttrs['windowTo'] ?? \$__vlFrom + 29);
             \$__vlCount = (int)(\$__vlAttrs['count'] ?? 0);
             {$C}::open('virtual_list', \$__vlAttrs);
+            {$C}::openBlock();
             if (\$__vlItem && \$__vlCount > 0) {
                 \$__vlEnd = min(\$__vlTo, \$__vlCount - 1);
                 for (\$__vlI = max(0, \$__vlFrom); \$__vlI <= \$__vlEnd; \$__vlI++) {
+                    {$C}::blockSegment(\$__vlI);
                     view(\$__vlItem, ['index' => \$__vlI])->render();
                 }
             }
+            {$C}::closeBlock();
             {$C}::close(); ?>";
     }
 

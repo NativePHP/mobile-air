@@ -84,11 +84,33 @@ class NativeElementCollector
      * The stack holds one entry per currently-open container; the top
      * is the parent path used when hashing the next opened/leaf node.
      * `openStreaming` pushes, `closeStreaming` pops, `leafStreaming`
-     * computes-but-doesn't-push. Empty string at the root means
-     * "unkeyed parent" — children without `native:key` then fall
-     * through to the streaming writer's auto-generated positional id.
+     * computes-but-doesn't-push. A node without `native:key` uses its
+     * position (see $positions) as its path step, so every streamed node
+     * gets an id derived from its path.
      */
     protected static array $keyPathStack = [];
+
+    /** Ids handed out this streaming frame, for collision checks. */
+    protected static array $streamedIds = [];
+
+    /**
+     * Where the next element goes, one cursor per open container with the
+     * root's at index 0. A cursor is a stack of levels, each
+     * `[prefix, next, block, segments]`: the base level numbers the
+     * container's children 0, 1, 2…; openBlock() takes the next number for
+     * a whole Blade `@if`, `@foreach`, `@switch` or child component and
+     * pushes a level that numbers what the block emits as
+     * `<block>:<segment>.<n>`.
+     *
+     * So an element's position, and its id, only depend on what comes
+     * before it in its own block, not on how many elements an earlier
+     * `@if` or loop emitted this frame. Without this, removing one
+     * conditional element gave every later sibling the previous sibling's
+     * id, and the renderers reused that sibling's state for it.
+     *
+     * @var list<list<array{0: string, 1: int, 2: string, 3: int}>>
+     */
+    protected static array $positions = [];
 
     /**
      * Frame-level re-render intervals (ms) collected from `native:poll`
@@ -154,6 +176,11 @@ class NativeElementCollector
     public static function setStreaming(bool $enabled): void
     {
         static::$streaming = $enabled;
+
+        // Each streaming frame numbers its tree from the root again.
+        static::$keyPathStack = [];
+        static::$positions = [];
+        static::$streamedIds = [];
     }
 
     public static function isStreaming(): bool
@@ -239,6 +266,8 @@ class NativeElementCollector
             );
         }
 
+        $element->placeAt(static::nextPosition());
+
         if (empty(static::$stack)) {
             static::$roots[] = $element;
         } else {
@@ -254,7 +283,8 @@ class NativeElementCollector
      */
     public static function capture(\Closure $render): Element
     {
-        return static::wrapRoots(static::captureRoots($render));
+        // Detached: wherever the caller puts it decides its position.
+        return static::wrapRoots(static::captureRoots($render))->placeAt(null);
     }
 
     /**
@@ -267,18 +297,19 @@ class NativeElementCollector
      */
     public static function captureRoots(\Closure $render): array
     {
-        $saved = [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack];
+        $saved = [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack, static::$positions];
         static::$stack = [];
         static::$roots = [];
         static::$textFrames = [];
         static::$keyPathStack = [];
+        static::$positions = [];
 
         try {
             $render();
 
             return array_values(static::$roots);
         } finally {
-            [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack] = $saved;
+            [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack, static::$positions] = $saved;
         }
     }
 
@@ -306,7 +337,15 @@ class NativeElementCollector
             );
         }
 
-        static::$owner->mountChildComponent($tag, $attrs);
+        // One position for the whole child, so a child that renders more or
+        // fewer elements this frame doesn't move its parent's later children.
+        static::openBlock();
+
+        try {
+            static::$owner->mountChildComponent($tag, $attrs);
+        } finally {
+            static::closeBlock();
+        }
     }
 
     /**
@@ -327,16 +366,11 @@ class NativeElementCollector
      * derive the {nodeId, myKeyPath} pair to publish.
      *
      * Returns [id, myKeyPath]:
-     *   - id = 0           → no key set; let the C streaming writer
-     *                        auto-generate (legacy positional id).
-     *   - id = u32 hash    → caller passes this as the `$id` argument
-     *                        to nphp_node_open/_leaf to override the
-     *                        auto-id.
-     *   - myKeyPath = string for the depth-stack (the parent path of
-     *                 this node's children). Inherits the parent path
-     *                 when no `native:key` is set, so a keyed
-     *                 great-grandparent still informs descendants
-     *                 that *do* key themselves.
+     *   - id = u32 hash of myKeyPath, which the caller passes as the
+     *          `$id` argument to nphp_node_open/_leaf. The same tree gives
+     *          the same ids as the Element-tree path (Element::toArray()).
+     *   - myKeyPath = see Element::childKeyPath(). Containers push it as
+     *                 the parent path of their children.
      *
      * Mutates `$attrs` to strip the `native:key` entry so it doesn't
      * leak into props/layout/style downstream.
@@ -351,14 +385,90 @@ class NativeElementCollector
         // rejects ':' in names, so NativeTagPrecompiler renames it). Accept the
         // raw colon form too for the programmatic/streaming paths.
         $key = $attrs['native-key'] ?? $attrs['native:key'] ?? null;
-        if ($key === null) {
-            return [0, $parentPath];
+        unset($attrs['native-key'], $attrs['native:key']);
+
+        // Take the position even for a keyed node, as the Element-tree path
+        // does, so a key doesn't renumber the siblings after it.
+        $position = static::nextPosition();
+        $myKeyPath = Element::childKeyPath($parentPath, $key !== null ? (string) $key : null, $position);
+
+        return [Element::deriveNodeIdFromKeyPath($myKeyPath, static::$streamedIds), $myKeyPath];
+    }
+
+    // ── Positions ─────────────────────────────────────
+
+    /** The next position in the innermost open container or block. */
+    protected static function nextPosition(): string
+    {
+        if (static::$positions === []) {
+            static::$positions = [[['', 0, '', 0]]];
         }
 
-        unset($attrs['native-key'], $attrs['native:key']);
-        $myKeyPath = $parentPath.'/'.((string) $key);
+        $cursor = count(static::$positions) - 1;
+        $level = count(static::$positions[$cursor]) - 1;
 
-        return [Element::fnv1a32($myKeyPath), $myKeyPath];
+        return static::$positions[$cursor][$level][0].(static::$positions[$cursor][$level][1]++);
+    }
+
+    /** Number the children of a container that just opened from 0. */
+    protected static function enterContainer(): void
+    {
+        static::$positions[] = [['', 0, '', 0]];
+    }
+
+    protected static function exitContainer(): void
+    {
+        array_pop(static::$positions);
+    }
+
+    /**
+     * Start a block that takes one position whatever it emits: a Blade
+     * `@if`, `@unless`, `@foreach`, `@forelse`, `@for`, `@while` or
+     * `@switch` (the precompiler emits these calls around them), or a
+     * child component.
+     *
+     * Blocks inside a `<text>` are left out: its runs are emitted when the
+     * outermost text closes, after the block has already ended.
+     */
+    public static function openBlock(): void
+    {
+        if (static::$textFrames !== []) {
+            return;
+        }
+
+        $block = static::nextPosition();
+        static::$positions[count(static::$positions) - 1][] = [$block.':0.', 0, $block, 0];
+    }
+
+    /**
+     * Number what follows in the current block as a new segment: a branch
+     * of an `@if` or `@switch` (a fixed number, so each branch keeps its own
+     * ids) or the next loop iteration (null counts them).
+     */
+    public static function blockSegment(int|string|null $segment = null): void
+    {
+        $cursor = count(static::$positions) - 1;
+        $level = $cursor < 0 ? 0 : count(static::$positions[$cursor]) - 1;
+
+        if (static::$textFrames !== [] || $level === 0) {
+            return;
+        }
+
+        $current = &static::$positions[$cursor][$level];
+        $segment ??= $current[3]++;
+        $current[0] = $current[2].':'.$segment.'.';
+        $current[1] = 0;
+    }
+
+    public static function closeBlock(): void
+    {
+        $cursor = count(static::$positions) - 1;
+
+        if (static::$textFrames !== [] || $cursor < 0 || count(static::$positions[$cursor]) < 2) {
+            return;
+        }
+
+        array_pop(static::$positions[$cursor]);
     }
 
     // ── Streaming methods (write directly to C) ──────
@@ -373,6 +483,7 @@ class NativeElementCollector
 
         [$nodeId, $myKeyPath] = static::resolveStreamingKey($attrs);
         static::$keyPathStack[] = $myKeyPath;
+        static::enterContainer();
 
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
@@ -460,6 +571,7 @@ class NativeElementCollector
         nphp_node_close();
         // Phase 1 — pop the matching key-path entry pushed by openStreaming.
         array_pop(static::$keyPathStack);
+        static::exitContainer();
     }
 
     public static function leafStreaming(string $type, array $attrs): void
@@ -1244,7 +1356,9 @@ class NativeElementCollector
         }
 
         $element = static::createElement($type, $attrs);
+        $element->placeAt(static::nextPosition());
         static::$stack[] = $element;
+        static::enterContainer();
     }
 
     /**
@@ -1310,6 +1424,7 @@ class NativeElementCollector
         }
 
         $element = array_pop(static::$stack);
+        static::exitContainer();
 
         if (empty(static::$stack)) {
             static::$roots[] = $element;
@@ -1339,6 +1454,7 @@ class NativeElementCollector
         }
 
         $element = static::createElement($type, $attrs);
+        $element->placeAt(static::nextPosition());
 
         if (empty(static::$stack)) {
             static::$roots[] = $element;
@@ -1658,6 +1774,8 @@ class NativeElementCollector
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
         static::$keyPathStack = [];
+        static::$positions = [];
+        static::$streamedIds = [];
         // Reset is only reachable at screen level (child scopes route
         // through capture()), so the render-context bookkeeping can be
         // cleared too — the screen's view()/partial() rebinds it right
