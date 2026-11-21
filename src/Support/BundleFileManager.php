@@ -48,6 +48,44 @@ class BundleFileManager
     }
 
     /**
+     * rsync rules that keep vendor licence files. They go before the
+     * excludes, since rsync applies the first rule that matches.
+     *
+     * @return array<int, string>
+     */
+    public static function includes(): array
+    {
+        return array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::VENDOR_LICENSE_PATTERNS);
+    }
+
+    /**
+     * Every rule that decides what the staged copy contains, for build
+     * fingerprints: the includes (prefixed with "+") and then the excludes.
+     *
+     * @return array<int, string>
+     */
+    public static function filterRules(array $configPaths = [], ?string $sourcePath = null): array
+    {
+        return array_merge(
+            array_map(fn ($p) => '+'.$p, self::includes()),
+            self::excludes($configPaths, $sourcePath),
+        );
+    }
+
+    /**
+     * rsync --include and --exclude flags for a copy, includes first.
+     */
+    private static function rsyncFilterFlags(array $excludes): string
+    {
+        $quote = fn ($d) => "'".str_replace("'", "'\\''", $d)."'";
+
+        return implode(' ', array_merge(
+            array_map(fn ($d) => '--include='.$quote($d), self::includes()),
+            array_map(fn ($d) => '--exclude='.$quote($d), $excludes),
+        ));
+    }
+
+    /**
      * Copy a source directory to a destination, excluding bundled patterns.
      * Uses rsync on macOS/Linux, robocopy on Windows.
      */
@@ -100,8 +138,7 @@ class BundleFileManager
             throw new \InvalidArgumentException("Refusing to sync [{$source}] onto itself.");
         }
 
-        $excludes = array_merge(self::excludes($configPaths, $source), $extraExcludes);
-        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
+        $excludeFlags = self::rsyncFilterFlags(array_merge(self::excludes($configPaths, $source), $extraExcludes));
 
         $result = Process::forever()->run("rsync -a --copy-links --delete --itemize-changes {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
 
@@ -159,8 +196,7 @@ class BundleFileManager
 
     private static function copyWithRsync(string $source, string $destination, array $configPaths): void
     {
-        $excludes = self::excludes($configPaths, $source);
-        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
+        $excludeFlags = self::rsyncFilterFlags(self::excludes($configPaths, $source));
 
         // No timeout, the same as robocopy. A large app on a busy machine
         // takes well over the default minute to copy.
@@ -263,6 +299,12 @@ class BundleFileManager
             // Deleting through a link would delete the package's own source.
             if ($item->isLink()) {
                 continue;
+            }
+
+            foreach (BundleExclusions::VENDOR_LICENSE_PATTERNS as $licence) {
+                if (fnmatch($licence, $item->getFilename())) {
+                    continue 2;
+                }
             }
 
             foreach ($patterns as $pattern) {

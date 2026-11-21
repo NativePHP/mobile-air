@@ -54,10 +54,24 @@ class IosBuildCopyTest extends TestCase
     {
         $paths = BundleFileManager::excludes();
 
-        foreach (['*.md', 'LICENSE*', 'docs', '*.yml', '*.yaml', '*.neon', '*.neon.dist'] as $pattern) {
+        foreach (['*.md', 'docs', '*.yml', '*.yaml', '*.neon', '*.neon.dist'] as $pattern) {
             $this->assertContains('vendor/**/'.$pattern, $paths);
             $this->assertNotContains($pattern, $paths);
         }
+    }
+
+    public function test_vendor_licence_files_are_included_not_excluded(): void
+    {
+        $excludes = BundleFileManager::excludes();
+        $includes = BundleFileManager::includes();
+
+        foreach (['LICENSE*', 'LICENCE*', 'COPYING*', 'NOTICE*'] as $pattern) {
+            $this->assertContains('vendor/**/'.$pattern, $includes);
+            $this->assertNotContains('vendor/**/'.$pattern, $excludes);
+        }
+
+        // Fingerprints change when the include rules do.
+        $this->assertContains('+vendor/**/LICENSE*', BundleFileManager::filterRules());
     }
 
     public function test_excluded_paths_separates_anchored_from_any_depth_patterns(): void
@@ -208,12 +222,27 @@ class IosBuildCopyTest extends TestCase
             $cmd = $process->command;
 
             return str_contains($cmd, "--exclude='vendor/**/*.md'")
-                && str_contains($cmd, "--exclude='vendor/**/LICENSE*'")
+                && ! str_contains($cmd, "--exclude='vendor/**/LICENSE*'")
                 && str_contains($cmd, "--exclude='vendor/**/docs'")
                 && str_contains($cmd, "--exclude='vendor/**/*.yml'")
                 && str_contains($cmd, "--exclude='vendor/**/*.yaml'")
                 && str_contains($cmd, "--exclude='vendor/**/*.neon'")
                 && str_contains($cmd, "--exclude='vendor/*/*/vendor'");
+        });
+    }
+
+    public function test_copy_puts_licence_includes_before_excludes(): void
+    {
+        $appPath = $this->fakeRsyncAndGetAppPath();
+
+        BundleFileManager::copy(base_path(), $appPath);
+
+        Process::assertRan(function ($process) {
+            $cmd = $process->command;
+            $include = strpos($cmd, "--include='vendor/**/LICENSE*'");
+            $exclude = strpos($cmd, "--exclude='vendor/**/*.md'");
+
+            return $include !== false && $exclude !== false && $include < $exclude;
         });
     }
 
@@ -254,8 +283,10 @@ class IosBuildCopyTest extends TestCase
             'vendor' => ['acme' => ['pkg' => [
                 'README.md' => '# strip',
                 'LICENSE' => 'MIT',
+                'LICENSE.md' => 'MIT',
+                'COPYING.txt' => 'GPL',
                 'phpstan.neon' => 'includes: []',
-                'docs' => ['guide.md' => '# strip'],
+                'docs' => ['guide.md' => '# strip', 'LICENSE' => 'inside an excluded dir'],
                 'src' => ['Pkg.php' => '<?php', 'deep' => ['notes.md' => '# strip']],
             ]]],
         ]);
@@ -263,6 +294,11 @@ class IosBuildCopyTest extends TestCase
         $destination = $this->testProjectPath.'/bundle';
 
         BundleFileManager::copy($source, $destination);
+
+        // Licence files ship, even LICENSE.md, which *.md would otherwise drop.
+        $this->assertFileExists($destination.'/vendor/acme/pkg/LICENSE');
+        $this->assertFileExists($destination.'/vendor/acme/pkg/LICENSE.md');
+        $this->assertFileExists($destination.'/vendor/acme/pkg/COPYING.txt');
 
         // The app's own markdown, yaml and docs survive the copy.
         $this->assertFileExists($destination.'/resources/keep.md');
@@ -272,7 +308,6 @@ class IosBuildCopyTest extends TestCase
 
         // Vendor non-runtime files are stripped at any depth.
         $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/README.md');
-        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/LICENSE');
         $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/phpstan.neon');
         $this->assertDirectoryDoesNotExist($destination.'/vendor/acme/pkg/docs');
         $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/src/deep/notes.md');
@@ -718,21 +753,23 @@ class IosBuildCopyTest extends TestCase
 
     public function test_keep_vendor_files_config_ships_matching_files(): void
     {
-        config(['nativephp.cleanup_keep_vendor_files' => ['LICENSE*']]);
+        config(['nativephp.cleanup_keep_vendor_files' => ['*.yml']]);
 
-        $this->assertNotContains('vendor/**/LICENSE*', BundleFileManager::excludes());
+        $this->assertNotContains('vendor/**/*.yml', BundleFileManager::excludes());
         $this->assertContains('vendor/**/*.md', BundleFileManager::excludes());
 
         $appPath = $this->createAppPath([
             'vendor' => ['acme' => ['pkg' => [
-                'LICENSE' => 'MIT',
+                'config.yml' => 'keep: true',
+                'LICENSE.md' => 'MIT',
                 'README.md' => '# pkg',
             ]]],
         ]);
 
         BundleFileManager::removeUnnecessaryFiles($appPath);
 
-        $this->assertFileExists($appPath.'vendor/acme/pkg/LICENSE');
+        $this->assertFileExists($appPath.'vendor/acme/pkg/config.yml');
+        $this->assertFileExists($appPath.'vendor/acme/pkg/LICENSE.md');
         $this->assertFileDoesNotExist($appPath.'vendor/acme/pkg/README.md');
     }
 

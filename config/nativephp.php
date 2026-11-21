@@ -326,10 +326,10 @@ return [
     |--------------------------------------------------------------------------
     |
     | Inside vendor/, files PHP never reads on the device are left out of the
-    | bundle: docs, licences, lock files and native plugin sources such as
-    | '*.swift' and '*.kt' (see BundleExclusions::VENDOR_PATTERNS). List
-    | any of those patterns here to ship the matching files anyway, for
-    | example 'LICENSE*'.
+    | bundle: docs, lock files and native plugin sources such as '*.swift'
+    | and '*.kt' (see BundleExclusions::VENDOR_PATTERNS). List any of those
+    | patterns here to ship the matching files anyway, for example 'docs'.
+    | Licence and notice files (LICENSE*, COPYING*, NOTICE*) always ship.
     |
     */
 

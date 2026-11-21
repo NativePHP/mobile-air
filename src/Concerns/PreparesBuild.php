@@ -263,7 +263,7 @@ trait PreparesBuild
             ! $reuseUnchanged || $isWindows,
         );
 
-        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::excludes($configExcludes, $source));
+        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::filterRules($configExcludes, $source));
         $incremental = ! $isWindows
             && $state->matches('staging', $stagingFingerprint)
             && is_dir($tempDir.DIRECTORY_SEPARATOR.'vendor');

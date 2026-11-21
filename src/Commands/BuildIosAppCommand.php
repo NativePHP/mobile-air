@@ -140,7 +140,7 @@ class BuildIosAppCommand extends Command
         // The staged copy of the app in nativephp/ios/laravel is kept between
         // builds. It can be brought up to date in place when it was made with
         // the same exclusions; otherwise start from an empty directory.
-        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::excludes($configExcludes, base_path()));
+        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::filterRules($configExcludes, base_path()));
         $incremental = $state->matches('staging', $stagingFingerprint) && is_dir($this->appPath.'vendor');
 
         // Its vendor/ can be kept too when nothing composer install depends

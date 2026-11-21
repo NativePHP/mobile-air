@@ -79,7 +79,6 @@ class BundleExclusions
      */
     public const VENDOR_PATTERNS = [
         '*.md',
-        'LICENSE*',
         'docs',
         '*.yml',
         '*.yaml',
@@ -106,6 +105,19 @@ class BundleExclusions
         '*.aar',
         '*.jar',
         '*.xcframework',
+    ];
+
+    /**
+     * Licence and notice files inside vendor packages. They always ship,
+     * even when another vendor pattern (*.md) matches them, because most
+     * package licences ask for their text to travel with the code. Matched
+     * by file or directory name, like VENDOR_PATTERNS.
+     */
+    public const VENDOR_LICENSE_PATTERNS = [
+        'LICENSE*',
+        'LICENCE*',
+        'COPYING*',
+        'NOTICE*',
     ];
 
     /**
