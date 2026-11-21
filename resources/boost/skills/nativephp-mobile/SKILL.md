@@ -143,7 +143,8 @@ element (modifiers: `@navigate.back`, `@navigate.replace.fade`, `@navigate.slide
 for a plain route; double quotes hold a PHP expression, so `@navigate="/path"` fails to compile. Build dynamic
 routes in PHP: `@navigate="'/item/' . $item->id"`.
 
-Lifecycle hooks: `mount()` (first push only), `onResume()` (returning to the screen), `onBackPressed()`
+Lifecycle hooks: `mount()` (first push only), `onResume()` (returning to the screen, including a tab you
+come back to), `onBackPressed()`
 (Android back button), `unmount()`, and `updated{Property}()` when a bound property changes. Mark a component
 `#[Lazy]` to paint a placeholder instantly while a slow `mount()` runs in the background.
 
@@ -365,6 +366,11 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
 - **Platform icons**: `:ios-icon` / `:android-icon` take the typed enums (`:ios` / `:android` shorthand also
   works); a plain `icon` string is the cross-platform fallback. `AndroidOutlined` cases carry their variant
   automatically.
+- **Tabs keep their state.** Switching away from a bottom-nav tab parks its screens instead of unmounting
+  them, so coming back shows the same screen and data and calls `onResume()`, not `mount()`. Refresh data in
+  `onResume()`, not `mount()`, if it must reload on every visit. `keep-alive="false"` (or
+  `TabBar::make()->keepAlive(false)`) brings back the old behaviour of mounting the tab afresh on every tap.
+  `$this->switchToTab('/shop')` switches tabs from code.
 - `<native:fab>` floats above the content (give it `@tap` or `url`; `label` makes it an extended fab).
   `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance. On iOS,
   `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge. `glass/80` caps that glass
@@ -406,7 +412,7 @@ includes `processorCount`, `activeProcessorCount`, `systemUptime`, and `memTotal
 alongside existing `memUsed`). `Device::getTimezone()` gives the phone's IANA timezone (`Europe/Lisbon`), or
 `null` off-device; Laravel's `app.timezone` (UTC by default) is not the phone's.
 `AppBackgrounded` and `AppForegrounded($secondsAway)` (both `BroadcastsGlobally`) fire when the app leaves and
-returns; `onResume()` does not, it runs only when a pop reveals a screen. `$secondsAway` keeps counting while the
+returns; `onResume()` does not, it runs only when a pop reveals a screen or a kept-alive tab is shown again. `$secondsAway` keeps counting while the
 device sleeps, so use it for lock and refresh timeouts. A cold launch fires neither. On Android, opening the
 system camera or an in-app browser backgrounds the app too (they run in other processes); on iOS it does not.
 
