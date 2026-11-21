@@ -8,8 +8,7 @@ use Native\Mobile\Edge\TailwindParser;
 
 beforeEach(function () {
     TailwindParser::clearCache();
-    ElementRegistry::reset();
-    ElementRegistry::register('text', Text::class);
+    ElementRegistry::fake(['text' => Text::class]);
 });
 
 // ── Spacing ─────────────────────────────────────────

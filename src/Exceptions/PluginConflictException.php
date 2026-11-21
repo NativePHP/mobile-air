@@ -15,11 +15,12 @@ class PluginConflictException extends RuntimeException
         $messages = [];
         foreach ($conflicts as $conflict) {
             $plugins = implode(' and ', $conflict['plugins']);
-            if ($conflict['type'] === 'namespace') {
-                $messages[] = "Namespace '{$conflict['value']}' is used by both {$plugins}";
-            } else {
-                $messages[] = "Bridge function '{$conflict['value']}' is registered by both {$plugins}";
-            }
+            $messages[] = match ($conflict['type']) {
+                'namespace' => "Namespace '{$conflict['value']}' is used by both {$plugins}",
+                'component' => "Component '{$conflict['value']}' is declared by both {$plugins}",
+                'core_component' => "Component '{$conflict['value']}' is rendered by NativePHP core, so {$conflict['plugins'][1]} can't provide a renderer for it",
+                default => "Bridge function '{$conflict['value']}' is registered by both {$plugins}",
+            };
         }
 
         parent::__construct(
