@@ -994,7 +994,10 @@ private struct BottomBarInsetModifier: ViewModifier {
                     .frame(maxWidth: .infinity)
                     .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
                     .background(alignment: .top) {
-                        BottomBarSoftGlass(flags: bottomBar.props.getInt("glass", default: 0))
+                        BottomBarSoftGlass(
+                            flags: bottomBar.props.getInt("glass", default: 0),
+                            opacity: CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
+                        )
                     }
             }
         } else {
@@ -1566,10 +1569,13 @@ private struct ObjectResultRow: View {
 /// without the hard top edge (rim and lensing) a plain `glass` surface has.
 /// The bar's own content draws on top; give it a translucent fill to tint
 /// the glass. `glass:clear` takes the clear variant. Before iOS 26 it's
-/// `.regularMaterial`, faded the same way. Shared with the stack renderer's
-/// `StackBottomBarInsetModifier`.
+/// `.regularMaterial`, faded the same way. `opacity` (the bar's
+/// `glass-opacity`, 0 to 1) is how opaque the glass gets once it has faded
+/// in, so an app can let more of what's under the bar show through. Shared
+/// with the stack renderer's `StackBottomBarInsetModifier`.
 struct BottomBarSoftGlass: View {
     let flags: Int
+    var opacity: CGFloat = 1
     var fade: CGFloat = 28
 
     var body: some View {
@@ -1577,7 +1583,10 @@ struct BottomBarSoftGlass: View {
             GeometryReader { geo in
                 glass.mask(
                     LinearGradient(
-                        stops: Self.fadeIn(until: min(1, fade / max(geo.size.height, 1))),
+                        stops: Self.fadeIn(
+                            until: min(1, fade / max(geo.size.height, 1)),
+                            to: min(1, max(0, opacity))
+                        ),
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -1590,12 +1599,13 @@ struct BottomBarSoftGlass: View {
         }
     }
 
-    /// Clear to opaque on an ease-in-out curve, which leaves no line where
-    /// a straight ramp would stop.
-    static func fadeIn(until end: CGFloat) -> [Gradient.Stop] {
+    /// Clear to `peak` opacity on an ease-in-out curve, which leaves no line
+    /// where a straight ramp would stop. The last stop holds `peak` down the
+    /// rest of the bar.
+    static func fadeIn(until end: CGFloat, to peak: CGFloat = 1) -> [Gradient.Stop] {
         (0...8).map { step in
             let t = CGFloat(step) / 8
-            return .init(color: .black.opacity(t * t * (3 - 2 * t)), location: t * end)
+            return .init(color: .black.opacity(peak * t * t * (3 - 2 * t)), location: t * end)
         }
     }
 

@@ -1,6 +1,7 @@
 <?php
 
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\BottomNav;
 use Native\Mobile\Edge\Elements\BottomNavItem;
 use Native\Mobile\Edge\Elements\TopBar;
@@ -14,6 +15,7 @@ use Tests\Fixtures\Edge\CustomTopBarScreen;
 use Tests\Fixtures\Edge\FabScreen;
 use Tests\Fixtures\Edge\InlineBottomNavScreen;
 use Tests\Fixtures\Edge\InlineGlassBottomBarScreen;
+use Tests\Fixtures\Edge\InlineGlassOpacityBottomBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarTitleScreen;
 use Tests\Fixtures\Edge\ScrollFabScreen;
@@ -215,6 +217,58 @@ it('keeps glass on an inline bottom-bar for the renderers to draw behind the bar
     expect($tree['type'])->toBe('native_root_stack')
         ->and($bar['props']['glass'] ?? null)->toBe(1 | 8)
         ->and($bar['children'][0]['type'])->toBe('row');
+});
+
+it('sends no glass_opacity for a glass bottom-bar that leaves it unset', function () {
+    $tree = Native::test(InlineGlassBottomBarScreen::class)->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    expect($bar['props'])->not->toHaveKey('glass_opacity');
+});
+
+it('carries glass-opacity from an inline bottom-bar onto the bottom_bar marker', function () {
+    $tree = Native::test(InlineGlassOpacityBottomBarScreen::class)
+        ->assertSee('Composer')
+        ->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    expect($bar['props']['glass'] ?? null)->toBe(1)
+        ->and($bar['props']['glass_opacity'] ?? null)->toBe(0.6)
+        ->and($bar['props'])->not->toHaveKeys(['glass-opacity', 'glassOpacity', 'opacity'])
+        ->and($bar['children'][0]['type'])->toBe('row');
+});
+
+it('reads glass-opacity from a string attribute and clamps it to 0..1', function (string $given, float $expected) {
+    $tree = Native::test(InlineGlassOpacityBottomBarScreen::class)
+        ->set('glassOpacity', $given)
+        ->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    expect($bar['props']['glass_opacity'] ?? null)->toBe($expected);
+})->with([
+    'in range' => ['0.75', 0.75],
+    'above one' => ['1.5', 1.0],
+    'below zero' => ['-0.2', 0.0],
+]);
+
+it('ignores a glass-opacity that is not a number', function () {
+    $tree = Native::test(InlineGlassOpacityBottomBarScreen::class)
+        ->set('glassOpacity', 'soft')
+        ->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    expect($bar['props'])->not->toHaveKey('glass_opacity');
+});
+
+it('sets glass opacity fluently on a BottomBar', function () {
+    $registry = new CallbackRegistry;
+
+    expect(BottomBar::make()->glassOpacity(0.4)->getResolvedProps($registry))->toMatchArray(['glass_opacity' => 0.4])
+        ->and(BottomBar::make()->getResolvedProps($registry))->not->toHaveKey('glass_opacity');
 });
 
 it('hoists an inline bottom-nav into a NativeRootTabs with no layout at all', function () {
