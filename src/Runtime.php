@@ -171,21 +171,10 @@ class Runtime
 
         $output = new BufferedOutput;
 
-        // Parse command and arguments
-        $parts = str_getcsv($command, ' ', '"', '\\');
-        $commandName = array_shift($parts);
-
-        $params = ['command' => $commandName];
-        foreach ($parts as $part) {
-            if (str_starts_with($part, '--')) {
-                $kv = explode('=', substr($part, 2), 2);
-                $params['--'.$kv[0]] = $kv[1] ?? true;
-            } else {
-                $params[] = $part;
-            }
-        }
-
-        $run = fn () => Artisan::call($commandName, array_slice($params, 1), $output);
+        // Artisan parses the whole line as the console does, so positional
+        // arguments bind by name and quoted values keep their spaces.
+        $commandName = strtok($command, ' ');
+        $run = fn () => Artisan::call($command, [], $output);
 
         // The queue worker lane runs its jobs in here. What a job
         // does is marked as work of a background lane, so that
