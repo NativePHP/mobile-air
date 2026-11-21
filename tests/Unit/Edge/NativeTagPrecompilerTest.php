@@ -249,11 +249,11 @@ it('handles text-input hyphenated name', function () {
     expect($result)->toContain("::leaf('text_input', ['placeholder' => 'Search...'])");
 });
 
-it('compiles dotted native model paths through view data', function () {
+it('compiles dotted native model paths to a path read on the variable', function () {
     $result = ($this->precompiler)('<native:text-input native:model="profile.name" />');
 
     expect($result)
-        ->toContain("'value' => (data_get(get_defined_vars(), 'profile.name'))")
+        ->toContain("'value' => (data_get(\$profile, 'name'))")
         ->toContain("'_change' => '__syncProperty(\\'profile.name\\')'")
         ->toContain("'sync-mode' => 'live'");
 });
@@ -272,6 +272,27 @@ it('handles dynamic attributes with colon prefix', function () {
     expect($result)->toContain("'fontSize' => (\$size)");
     expect($result)->toContain("'color' => (\$theme->color)");
 });
+
+it('compiles native model bindings to a direct read of the view variable', function () {
+    expect(($this->precompiler)('<native:text-input native:model.debounce.300ms="name" />'))
+        ->toContain("'value' => (\$name)")
+        ->toContain("'_change' => '__syncProperty(\\'name\\')'")
+        ->toContain("'debounce-ms' => '300'")
+        ->not->toContain('get_defined_vars');
+
+    expect(($this->precompiler)('<native:text-input @model="account.email" />'))
+        ->toContain("'value' => (data_get(\$account, 'email'))")
+        ->toContain("'_change' => '__syncProperty(\\'account.email\\')'")
+        ->toContain("'sync-mode' => 'live'");
+
+    expect(($this->precompiler)('<native:text-input native:model.blur="profile.address.city" />'))
+        ->toContain("'value' => (data_get(\$profile, 'address.city'))");
+});
+
+it('keeps the lookup through view data for a native model root that is not a variable name', function (string $binding) {
+    expect(($this->precompiler)('<native:text-input native:model="'.$binding.'" />'))
+        ->toContain("'value' => (data_get(get_defined_vars(), '{$binding}'))");
+})->with(['{{ $field }}', '$name', 'this']);
 
 it('handles multiple native tags in one template', function () {
     $input = '<native:column fill><native:text :fontSize="20">Hi</native:text><native:button label="OK" @tap="ok" /></native:column>';
