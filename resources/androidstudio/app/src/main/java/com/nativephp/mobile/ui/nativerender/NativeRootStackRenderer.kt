@@ -49,6 +49,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -148,6 +149,16 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val searchOnQueryCb = activeNode.props.getCallbackId("search_on_query")
     val searchDebounceMs = activeNode.props.getInt("search_debounce_ms", 300)
     val hasSearch = searchPlaceholder.isNotEmpty()
+    // Search text per stack level (see InlineNavSearchField). PHP keeps a
+    // pushed-over screen alive and shows it again on back, so its query
+    // outlives the push; it goes once the level leaves the stack.
+    val searchLevel = "${path.size}|$activeUri"
+    val searchQueries = remember { mutableStateMapOf<String, String>() }
+    val liveSearchLevels = listOfNotNull(rootUri?.let { "0|$it" }) +
+        path.mapIndexed { index, uri -> "${index + 1}|$uri" } + searchLevel
+    LaunchedEffect(liveSearchLevels) {
+        searchQueries.keys.retainAll(liveSearchLevels.toSet())
+    }
 
     // Per-screen nav-bar opt-out (`$hidesNavBar` /
     // `navigationOptions()->hidden()`) — suppresses the TopAppBar for
@@ -210,6 +221,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 callbackId = searchOnQueryCb,
                 nodeId = activeNode.id,
                 debounceMs = searchDebounceMs,
+                queries = searchQueries,
+                level = searchLevel,
             )
         } else if (subtitle.isNotEmpty()) {
             Column {
@@ -296,10 +309,11 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     scrollBehavior = scrollBehavior,
                 )
             }
-            // Search field stacked under a titled bar (iOS-parity). When
-            // there's no title, the field already lives in the bar's title
-            // slot above, so this is skipped.
-            if (hasSearch && hasTitle) {
+            // Search field stacked under a titled bar (iOS-parity), including
+            // a custom title view. When there's no title of any kind, the
+            // field already lives in the bar's title slot above, so this is
+            // skipped.
+            if (hasSearch && (hasTitle || titleNode != null)) {
                 // M3 "search bar below a title" pattern: a full-width filled
                 // pill (https://m3.material.io/components/search/guidelines).
                 InlineNavSearchField(
@@ -307,6 +321,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     callbackId = searchOnQueryCb,
                     nodeId = activeNode.id,
                     debounceMs = searchDebounceMs,
+                    queries = searchQueries,
+                    level = searchLevel,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp)
