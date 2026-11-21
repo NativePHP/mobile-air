@@ -1,13 +1,15 @@
 import Foundation
+import UIKit
 
 /// Centralized helper to convert icon names to SF Symbols
 /// Used by both SideNav and BottomNav components
 ///
 /// Features smart fallback:
 /// 1. If icon contains ".", treat as direct SF Symbol path (e.g., "car.side.fill")
-/// 2. Checks manual mapping for aliases and special cases
-/// 3. Attempts auto-conversion to SF Symbol naming (e.g., "newspaper" -> "newspaper.fill")
-/// 4. Falls back to default circle icon if not found
+/// 2. If icon is already an SF Symbol name (e.g., "heart", "phone"), use it as written
+/// 3. Checks manual mapping for aliases and special cases
+/// 4. Attempts auto-conversion to SF Symbol naming (e.g., "archive-box" -> "archivebox")
+/// 5. Falls back to default circle icon if not found
 ///
 /// A `custom:` prefix (app icons, see `NativeIcon`) is stripped first.
 func getIconForName(_ iconName: String) -> String {
@@ -21,6 +23,14 @@ func getIconForName(_ iconName: String) -> String {
     // If icon contains a dot, assume it's a direct SF Symbol path
     // e.g., "car.side.fill", "airplane.circle", "figure.walk"
     if iconName.contains(".") {
+        return iconName
+    }
+
+    // A name that is already an SF Symbol draws as itself, so `heart`,
+    // `phone` or `star` give the outline symbol the author asked for, not
+    // its `.fill` variant. The manual mapping is for names SF Symbols
+    // doesn't have (`home`, `settings`, `favorite`, `shopping_cart`, ...).
+    if UIImage(systemName: iconName) != nil {
         return iconName
     }
 
@@ -42,7 +52,9 @@ func getIconForName(_ iconName: String) -> String {
     return "circle.fill"
 }
 
-/// Manual icon mappings for aliases and special cases
+/// Manual icon mappings for aliases and special cases. A key that is also
+/// an SF Symbol name (`heart`, `phone`, `star`, ...) only gets here on an
+/// iOS version that doesn't have that symbol.
 private func getManualMapping(_ iconName: String) -> String? {
     switch iconName.lowercased() {
     // Common navigation icons
