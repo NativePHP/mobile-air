@@ -365,6 +365,26 @@ it('keeps a completion that lands before the new screen has drawn its first fram
     FakeBridge::disable();
 });
 
+it('keeps a device event that lands before the new screen has drawn its first frame', function () {
+    $bridge = FakeBridge::enable();
+    $router = new NativeRouter;
+    (new ReflectionProperty(NativeRouter::class, 'deferredTransition'))->setValue($router, Transition::Fade);
+
+    // A position the new screen asked for in mount(), answered before its first frame, between two taps on the old one.
+    $position = ['type' => 20, 'event' => 'App\\Events\\PositionReceived', 'payload' => ['id' => 'form', 'latitude' => 48.85]];
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 7]);
+    $bridge->queueEvent($position);
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 8]);
+
+    $router->flushDeferredTransition();
+
+    expect($router->takeCarriedEvent())->toBe($position)
+        ->and($router->takeCarriedEvent())->toBeNull()
+        ->and(nativephp_element_wait_event(0))->toBeNull();
+
+    FakeBridge::disable();
+});
+
 it('keeps a completion that lands while the transition is being signalled', function () {
     $bridge = FakeBridge::enable();
     $router = new NativeRouter;

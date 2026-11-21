@@ -5,8 +5,6 @@ namespace Native\Mobile\Edge;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as IlluminateRoute;
 use Illuminate\Support\Facades\Log;
-use Native\Mobile\Events\Async\AsyncTaskFailed;
-use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -193,7 +191,7 @@ class NativeRouter
     protected ?Transition $deferredTransition = null;
 
     /**
-     * Async completions kept from the reset in flushDeferredTransition(), for
+     * Native events kept from the reset in flushDeferredTransition(), for
      * the runloop of the screen that's showing to handle next.
      *
      * @var list<array<string, mixed>>
@@ -207,10 +205,12 @@ class NativeRouter
      * one is ready.
      *
      * The reset drops every queued event, which is right for taps on the
-     * screen going away. But a task the new screen dispatched from mount()
-     * can finish before that first frame, and its completion would be
-     * dropped with them. Its timeout is disarmed once it finishes, so the
-     * screen would wait for it forever. Those completions are kept.
+     * screen going away. But a task or a bridge call the new screen started
+     * from mount() can answer before that first frame, and its native event
+     * would be dropped with them: an async completion whose timeout is
+     * already disarmed, or a device answer such as a position fix that never
+     * comes again. The screen would wait for it forever. Native events are
+     * kept.
      *
      * They're taken after the transition is signalled, right before the
      * reset. On iOS the signal waits for the main thread, which is busy
@@ -227,13 +227,13 @@ class NativeRouter
 
         static::signalTransition($t);
 
-        $this->carriedEvents = [...$this->carriedEvents, ...static::drainEvents()['completions']];
+        $this->carriedEvents = [...$this->carriedEvents, ...static::drainEvents()['native_events']];
 
         static::resetBuffers();
     }
 
     /**
-     * The next async completion kept from a transition reset, if any.
+     * The next native event kept from a transition reset, if any.
      *
      * @return array<string, mixed>|null
      */
@@ -244,7 +244,7 @@ class NativeRouter
 
     /**
      * Count the system backs queued behind the one that just popped a screen,
-     * carrying any async completions on to the next runloop.
+     * carrying any native events on to the next runloop.
      *
      * Picking an entry from the iOS back button's history menu pops several
      * screens at once, and native navigation posts one system back for each.
@@ -254,24 +254,26 @@ class NativeRouter
      */
     protected function takeQueuedSystemBacks(): int
     {
-        ['completions' => $completions, 'system_backs' => $backs] = static::drainEvents();
+        ['native_events' => $nativeEvents, 'system_backs' => $backs] = static::drainEvents();
 
-        $this->carriedEvents = [...$this->carriedEvents, ...$completions];
+        $this->carriedEvents = [...$this->carriedEvents, ...$nativeEvents];
 
         return $backs;
     }
 
     /**
-     * Drain the event queue, keeping only async task completions and a count
-     * of system backs. Each completion carries its task id, and
-     * NativeComponent checks which screen dispatched it, so handing it to the
-     * next runloop can't wake the wrong screen.
+     * Drain the event queue, keeping native events and a count of system
+     * backs. UI events are dropped: their callback ids belong to the screen
+     * going away. A native event is meant for whichever screen listens: an
+     * async completion carries its task id, and NativeComponent checks which
+     * screen dispatched it, and an #[On] listener filters on the payload, so
+     * handing it to the next runloop is what a moment later would have done.
      *
-     * @return array{completions: list<array<string, mixed>>, system_backs: int}
+     * @return array{native_events: list<array<string, mixed>>, system_backs: int}
      */
     protected static function drainEvents(): array
     {
-        $completions = [];
+        $nativeEvents = [];
         $backs = 0;
 
         while (($event = nativephp_element_wait_event(0)) !== null) {
@@ -281,16 +283,12 @@ class NativeRouter
                 continue;
             }
 
-            $name = (string) ($event['event'] ?? '');
-            $name = str_starts_with($name, 'native:') ? substr($name, 7) : $name;
-
-            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE
-                && ($name === AsyncTaskFinished::class || $name === AsyncTaskFailed::class)) {
-                $completions[] = $event;
+            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE) {
+                $nativeEvents[] = $event;
             }
         }
 
-        return ['completions' => $completions, 'system_backs' => $backs];
+        return ['native_events' => $nativeEvents, 'system_backs' => $backs];
     }
 
     // ── Static registry ─────────────────────────────
