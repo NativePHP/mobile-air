@@ -1569,10 +1569,10 @@ private struct ObjectResultRow: View {
 /// without the hard top edge (rim and lensing) a plain `glass` surface has.
 /// The bar's own content draws on top; give it a translucent fill to tint
 /// the glass. `glass:clear` takes the clear variant. Before iOS 26 it's
-/// `.regularMaterial`, faded the same way. `opacity` (the bar's
-/// `glass-opacity`, 0 to 1) is how opaque the glass gets once it has faded
-/// in, so an app can let more of what's under the bar show through. Shared
-/// with the stack renderer's `StackBottomBarInsetModifier`.
+/// `.regularMaterial`, faded the same way. `opacity` (`glass/80` on the bar
+/// sends `glass_opacity` 0.8) is how opaque the glass gets once it has
+/// faded in, so an app can let more of what's under the bar show through.
+/// Shared with the stack renderer's `StackBottomBarInsetModifier`.
 struct BottomBarSoftGlass: View {
     let flags: Int
     var opacity: CGFloat = 1
