@@ -75,6 +75,39 @@ class ScrollView extends Element
         return $this;
     }
 
+    /**
+     * Animate every autoScrollTo() move. Without it the first move jumps and
+     * later ones animate. A request the scroll view opens with still jumps,
+     * since the screen should open where it's meant to be.
+     */
+    public function autoScrollAnimated(bool $value = true): static
+    {
+        if ($value) {
+            $this->scrollProps['auto_scroll_animated'] = true;
+        } else {
+            unset($this->scrollProps['auto_scroll_animated']);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Ask for the autoScrollTo() child again. The scroll view only moves when
+     * the request changes, so asking for the same index twice does nothing.
+     * Changing the token counts as a new request, so the scroll view goes
+     * back to the child even when the index is the same as last time.
+     */
+    public function autoScrollToken(string|int|null $token): static
+    {
+        if ($token === null || $token === '') {
+            unset($this->scrollProps['auto_scroll_token']);
+        } else {
+            $this->scrollProps['auto_scroll_token'] = (string) $token;
+        }
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         return $this->scrollProps;

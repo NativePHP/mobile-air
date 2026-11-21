@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
@@ -380,16 +381,26 @@ fun DefaultContainerNode(node: NativeUINode, modifier: Modifier = Modifier) {
             else -> node.layout?.flexDirection ?: FlexDirection.COLUMN
         }
 
-        FlexContainer(
-            direction = direction,
-            justify = node.layout?.justifyContent ?: JustifyContent.START,
-            align = node.layout?.alignItems ?: AlignItems.STRETCH,
-            gap = node.layout?.gap ?: 0f,
-            wrap = node.layout?.flexWrap ?: 0,
-            childNodes = node.children,
-            modifier = modifier
-        ) {
-            // Content is rendered by FlexContainer itself via NodeView calls
+        val container: @Composable () -> Unit = {
+            FlexContainer(
+                direction = direction,
+                justify = node.layout?.justifyContent ?: JustifyContent.START,
+                align = node.layout?.alignItems ?: AlignItems.STRETCH,
+                gap = node.layout?.gap ?: 0f,
+                wrap = node.layout?.flexWrap ?: 0,
+                childNodes = node.children,
+                modifier = modifier
+            ) {
+                // Content is rendered by FlexContainer itself via NodeView calls
+            }
+        }
+
+        // `animate-layout`: children slide to their new places and new ones
+        // fade in (see `layoutMotion` in ComposeFlexLayout.kt).
+        if (node.props.getBool("animate_layout")) {
+            CompositionLocalProvider(LocalAnimateLayoutChildren provides true) { container() }
+        } else {
+            container()
         }
     }
 }
