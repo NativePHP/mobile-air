@@ -139,7 +139,9 @@ not fixed inline. Keep the entire data layer (Saloon requests, caches, DTOs, ser
 
 - **`native:model` is LIVE by default** — the opposite of Livewire 3. Add `.blur`/`.debounce.Xms`
   where the old code used deferred binding.
-- **No built-in `validate()`**: manual `Validator` + `public array $errors` + `@nativeError`.
+- **`validate()` is opt-in**: add the `ValidatesInput` trait (`Native\Mobile\Edge\Concerns`) and keep
+  `rules()`, `validate()`, `validateOnly()` and `@error`. Messages stay on the screen instead of
+  reaching the error overlay, and `native:model` inputs show their own field's message.
 - **No query strings on native routes**: `?foo=1` becomes navigation data read via `$this->data('foo')`
   in `mount()`.
 - `wire:init` → `#[Lazy]` + `placeholder()`; `x-intersect` infinite scroll → `@endReached` (throttle
