@@ -7,8 +7,10 @@ use Illuminate\Contracts\Routing\UrlRoutable as ImplicitlyBindable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Str;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
+use Native\Mobile\Edge\Exceptions\RemoteActionNotAllowedException;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionNamedType;
@@ -51,6 +53,133 @@ class ComponentMethodInvoker extends BoundMethod
 
         return (new ReflectionMethod($component, $method))
             ->invokeArgs($component, $dependencies);
+    }
+
+    /**
+     * Throw unless the method is one a template or the device may name:
+     * public, not static, not a lifecycle hook, not declared on
+     * NativeComponent itself, and not render().
+     */
+    public static function assertCallable(NativeComponent $component, string $method): void
+    {
+        static::ensureCallable($component, $method);
+    }
+
+    /**
+     * Throw unless something outside the app, for example a server, may run
+     * this method with these arguments: everything assertCallable() asks,
+     * plus a `#[ClientAction]` attribute on the method, and parameters that
+     * take the arguments as they are.
+     *
+     * The arguments are plain values passed positionally, with no
+     * container injection and no model or enum binding, so a parameter
+     * typed with a class or interface (or `callable`, or `object`) is
+     * refused, as is one taken by reference. Each argument must already
+     * be of its parameter's type: nothing is coerced.
+     */
+    public static function assertRemoteCallable(NativeComponent $component, string $method, array $args): void
+    {
+        static::ensureCallable($component, $method);
+
+        $reflection = new ReflectionMethod($component, $method);
+
+        if ($reflection->getAttributes(ClientAction::class) === []) {
+            throw new RemoteActionNotAllowedException($component, $method, 'it is not marked #[ClientAction]');
+        }
+
+        $args = array_values($args);
+        $parameters = $reflection->getParameters();
+
+        foreach ($parameters as $parameter) {
+            if ($parameter->isPassedByReference()) {
+                throw new RemoteActionNotAllowedException($component, $method, "\${$parameter->getName()} is taken by reference");
+            }
+
+            if (! static::plainParameterType($parameter->getType())) {
+                throw new RemoteActionNotAllowedException($component, $method, "\${$parameter->getName()} is not typed with plain value types only");
+            }
+        }
+
+        if (count($args) < $reflection->getNumberOfRequiredParameters()) {
+            throw new RemoteActionNotAllowedException($component, $method, 'too few arguments');
+        }
+
+        foreach ($args as $i => $arg) {
+            $parameter = $parameters[$i] ?? null;
+
+            if ($parameter === null) {
+                $last = end($parameters);
+
+                if ($last === false || ! $last->isVariadic()) {
+                    break;
+                }
+
+                $parameter = $last;
+            }
+
+            if (! static::acceptsPlainValue($parameter->getType(), $arg)) {
+                throw new RemoteActionNotAllowedException(
+                    $component,
+                    $method,
+                    'argument '.($i + 1)." does not match \${$parameter->getName()}'s type",
+                );
+            }
+        }
+    }
+
+    /** Untyped, or built only from types a plain (JSON) value can be. */
+    protected static function plainParameterType(?\ReflectionType $type): bool
+    {
+        if ($type === null) {
+            return true;
+        }
+
+        if ($type instanceof \ReflectionUnionType) {
+            foreach ($type->getTypes() as $member) {
+                if (! static::plainParameterType($member)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return $type instanceof ReflectionNamedType
+            && $type->isBuiltin()
+            && in_array($type->getName(), ['mixed', 'null', 'bool', 'true', 'false', 'int', 'float', 'string', 'array', 'iterable'], true);
+    }
+
+    protected static function acceptsPlainValue(?\ReflectionType $type, mixed $value): bool
+    {
+        if ($type === null) {
+            return true;
+        }
+
+        if ($value === null && $type->allowsNull()) {
+            return true;
+        }
+
+        $members = $type instanceof \ReflectionUnionType ? $type->getTypes() : [$type];
+
+        foreach ($members as $member) {
+            $matches = match ($member->getName()) {
+                'mixed' => true,
+                'bool' => is_bool($value),
+                'true' => $value === true,
+                'false' => $value === false,
+                'int' => is_int($value),
+                'float' => is_float($value) || is_int($value),
+                'string' => is_string($value),
+                'array', 'iterable' => is_array($value),
+                default => false,
+            };
+
+            if ($matches) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected static function ensureCallable(NativeComponent $component, string $method): void

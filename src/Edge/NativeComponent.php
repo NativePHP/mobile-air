@@ -9,6 +9,7 @@ use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\Engines\CompilerEngine;
 use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
@@ -28,6 +29,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
@@ -98,6 +100,9 @@ abstract class NativeComponent
      * @var \WeakReference<self>|null
      */
     private static ?\WeakReference $nativeActiveComponent = null;
+
+    /** @var \WeakMap<ValidationException, true>|null ValidationExceptions that left a handler of a component without ValidatesInput. */
+    private static ?\WeakMap $nativeUnkeptValidation = null;
 
     private ?NativeDumpException $dumpException = null;
 
@@ -1899,7 +1904,7 @@ abstract class NativeComponent
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
 
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+                    $this->runAction($def['method'], [], ActionSource::Poll);
                 }
             }
         }
@@ -2308,7 +2313,7 @@ abstract class NativeComponent
                 $bound = ($closure instanceof \Closure && ! (new \ReflectionFunction($closure))->isStatic())
                     ? \Closure::bind($closure, $this, static::class)
                     : $closure;
-                $bound($eventObject);
+                $this->__runHandler(fn () => $bound($eventObject));
             }
         }
 
@@ -2521,12 +2526,12 @@ abstract class NativeComponent
                 }
             }
 
-            ComponentMethodInvoker::invoke($this, $method, $parameters);
+            $this->runAction($method, $parameters, ActionSource::NativeEvent);
 
             return;
         }
 
-        ComponentMethodInvoker::invoke($this, $method, [$payload]);
+        $this->runAction($method, [$payload], ActionSource::NativeEvent);
     }
 
     private function coerceNativePayloadValue(\ReflectionParameter $parameter, mixed $value): mixed
@@ -2696,7 +2701,7 @@ abstract class NativeComponent
         }
 
         try {
-            call_user_func($callback, $this->makeEventInstance($eventClass, $payload));
+            $this->__runHandler(fn () => call_user_func($callback, $this->makeEventInstance($eventClass, $payload)));
         } finally {
             // One outcome per capture — drop success/cancel/denied siblings too.
             NativeCallbacks::forget($id, $eventClass);
@@ -3094,7 +3099,7 @@ abstract class NativeComponent
         $this->nativeAnsweringSystemBack = true;
 
         try {
-            $this->onBackPressed();
+            $this->__runHandler(fn () => $this->onBackPressed());
         } finally {
             $this->nativeAnsweringSystemBack = false;
         }
@@ -5130,10 +5135,10 @@ abstract class NativeComponent
             }
 
             // An #[On] listener names itself through the attribute, so it is
-            // never remote input. Skip the callable guard that protects
-            // template- and device-supplied method names: a listener may be
-            // protected, and may legitimately be named updatedFoo().
-            $this->invokeComponentEventAction($this, $method, $args, guarded: false);
+            // never remote input. ActionSource::ComponentEvent is unguarded
+            // for that reason: a listener may be protected, and may
+            // legitimately be named updatedFoo().
+            $this->runAction($method, $args, ActionSource::ComponentEvent);
         }
     }
 
@@ -5149,7 +5154,7 @@ abstract class NativeComponent
         $method = $binding['method'];
 
         if ($method === CallbackRegistry::ASSIGN || $method === CallbackRegistry::TOGGLE) {
-            $parent->{$method}(...$binding['args']);
+            $parent->__runHandler(fn () => $parent->{$method}(...$binding['args']));
 
             return;
         }
@@ -5160,18 +5165,97 @@ abstract class NativeComponent
             return;
         }
 
-        $this->invokeComponentEventAction($parent, $method, [...$binding['args'], ...$params]);
+        $parent->runAction($method, [...$binding['args'], ...$params], ActionSource::ParentBinding);
     }
 
-    private function invokeComponentEventAction(
-        NativeComponent $component,
-        string $method,
-        array $parameters,
-        bool $guarded = true,
-    ): mixed {
-        return $guarded
-            ? ComponentMethodInvoker::invoke($component, $method, $parameters)
-            : ComponentMethodInvoker::invokeLifecycle($component, $method, $parameters);
+    // ── Action invocation ───────────────────────────
+
+    /**
+     * The one way the framework invokes a developer's action method. Every
+     * framework-initiated call goes through here: a tap and the other UI
+     * interactions, a #[Poll] tick, a native event, a component event, a
+     * parent's `@event` tag binding, a search query, a virtual window range,
+     * a text selection, a drag end.
+     *
+     * Do not call `$this->$method(...)` directly from a new path. Adding a
+     * path means adding an {@see ActionSource} case, deciding its
+     * {@see ActionSource::guarded()} answer, and calling this.
+     *
+     * It applies the callable guard and then hands over to the overridable
+     * {@see callAction()}. The guard runs here, before the hook, so that an
+     * override cannot drop it: whatever callAction() does, a name that a
+     * template or the device chose has already been held to
+     * {@see ComponentMethodInvoker::assertCallable()}. A name the developer
+     * chose by writing an attribute (#[Poll], a component #[On]) skips the
+     * guard, so those methods may be protected. A name and arguments chosen
+     * outside the app ({@see ActionSource::Remote}) are also held to
+     * {@see ComponentMethodInvoker::assertRemoteCallable()} here, for the
+     * same reason.
+     *
+     * callAction() runs inside {@see __runHandler()}, again here rather than
+     * in the hook, so ValidatesInput sees every action whether or not an
+     * override of callAction() calls parent.
+     *
+     * Private on purpose, so nothing can override it. It is called on other
+     * instances too (`emit()` runs it on the parent), which private allows
+     * because it is declared on this class.
+     *
+     * Callers check `method_exists()` first; that check stays with them,
+     * because `emit()` runs it against the parent instance.
+     *
+     * Three nearby invocations are deliberately NOT routed through here:
+     *
+     *  - `fireNativeCallback()`'s `call_user_func()`. That invokes a bound
+     *    closure or an invokable class, not a named method, so there is no
+     *    name to resolve and no method attributes to read.
+     *  - `#[Computed]` getters, via `__get()`. Pure memoized reads evaluated
+     *    while rendering. Not actions.
+     *  - `updated{Property}` hooks, via `__invokeStateHook()`. A side effect
+     *    of a property write rather than an interaction in its own right.
+     *
+     * Framework-owned callbacks that templates register (`__navigate`,
+     * `__syncProperty` and the navigation helpers) are dispatched by
+     * {@see __invokeInteraction()} before reaching here, as they are not
+     * developer actions.
+     */
+    private function runAction(string $method, array $args, ActionSource $source): mixed
+    {
+        if ($source->guarded()) {
+            ComponentMethodInvoker::assertCallable($this, $method);
+        }
+
+        if ($source->isRemote()) {
+            ComponentMethodInvoker::assertRemoteCallable($this, $method, $args);
+        }
+
+        return $this->__runHandler(fn () => $this->callAction($method, $args, $source));
+    }
+
+    /**
+     * Run a developer's action method. Override it to wrap every
+     * framework-initiated call at once (a tap, a poll, an event); the
+     * {@see ActionSource} tells you which kind of call it is.
+     *
+     * By the time this runs the method name has already passed the callable
+     * guard where its source needs one, so an override that never calls
+     * parent cannot widen what remote input reaches. Call parent to keep
+     * container injection and implicit model / enum binding of the arguments.
+     *
+     * @param  string  $method  Method to call. It exists, and is callable for this source.
+     * @param  array  $args  Arguments, resolved with container injection and
+     *                       implicit model / enum binding. Not for
+     *                       {@see ActionSource::Remote}: something outside
+     *                       the app chose those, so they are passed as they are.
+     * @param  ActionSource  $source  What triggered the call.
+     * @return mixed The return value. {@see ActionSource::SearchQuery} depends on it.
+     */
+    protected function callAction(string $method, array $args, ActionSource $source): mixed
+    {
+        if ($source->isRemote()) {
+            return (new \ReflectionMethod($this, $method))->invokeArgs($this, array_values($args));
+        }
+
+        return ComponentMethodInvoker::invokeLifecycle($this, $method, $args);
     }
 
     // ── Event dispatch ──────────────────────────────
@@ -5231,7 +5315,7 @@ abstract class NativeComponent
         $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
-            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -5248,7 +5332,7 @@ abstract class NativeComponent
             $parts = explode(',', $payload, 2);
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
-            $this->invokeUiInteraction($method, [...$args, $from, $to]);
+            $this->invokeUiInteraction($method, [...$args, $from, $to], ActionSource::VirtualWindow);
 
             return;
         }
@@ -5260,7 +5344,7 @@ abstract class NativeComponent
             $parts = explode(',', $event['text'] ?? '', 2);
             $x = (float) ($parts[0] ?? 0);
             $y = (float) ($parts[1] ?? 0);
-            $this->invokeUiInteraction($method, [...$args, $x, $y]);
+            $this->invokeUiInteraction($method, [...$args, $x, $y], ActionSource::DragEnd);
 
             return;
         }
@@ -5292,17 +5376,17 @@ abstract class NativeComponent
                 $start = $end = mb_strlen($text, 'UTF-8');
             }
 
-            $this->invokeUiInteraction($method, [...$args, $text, $start, $end]);
+            $this->invokeUiInteraction($method, [...$args, $text, $start, $end], ActionSource::TextSelection);
 
             return;
         }
 
-        $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+        $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::Interaction);
     }
 
-    private function invokeUiInteraction(string $method, array $parameters): mixed
+    private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed
     {
-        $result = $this->__invokeInteraction($method, $parameters);
+        $result = $this->__invokeInteraction($method, $parameters, $source);
         $this->flushDispatchedEvents();
 
         return $result;
@@ -5311,9 +5395,20 @@ abstract class NativeComponent
     /**
      * @internal The single interaction entry point shared by the device
      *           runloop and the test harness, so both accept the same methods.
+     *           Pass {@see ActionSource::Remote} for a call whose name and
+     *           arguments came from outside the app.
      */
-    public function __invokeInteraction(string $method, array $parameters): mixed
-    {
+    public function __invokeInteraction(
+        string $method,
+        array $parameters,
+        ActionSource $source = ActionSource::Interaction,
+    ): mixed {
+        // A remote call goes straight to the chokepoint: something outside
+        // the app chose the name, so none of the shortcuts below apply.
+        if ($source->isRemote()) {
+            return $this->runAction($method, $parameters, $source);
+        }
+
         $internalCallbacks = [
             '__navigate',
             '__overlayBack',
@@ -5336,9 +5431,41 @@ abstract class NativeComponent
         ];
 
         if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
-            return $this->{$method}(...$parameters);
+            return $this->__runHandler(fn () => $this->{$method}(...$parameters));
         }
 
-        return ComponentMethodInvoker::invoke($this, $method, $parameters);
+        return $this->runAction($method, $parameters, $source);
+    }
+
+    /**
+     * @internal Run one handler of this component: every action that
+     *           {@see runAction()} invokes, plus the handlers that don't go
+     *           through it (a native:model sync and the other framework
+     *           callbacks, an `->on()` closure listener, a fluent native
+     *           callback, a parent's assign/toggle binding and a system
+     *           back). ValidatesInput keeps a ValidationException in this
+     *           component's bag here, whichever component triggered it.
+     *
+     *           A ValidationException that leaves a handler here, on a
+     *           component without the trait, is marked so that a
+     *           component further out with the trait (a child whose
+     *           emit() ran this listener) lets it reach the overlay.
+     */
+    public function __runHandler(\Closure $handler): mixed
+    {
+        try {
+            return $handler();
+        } catch (ValidationException $exception) {
+            self::$nativeUnkeptValidation ??= new \WeakMap;
+            self::$nativeUnkeptValidation[$exception] = true;
+
+            throw $exception;
+        }
+    }
+
+    /** @internal Whether a ValidationException left a handler of a component without ValidatesInput. */
+    protected static function validationLeftUnkept(ValidationException $exception): bool
+    {
+        return isset(self::$nativeUnkeptValidation[$exception]);
     }
 }
