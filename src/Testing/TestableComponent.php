@@ -331,15 +331,60 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $callbackId = $this->pressableIdByRef($this->tree(), $target)
-            ?? $this->findPressableByText($this->tree(), $target);
+        $callbackId = $this->pressableIdByRef($this->tree(), $target);
+        // The node the tap lands on, for its `disabled` prop. Not looked up
+        // by callback id: two pressables with the same `@press` share one.
+        $node = $callbackId !== null ? $this->nodeByRef($this->tree(), $target) : null;
+
+        if ($callbackId === null && ($node = $this->findPressableNodeByText($this->tree(), $target)) !== null) {
+            $callbackId = $node['on_press'] ?? $node['props']['on_press'];
+        }
 
         Assert::assertNotNull(
             $callbackId,
             "No pressable element with ref or visible text [{$target}] found in the rendered tree."
         );
 
+        Assert::assertEmpty(
+            $node['props']['disabled'] ?? false,
+            "The pressable [{$target}] is disabled, so a tap would not reach it."
+        );
+
         return $this->dispatchUiEvent(['type' => self::EVENT_PRESS, 'callback_id' => $callbackId]);
+    }
+
+    /** Swipe up on an adjustable node, as VoiceOver and TalkBack do (`@a11yIncrement`). */
+    public function a11yIncrement(string $target): static
+    {
+        return $this->firePropsPress($target, 'on_a11y_increment');
+    }
+
+    /** Swipe down on an adjustable node (`@a11yDecrement`). */
+    public function a11yDecrement(string $target): static
+    {
+        return $this->firePropsPress($target, 'on_a11y_decrement');
+    }
+
+    /** The screen reader's escape action on a modal container (`@a11yDismiss`). */
+    public function a11yDismiss(string $target): static
+    {
+        return $this->firePropsPress($target, 'on_a11y_dismiss');
+    }
+
+    /** Pick an action from the screen reader's actions menu of the node with this ref. */
+    public function a11yAction(string $target, string $label): static
+    {
+        $this->startInteraction();
+
+        $props = $this->nodeFor($target)['props'] ?? [];
+        $index = array_search($label, $props['a11y_action_labels'] ?? [], true);
+
+        Assert::assertNotFalse(
+            $index,
+            "No accessibility action [{$label}] on [{$target}]. Actions: ".(implode(', ', $props['a11y_action_labels'] ?? []) ?: '(none)')
+        );
+
+        return $this->dispatchUiEvent(['type' => self::EVENT_PRESS, 'callback_id' => (int) $props['a11y_action_callbacks'][$index]]);
     }
 
     /** Press the element bound to a method name, expression, or ref. */
@@ -1426,8 +1471,63 @@ class TestableComponent
                 break;
         }
 
+        $this->collectComposedControlViolations($type, $props, $prop, $hasA11yLabel, $where, $violations);
+
         foreach ($node['children'] ?? [] as $child) {
             $this->collectA11yViolations($child, $violations);
+        }
+    }
+
+    /**
+     * Rules for a control composed from core elements with the `a11y-*`
+     * role and state props. They apply only to nodes that opt in.
+     */
+    protected function collectComposedControlViolations(string $type, array $props, \Closure $prop, bool $hasA11yLabel, string $where, array &$violations): void
+    {
+        // Hidden, modal, pane title and live apply to any node; the rest
+        // describe a control, which a native control does for itself.
+        $stateProps = array_values(array_filter(
+            ['a11y_role', 'a11y_checked', 'a11y_selected', 'a11y_expanded', 'a11y_state', 'a11y_error', 'a11y_value',
+                'a11y_value_now', 'a11y_action_labels'],
+            fn (string $key): bool => array_key_exists($key, $props),
+        ));
+
+        $nativeControls = ['button', 'button_group', 'toggle', 'checkbox', 'radio', 'radio_group', 'select', 'slider',
+            'chip', 'tab', 'tab_row', 'text_input', 'bare_text_input', 'filled_text_input', 'outlined_text_input',
+            'date_picker', 'list_item', 'bottom_nav_item', 'top_bar_action', 'progress_bar', 'activity_indicator'];
+
+        if ($stateProps !== [] && in_array($type, $nativeControls, true)) {
+            $names = implode(', ', array_map(fn (string $key): string => str_replace('_', '-', $key), $stateProps));
+            $violations[] = "<{$type}>{$where} ignores {$names}: native controls announce their own role and state";
+
+            return;
+        }
+
+        $role = $prop('a11y_role');
+
+        if (in_array($role, ['checkbox', 'switch'], true) && $prop('a11y_checked') === '') {
+            $violations[] = "{$role} <{$type}>{$where} has no a11y-checked";
+        }
+
+        if ($role === 'adjustable') {
+            if ($prop('a11y_value') === '' && ! array_key_exists('a11y_value_now', $props)) {
+                $violations[] = "adjustable <{$type}>{$where} has no a11y-value";
+            }
+            if (! is_int($props['on_a11y_increment'] ?? null) || ! is_int($props['on_a11y_decrement'] ?? null)) {
+                $violations[] = "adjustable <{$type}>{$where} needs both @a11yIncrement and @a11yDecrement";
+            }
+        }
+
+        if ($role === 'progress' && $prop('a11y_value') === '' && ! array_key_exists('a11y_value_now', $props)) {
+            $violations[] = "progress <{$type}>{$where} has no a11y-value";
+        }
+
+        if (in_array($role, ['radiogroup', 'tablist'], true) && ! $hasA11yLabel) {
+            $violations[] = "{$role} <{$type}>{$where} has no a11y-label";
+        }
+
+        if (! empty($props['a11y_modal']) && ! $hasA11yLabel) {
+            $violations[] = "a11y-modal <{$type}>{$where} has no a11y-label to use as its pane title";
         }
     }
 
@@ -1997,18 +2097,26 @@ class TestableComponent
      */
     protected function findPressableByText(array $node, string $text): ?int
     {
+        $found = $this->findPressableNodeByText($node, $text);
+
+        return $found === null ? null : ($found['on_press'] ?? $found['props']['on_press']);
+    }
+
+    /** The pressable node {@see findPressableByText()} would tap. */
+    protected function findPressableNodeByText(array $node, string $text): ?array
+    {
         // Prefer a match deeper in the tree — the button itself rather
         // than a pressable ancestor wrapping half the screen.
         foreach ($node['children'] ?? [] as $child) {
-            if (($id = $this->findPressableByText($child, $text)) !== null) {
-                return $id;
+            if (($found = $this->findPressableNodeByText($child, $text)) !== null) {
+                return $found;
             }
         }
 
         $pressId = $node['on_press'] ?? $node['props']['on_press'] ?? null;
 
         if (is_int($pressId) && $this->treeContainsText($node, $text)) {
-            return $pressId;
+            return $node;
         }
 
         return null;

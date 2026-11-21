@@ -90,6 +90,9 @@ class NativeTagPrecompiler
         'dragEnd',
         'trigger',
         'navigated',
+        'a11yIncrement',
+        'a11yDecrement',
+        'a11yDismiss',
     ];
 
     /** @var string[] Plugin-declared `@event` names. */

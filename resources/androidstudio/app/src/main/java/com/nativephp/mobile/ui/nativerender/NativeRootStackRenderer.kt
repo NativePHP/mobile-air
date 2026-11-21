@@ -278,7 +278,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
           // keep the title in the bar and stack the search field underneath.
           // Only when there's no title at all does search take the title slot
           // (avoids an otherwise-empty bar row).
-          Column(modifier = Modifier.background(barContainerColor)) {
+          Column(modifier = Modifier.background(barContainerColor).hiddenWhileA11yModal(titleNode)) {
             if (useLargeTitle) {
                 LargeTopAppBar(
                     title = titleContent,
@@ -345,6 +345,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                             else Modifier
                         )
                         .windowInsetsPadding(WindowInsets.navigationBars.exclude(WindowInsets.ime))
+                        .hiddenWhileA11yModal(inner)
                 ) {
                     NodeView(node = inner)
                 }
