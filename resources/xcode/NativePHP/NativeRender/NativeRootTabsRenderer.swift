@@ -340,10 +340,10 @@ struct NativeRootTabsRenderer: View {
                 }
                 .badge(badgeFor(tab))
                 // PHP `ref` → the tab button's accessibility identifier.
-                // SwiftUI copies this onto the UITab when it updates the
-                // bar (without it, it writes the icon name there), but not
-                // when it first builds it; TabBarItemIdentifierProbe covers
-                // the first build.
+                // SwiftUI copies this onto the UITab once an accessibility
+                // client is running (without it, it writes the icon name
+                // there), which can be too late for a test that reads the
+                // bar at launch; TabBarItemIdentifierProbe covers that.
                 .accessibilityIdentifier(tabRef(tab), isEnabled: !tabRef(tab).isEmpty)
             }
 
@@ -1333,18 +1333,20 @@ private struct CustomTabPresentationModifier: ViewModifier {
 /// `app.tabBars.buttons["tab-home"]`.
 ///
 /// `TabContent.accessibilityIdentifier` on each Tab is only half the job
-/// (seen on iOS 27): SwiftUI copies it onto the UIKit `UITab` when it updates
-/// the bar, but leaves it nil when it first builds the bar, so the identifiers
-/// only appeared after the first tab switch. This fills that gap by reaching
-/// into the UITabBarController behind the TabView:
+/// (seen on iOS 27): SwiftUI copies it onto the UIKit `UITab` only once an
+/// accessibility client is running, so a test reading the bar right after
+/// launch often finds no identifiers. This sets them itself, through the
+/// UITabBarController behind the TabView, using only public API:
 ///
 /// - It names each `UITab` and `UITabBarItem` by position (the order the Tabs
-///   are declared in). Pre-glass bars read the item's identifier.
-/// - Glass bars (iOS 26+) have already built their buttons by then and keep
-///   what they copied, so it also names the private `_UITabButton` views,
-///   matched by visible title, else by position. If a later iOS renames that
-///   class, this part finds nothing and the identifiers turn up after the
-///   first tab switch instead.
+///   are declared in). The tab buttons' accessibility reads these, so
+///   XCUITest, which turns accessibility on before launch, sees them at once.
+/// - On iOS 27, a client that attaches to an app that is already running
+///   (such as `axe describe-ui`) doesn't see the UITab's identifier on its
+///   first query, only on later ones. So it also names the button views:
+///   each `UIControl` in the tab bar, matched by the text of the `UILabel`
+///   inside it, else by position. If a later iOS builds the buttons some
+///   other way, this part finds nothing and only that first query misses.
 ///
 /// It lives in the tab content because only that is inside the controller's
 /// hierarchy. The selected tab is always loaded and it names every item, so
@@ -1400,23 +1402,23 @@ private struct TabBarItemIdentifierProbe: UIViewRepresentable {
             items[index].ref.isEmpty ? nil : items[index].ref
         }
 
-        /// Each glass-bar container holds one `_UITabButton` per tab.
+        /// The tab buttons are the only controls in the bar. A glass bar has
+        /// several sets of them side by side in separate containers (the
+        /// selected-tab layer, the plain layer, the separate search button),
+        /// so each container's controls are matched on their own.
         private func nameTabButtons(in view: UIView) {
             let buttons = view.subviews
-                .filter { NSStringFromClass(type(of: $0)).hasSuffix("TabButton") }
+                .compactMap { $0 as? UIControl }
                 .sorted { $0.frame.minX < $1.frame.minX }
-            guard buttons.isEmpty else {
-                for (index, button) in buttons.enumerated() {
-                    let title = firstLabelText(in: button)
-                    if let title, !title.isEmpty, let match = items.first(where: { $0.title == title }) {
-                        button.accessibilityIdentifier = match.ref.isEmpty ? nil : match.ref
-                    } else if buttons.count == items.count {
-                        button.accessibilityIdentifier = identifier(at: index)
-                    }
+            for (index, button) in buttons.enumerated() {
+                let title = firstLabelText(in: button)
+                if let title, !title.isEmpty, let match = items.first(where: { $0.title == title }) {
+                    button.accessibilityIdentifier = match.ref.isEmpty ? nil : match.ref
+                } else if buttons.count == items.count {
+                    button.accessibilityIdentifier = identifier(at: index)
                 }
-                return
             }
-            for sub in view.subviews { nameTabButtons(in: sub) }
+            for sub in view.subviews where !(sub is UIControl) { nameTabButtons(in: sub) }
         }
 
         private func firstLabelText(in view: UIView) -> String? {
