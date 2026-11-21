@@ -229,7 +229,13 @@ trait RunsAndroid
             return;
         }
 
-        $this->replaceFileContentsRegex($manifestPath, '/android:label=".*?"/', 'android:label="'.$newName.'"');
+        // The name goes into an XML attribute, so &, quotes and < must be
+        // escaped. It is also a preg_replace replacement, so \ and $ must be
+        // escaped too, or "$1" style text in the name is lost.
+        $label = htmlspecialchars((string) $newName, ENT_QUOTES | ENT_XML1, 'UTF-8');
+        $label = str_replace(['\\', '$'], ['\\\\', '\\$'], $label);
+
+        $this->replaceFileContentsRegex($manifestPath, '/android:label=".*?"/', 'android:label="'.$label.'"');
     }
 
     private function updatePermissions(): void
