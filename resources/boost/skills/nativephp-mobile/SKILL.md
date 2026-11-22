@@ -361,6 +361,9 @@ grows with the size of the tree the screen owns.
   original.
 - **Keep public state small.** Store ids and the fields a view needs, not whole API responses or models with
   every relation loaded.
+- **Measure on a release build only.** Time and compare performance with `native:run ios --build=release` on a
+  device or a Release archive, never a debug build. A debug build bundles dev packages, runs with `APP_DEBUG` on,
+  compiles native code unoptimised and logs much more, so its numbers say little about what users get.
 
 ## Native Chrome — Composable Blade Elements (Layouts Optional)
 
