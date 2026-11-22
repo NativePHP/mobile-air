@@ -205,10 +205,11 @@ class TabBar
     }
 
     /**
-     * iOS 26+ only. The scroll edge effect under the tab bar: "soft" (the
-     * system's progressive blur, which is what a tab bar gets by default),
-     * "hard" (an opaque fade) or "none". In a pager the effect sits on the
-     * pager, so it covers whichever page is showing.
+     * iOS 26+ only. The blur under the tab bar at each tab's root: "soft"
+     * (the default, a strong progressive blur from a little above the bar to
+     * the bottom of the screen that fades into the window background, drawn
+     * in place of the system's faint soft edge), "hard" (the system's opaque
+     * fade) or "none". It covers whichever page of a pager is showing.
      */
     public function edgeBlur(string $style): self
     {

@@ -717,9 +717,12 @@ private struct PerTabContent: View {
             .modifier(HideTabBarOnPushModifier(isRoot: isRoot, forceHide: forceHideTabBar))
             .modifier(BottomBarInsetModifier(bottomBar: bottomBar))
             // Outside the bottom bar, so a root-level bar's own edge blur
-            // wins for its region. Only where the tab bar shows.
+            // wins for its region. Only where the tab bar shows. Soft draws
+            // our own progressive blur band over the level, under the tab
+            // bar (see `TabBarProgressiveBlur`).
             .modifier(TabBarEdgeBlurModifier(
-                style: isRoot && !forceHideTabBar ? edgeBlur : ""
+                style: isRoot && !forceHideTabBar ? edgeBlur : "",
+                hasBottomBar: bottomBar != nil
             ))
     }
 

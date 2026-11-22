@@ -349,9 +349,11 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   `edge-blur="soft"` (or `"hard"`) on it asks iOS 26+ for the system scroll edge effect under the bar, a
   progressive blur (or opaque fade) of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
   `System::osVersion()` tells a screen which it got.
-- On iOS 26+ the tab bar blurs what scrolls under it at each tab's root, lists inside a pager included.
-  `<native:bottom-nav edge-blur="hard">` (or `TabBar::make()->edgeBlur('hard')`) swaps the blur for an opaque fade,
-  and `none` turns it off. The default is `soft`.
+- On iOS 26+ the tab bar blurs what scrolls under it at each tab's root, lists inside a pager included. The default,
+  `soft`, is a strong progressive blur from a little above the bar to the bottom of the screen that fades into the
+  window background (stronger than the system's own soft edge, which it replaces). A root level with its own bottom
+  bar keeps the system effect. `<native:bottom-nav edge-blur="hard">` (or `TabBar::make()->edgeBlur('hard')`) swaps
+  it for the system's opaque fade, and `none` turns it off.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
   element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.
 - Never hand-roll top bars or bottom navs out of rows and pressables — that forfeits native back gestures,
