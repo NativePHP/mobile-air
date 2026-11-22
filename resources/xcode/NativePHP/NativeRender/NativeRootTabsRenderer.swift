@@ -108,6 +108,10 @@ struct NativeRootTabsRenderer: View {
         let activeColor: Color = activeArgb != 0 ? Color(argb: activeArgb) : .accentColor
         let bgArgb = node.props.getColor("background_color", default: 0)
         let isDark = node.props.getBool("dark")
+        // iOS 26's scroll edge effect under the bar, for each tab's root
+        // level: "soft" (default), "hard" or "none". See
+        // `TabBarEdgeBlurModifier`.
+        let edgeBlur = node.props.getString("edge_blur", default: "soft")
 
         // `TabBar::labelVisibility('labeled'|'selected'|'unlabeled')`.
         // Defaults to "labeled" — matches Apple's TabView default.
@@ -304,6 +308,7 @@ struct NativeRootTabsRenderer: View {
                         fallbackShowBack: navBack,
                         fallbackTextArgb: navTextArgb,
                         fallbackBgArgb: navBgArgb,
+                        edgeBlur: edgeBlur,
                         isSelected: tabId == selection,
                         onPushVisibilityChange: { hidden in
                             if customPresentationHiddenForPush != hidden {
@@ -527,6 +532,7 @@ private struct PerTabContent: View {
     let fallbackShowBack: Bool
     let fallbackTextArgb: Int
     let fallbackBgArgb: Int
+    let edgeBlur: String
     let isSelected: Bool
     let onPushVisibilityChange: (Bool) -> Void
 
@@ -710,6 +716,12 @@ private struct PerTabContent: View {
             // tab bar *used to be* — visually mid-screen.
             .modifier(HideTabBarOnPushModifier(isRoot: isRoot, forceHide: forceHideTabBar))
             .modifier(BottomBarInsetModifier(bottomBar: bottomBar))
+            // Outside the bottom bar, so a root-level bar's own edge blur
+            // wins for its region. Only where the tab bar shows.
+            .modifier(TabBarEdgeBlurModifier(
+                style: isRoot && !forceHideTabBar ? edgeBlur : "",
+                isSelected: isSelected
+            ))
     }
 
     @ViewBuilder

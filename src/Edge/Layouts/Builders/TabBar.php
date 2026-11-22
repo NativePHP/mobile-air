@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Layouts\Builders;
 
 use InvalidArgumentException;
+use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\BottomNav;
 use Native\Mobile\Edge\Elements\BottomNavItem;
 use Native\Mobile\Edge\NativeRouter;
@@ -60,6 +61,8 @@ class TabBar
 
     private bool $minimizeOnScroll = false;
 
+    private ?string $edgeBlur = null;
+
     private ?string $presentationIdentifier = null;
 
     private ?string $presentationConfiguration = null;
@@ -91,6 +94,7 @@ class TabBar
         $bar->textColor = $props['text_color'] ?? null;
         $bar->font = $props['font_name'] ?? null;
         $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
+        $bar->edgeBlur = $props['edge_blur'] ?? null;
         $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
         $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
 
@@ -196,6 +200,20 @@ class TabBar
     public function minimizeOnScroll(bool $value = true): self
     {
         $this->minimizeOnScroll = $value;
+
+        return $this;
+    }
+
+    /**
+     * iOS 26+ only. The scroll edge effect under the tab bar: "soft" (the
+     * system's progressive blur, which is what a tab bar gets by default),
+     * "hard" (an opaque fade) or "none". Content in a pager or another
+     * horizontal scroller gets it too, which SwiftUI alone doesn't manage.
+     */
+    public function edgeBlur(string $style): self
+    {
+        $this->edgeBlur = BottomBar::edgeBlurStyle($style)
+            ?? throw new InvalidArgumentException('A tab bar\'s edge blur is "soft", "hard" or "none".');
 
         return $this;
     }
@@ -344,6 +362,9 @@ class TabBar
         if ($this->minimizeOnScroll) {
             $attrs['minimizeOnScroll'] = true;
         }
+        if ($this->edgeBlur !== null) {
+            $attrs['edgeBlur'] = $this->edgeBlur;
+        }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
             $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
@@ -401,6 +422,9 @@ class TabBar
         }
         if ($this->minimizeOnScroll) {
             $attrs['minimizeOnScroll'] = true;
+        }
+        if ($this->edgeBlur !== null) {
+            $attrs['edgeBlur'] = $this->edgeBlur;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
