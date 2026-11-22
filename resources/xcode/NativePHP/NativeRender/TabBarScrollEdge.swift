@@ -55,28 +55,35 @@ struct TabBarEdgeBlurModifier: ViewModifier {
 /// content and the blurred copy at once, and once it is fully in, small text
 /// is already gone. So the band stacks `steps` weak blurs instead
 /// (`PartialBlurView`), each covering from a little lower than the last down
-/// to the bottom with a short soft top. Each re-blurs what the ones above it
-/// already blurred, so the blur grows towards the bottom in steps too small
-/// to see. A fade to the window background (`UI.SetBackground`, else
-/// systemBackground) on top ends the band in the background colour, the way
-/// the NYT Games app's does. Every layer starts from clear, so the band has
-/// no visible top edge.
+/// to the bottom with a long soft top, the first barely blurred and each a
+/// little stronger. Each re-blurs what the ones above it already blurred, so
+/// the blur grows towards the bottom in steps too small to see, close to the
+/// system's soft edge under a `.safeAreaBar` composer but stronger. Content
+/// stays recognisable behind the glass bar: only a light tint of the window
+/// background (`UI.SetBackground`, else systemBackground) is laid over the
+/// band's foot. Every layer starts from clear, so the band has no visible
+/// top edge.
 ///
 /// The tab bar's height is the level's bottom safe-area inset, read from the
 /// band's own geometry with the keyboard left out, so the band doesn't climb
 /// with the keyboard. It takes no touches and is hidden from VoiceOver.
 @available(iOS 26.0, *)
 struct TabBarProgressiveBlur: View {
-    /// How far above the tab bar's top the band starts.
-    var reach: CGFloat = 56
-    /// How many blur layers, and how strong each is (a fraction of the
-    /// system thin material's blur).
-    var steps: Int = 8
-    var amount: CGFloat = 0.14
+    /// How far above the tab bar's top the band starts. The level's bottom
+    /// safe-area inset already reaches the floating bar's top edge.
+    var reach: CGFloat = 20
+    /// How many blur layers, and how strong the first and the last are (a
+    /// fraction of the system ultra-thin material's blur). The ones between
+    /// step evenly, so the blur starts barely there and builds gently.
+    var steps: Int = 12
+    var firstAmount: CGFloat = 0.02
+    var lastAmount: CGFloat = 0.08
     /// Where the last layer starts, and how long each layer's soft top is,
     /// as fractions of the band's height.
-    var lastStart: CGFloat = 0.65
-    var ramp: CGFloat = 0.15
+    var lastStart: CGFloat = 0.7
+    var ramp: CGFloat = 0.2
+    /// How much of the window background is laid over the band's foot.
+    var tint: Double = 0.2
 
     @ObservedObject private var windowBackground = WindowBackgroundState.shared
 
@@ -97,8 +104,9 @@ struct TabBarProgressiveBlur: View {
         let background = windowBackground.color ?? Color(uiColor: .systemBackground)
         return ZStack {
             ForEach(0..<steps, id: \.self) { index in
-                let from = lastStart * CGFloat(index) / CGFloat(max(steps - 1, 1))
-                PartialBlurView(amount: amount)
+                let progress = CGFloat(index) / CGFloat(max(steps - 1, 1))
+                let from = lastStart * progress
+                PartialBlurView(amount: firstAmount + (lastAmount - firstAmount) * progress)
                     .mask {
                         LinearGradient(
                             stops: [
@@ -112,9 +120,8 @@ struct TabBarProgressiveBlur: View {
             }
             LinearGradient(
                 stops: [
-                    .init(color: background.opacity(0), location: 0.3),
-                    .init(color: background.opacity(0.35), location: 0.65),
-                    .init(color: background.opacity(0.7), location: 1.0),
+                    .init(color: background.opacity(0), location: 0.5),
+                    .init(color: background.opacity(tint), location: 1.0),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
