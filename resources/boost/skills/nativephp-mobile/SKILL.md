@@ -373,8 +373,8 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   progressive blur (or opaque fade) of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
   `System::osVersion()` tells a screen which it got.
 - On iOS 26+ the tab bar blurs what scrolls under it at each tab's root, lists inside a pager included. The default,
-  `soft`, is a strong progressive blur from a little above the bar to the bottom of the screen that fades into the
-  window background (stronger than the system's own soft edge, which it replaces). A root level with its own bottom
+  `soft`, is a gradual progressive blur from just above the bar to the bottom of the screen, like the soft edge under
+  a composer but stronger, with content still recognisable behind the glass (it replaces the system's own soft edge). A root level with its own bottom
   bar keeps the system effect. `<native:bottom-nav edge-blur="hard">` (or `TabBar::make()->edgeBlur('hard')`) swaps
   it for the system's opaque fade, and `none` turns it off.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
