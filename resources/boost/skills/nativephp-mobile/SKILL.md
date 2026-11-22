@@ -369,8 +369,8 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance. On iOS,
   `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge. `glass/80` caps that glass
   at 80% so more of the screen shows through.
-  `scroll-edge-soft` (or `scroll-edge-hard`) on it asks iOS 26+ for the system scroll edge effect under the bar, a
-  progressive blur of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
+  `edge-blur="soft"` (or `"hard"`) on it asks iOS 26+ for the system scroll edge effect under the bar, a
+  progressive blur (or opaque fade) of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
   `System::osVersion()` tells a screen which it got.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
   element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.

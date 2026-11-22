@@ -248,7 +248,7 @@ it('carries the scroll edge effect on an inline bottom-bar to the bottom_bar mar
 
     // iOS 26+ draws the soft edge effect in place of the glass; older iOS
     // still gets the glass.
-    expect($bar['props']['scroll_edge'] ?? null)->toBe(1)
+    expect($bar['props']['edge_blur'] ?? null)->toBe('soft')
         ->and($bar['props']['glass'] ?? null)->toBe(1)
         ->and($bar['props']['glass_opacity'] ?? null)->toBe(0.8);
 });
@@ -258,7 +258,7 @@ it('sends no scroll edge effect for a bottom-bar that does not ask for one', fun
 
     $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
 
-    expect($bar['props'])->not->toHaveKey('scroll_edge');
+    expect($bar['props'])->not->toHaveKey('edge_blur');
 });
 
 it('hoists an inline bottom-nav into a NativeRootTabs with no layout at all', function () {

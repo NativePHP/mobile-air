@@ -113,7 +113,7 @@ class System
      * The phone's OS version as the OS gives it ("26.1", "15"), or null off
      * the device. For the few things a screen draws differently by OS
      * version, such as leaving out a fade that iOS 26's scroll edge effect
-     * (`scroll-edge-soft` on a bottom bar) stands in for.
+     * (`edge-blur="soft"` on a bottom bar) stands in for.
      *
      * The iOS and Android shells export NATIVEPHP_OS_VERSION before PHP
      * starts, so on device this is an env read. Under `native:jump` nothing

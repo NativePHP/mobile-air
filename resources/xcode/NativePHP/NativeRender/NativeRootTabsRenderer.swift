@@ -969,8 +969,8 @@ private struct TabsActionView: View {
 /// `bottom_bar` carrying `glass` gets soft glass behind the whole bar
 /// (see `BottomBarSoftGlass`).
 ///
-/// A bar that opts into the scroll edge effect (`scroll-edge-soft` or
-/// `scroll-edge-hard`, sent as `scroll_edge`) is placed with
+/// A bar that opts into the scroll edge effect (`edge-blur="soft"` or
+/// `"hard"`, sent as `edge_blur`) is placed with
 /// `.safeAreaBar(.bottom)` on iOS 26+ instead, so the system draws its
 /// scroll edge effect on the scroll view under the bar, and the soft glass
 /// is left out there (see `BottomBarScrollEdge`). Before iOS 26 the bar is
@@ -995,14 +995,14 @@ private struct BottomBarInsetModifier: ViewModifier {
         // only taken for a bar that asks for the scroll edge effect, so a
         // bar that doesn't keeps exactly the placement it had.
         if let bottomBar, let inner = bottomBar.children.first {
-            let scrollEdge = bottomBar.props.getInt("scroll_edge", default: 0)
+            let edgeBlur = bottomBar.props.getString("edge_blur", default: "")
             #if compiler(>=6.2)
-            if scrollEdge != 0, #available(iOS 26.0, *) {
+            if !edgeBlur.isEmpty, #available(iOS 26.0, *) {
                 content
                     .safeAreaBar(edge: .bottom) {
                         barContent(inner, bottomBar, softGlass: false)
                     }
-                    .bottomBarScrollEdgeStyle(scrollEdge)
+                    .bottomBarScrollEdgeStyle(edgeBlur)
             } else {
                 inset(content, inner, bottomBar)
             }
@@ -1591,22 +1591,22 @@ private struct ObjectResultRow: View {
     }
 }
 
-/// The scroll edge effect a `bottom_bar` asks for with `scroll-edge-soft`
-/// (`scroll_edge` 1) or `scroll-edge-hard` (2). On iOS 26+ both renderers
+/// The scroll edge effect a `bottom_bar` asks for with `edge-blur="soft"`
+/// or `edge-blur="hard"` (sent as `edge_blur`). On iOS 26+ both renderers
 /// place such a bar with `.safeAreaBar(.bottom)`, which is what makes the
 /// system draw its scroll edge effect on a scroll view running under the
 /// bar: a progressive blur (soft) or an opaque fade (hard), as under the
 /// system's own toolbars. `.safeAreaInset` draws none. The effect stands in
-/// for the bar's soft glass, so a bar carrying both (`glass/80
-/// scroll-edge-soft`) gets the edge effect on iOS 26+ and the glass before.
+/// for the bar's soft glass, so a bar carrying both (`class="glass/80"
+/// edge-blur="soft"`) gets the edge effect on iOS 26+ and the glass before.
 /// Elements inside the bar draw as they always do, so a bar that tints or
 /// fades its own rows covers the effect where it does.
 #if compiler(>=6.2)
 extension View {
     @available(iOS 26.0, *)
     @ViewBuilder
-    func bottomBarScrollEdgeStyle(_ scrollEdge: Int) -> some View {
-        if scrollEdge == 2 {
+    func bottomBarScrollEdgeStyle(_ edgeBlur: String) -> some View {
+        if edgeBlur == "hard" {
             scrollEdgeEffectStyle(.hard, for: .bottom)
         } else {
             scrollEdgeEffectStyle(.soft, for: .bottom)

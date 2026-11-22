@@ -20,6 +20,9 @@ use Native\Mobile\Edge\Element;
  * The wrapped Element is whatever the layout composed — typically a
  * Row of glass-styled capsules. The renderer extracts the single child
  * and renders it as the bottom-bar content.
+ *
+ * `edge-blur="soft"` (or `"hard"`) asks iOS 26+ for the system scroll edge
+ * effect under the bar, sent as `edge_blur`. Android and older iOS ignore it.
  */
 class BottomBar extends Element
 {
@@ -32,7 +35,29 @@ class BottomBar extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        // No own attributes — the wrapped child carries the actual content.
+        // The wrapped child carries the actual content. The bar's own one
+        // attribute is the scroll edge effect under it.
+        $style = self::edgeBlurStyle($attrs['edge-blur'] ?? $attrs['edgeBlur'] ?? null);
+
+        if ($style !== null && $style !== 'none') {
+            $this->setProp('edge_blur', $style);
+        }
+    }
+
+    /**
+     * Which iOS 26 scroll edge effect an `edge-blur` attribute asks for:
+     * "soft" (a progressive blur), "hard" (an opaque fade) or "none". Null
+     * for anything else, so a typo sends nothing. Shared with the tab bar.
+     */
+    public static function edgeBlurStyle(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        return in_array($value, ['soft', 'hard', 'none'], true) ? $value : null;
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
