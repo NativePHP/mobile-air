@@ -1007,6 +1007,13 @@ abstract class NativeComponent
             // URI that is already on the stack pushes a new level rather
             // than being misread as a pop back to the earlier one.
             $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
+            // The URI of every screen on the router stack, bottom first. iOS
+            // only reconciles a tab's stack when SwiftUI redraws the tabs, so
+            // when two publishes land before a redraw it sees only the second.
+            // A tab root that mounts and pushes a screen at once then goes
+            // unseen, and the tab can't tell where its levels start. With the
+            // stack it finds its root and the screens above it in any frame.
+            $attrs['stackUris'] = array_column($this->nativeRouter?->getStackEntries() ?? [], 'uri');
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
