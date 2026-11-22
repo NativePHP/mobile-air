@@ -787,6 +787,16 @@ class TailwindParser
             // ignored; the base `glass` flag still applies.
             $class === 'glass' || str_starts_with($class, 'glass:') || str_starts_with($class, 'glass/') => self::parseGlassClass($class),
 
+            // The system scroll edge effect behind a `<native:bottom-bar>` on
+            // iOS 26+: a progressive blur (soft) or an opaque fade (hard) over
+            // whatever scrolls under the bar, as under the system's own
+            // toolbars. The bar takes the glass's place there, so
+            // `glass/80 scroll-edge-soft` is glass before iOS 26 and the edge
+            // effect from it. Sent as `scroll_edge` (1 soft, 2 hard). Other
+            // elements, Android and older iOS ignore it.
+            $class === 'scroll-edge-soft' => ['scrollEdge' => 1],
+            $class === 'scroll-edge-hard' => ['scrollEdge' => 2],
+
             // Position
             $class === 'absolute' => ['positionType' => 1],
             $class === 'relative' => ['positionType' => 0],

@@ -1213,3 +1213,19 @@ it('sends glass_opacity as its own prop only when the class has one', function (
         ->and($plain['props']['glass'])->toBe(9)
         ->and($plain['props'])->not->toHaveKey('glass_opacity');
 });
+
+it('parses the scroll edge effect classes', function (string $class, int $style) {
+    expect(TailwindParser::parse($class))->toEqual(['scrollEdge' => $style]);
+})->with([
+    'soft' => ['scroll-edge-soft', 1],
+    'hard' => ['scroll-edge-hard', 2],
+]);
+
+it('keeps a glass suffix beside the scroll edge effect', function () {
+    expect(TailwindParser::parse('glass/80 scroll-edge-soft'))
+        ->toMatchArray(['glass' => 1, 'glassOpacity' => 0.8, 'scrollEdge' => 1]);
+});
+
+it('ignores a scroll edge class it does not know', function () {
+    expect(TailwindParser::parse('scroll-edge-thicc'))->not->toHaveKey('scrollEdge');
+});

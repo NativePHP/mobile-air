@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static bool isIos()
  * @method static bool isMobile()
  * @method static string|null platform()
+ * @method static string|null osVersion()
  * @method static bool runningInJump()
  * @method static void appSettings()
  * @method static string appearance()
