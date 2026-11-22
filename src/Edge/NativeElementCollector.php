@@ -2003,6 +2003,11 @@ class NativeElementCollector
         if (isset($attrs['glassOpacity'])) {
             $element->setProp('glass_opacity', (float) $attrs['glassOpacity']);
         }
+        // `scroll-edge-soft` / `scroll-edge-hard` on a bottom bar: which
+        // scroll edge effect iOS 26+ draws under it (1 soft, 2 hard).
+        if (isset($attrs['scrollEdge'])) {
+            $element->setProp('scroll_edge', (int) $attrs['scrollEdge']);
+        }
         // Text selection opt-in (`select-text` / `select-none`). Generic across
         // element types — set on any node to make its subtree selectable (or
         // exempt one inside a selectable ancestor). Renderers read it via
