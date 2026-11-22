@@ -207,8 +207,8 @@ class TabBar
     /**
      * iOS 26+ only. The scroll edge effect under the tab bar: "soft" (the
      * system's progressive blur, which is what a tab bar gets by default),
-     * "hard" (an opaque fade) or "none". Content in a pager or another
-     * horizontal scroller gets it too, which SwiftUI alone doesn't manage.
+     * "hard" (an opaque fade) or "none". In a pager the effect sits on the
+     * pager, so it covers whichever page is showing.
      */
     public function edgeBlur(string $style): self
     {

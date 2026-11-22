@@ -719,8 +719,7 @@ private struct PerTabContent: View {
             // Outside the bottom bar, so a root-level bar's own edge blur
             // wins for its region. Only where the tab bar shows.
             .modifier(TabBarEdgeBlurModifier(
-                style: isRoot && !forceHideTabBar ? edgeBlur : "",
-                isSelected: isSelected
+                style: isRoot && !forceHideTabBar ? edgeBlur : ""
             ))
     }
 
