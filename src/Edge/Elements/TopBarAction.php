@@ -40,8 +40,11 @@ class TopBarAction extends Element
         if (isset($attrs['show-label']) && ! isset($attrs['show_label'])) {
             $attrs['show_label'] = $attrs['show-label'];
         }
+        if (isset($attrs['image-shape']) && ! isset($attrs['image_shape'])) {
+            $attrs['image_shape'] = $attrs['image-shape'];
+        }
 
-        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image', 'image_shape'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
@@ -66,6 +69,9 @@ class TopBarAction extends Element
         }
         if (isset($attrs['divider'])) {
             $this->props['divider'] = (bool) $attrs['divider'];
+        }
+        if (isset($attrs['checked'])) {
+            $this->props['checked'] = (bool) $attrs['checked'];
         }
     }
 
