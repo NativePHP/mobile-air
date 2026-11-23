@@ -93,11 +93,18 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // The https URL behind pendingDeepLink when it came from an app link, so a
     // cold start can still give an unrouted link back to the browser.
     private var pendingDeepLinkUrl: String? = null
-    // An app link that launched the app (route to URL), held until the start
-    // screen's native loop is running and PHP can decide where it goes.
-    private var coldAppLink: Pair<String, String>? = null
+    // A link with no native screen that launched the app (route to its https
+    // URL, which only an app link has), held until the start screen's native
+    // loop is running and PHP can decide where it goes.
+    private var coldAppLink: Pair<String, String?>? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
+    // Guards queueWorker and rebootingRuntime. The deferred worker start runs
+    // on the main thread; a runtime reboot runs on the hot reload watcher or a
+    // native session thread and replaces the worker. Without it both could
+    // start one, and two workers in one process segfault.
+    private val queueWorkerLock = Any()
+    private var rebootingRuntime = false
 
     private var asyncExecutor: com.nativephp.mobile.bridge.AsyncTaskExecutor? = null
     @Volatile private var nativeUIThread: Thread? = null
@@ -260,19 +267,20 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 var target = pendingDeepLink ?: startUrl
                 var plan = BootPlanner.plan(this, target)
 
-                // An app link to a path with no native screen could be a web
-                // route or nothing at all, and only PHP can tell. Loading it
-                // straight into the WebView shows a local 404 for the second
-                // kind. Boot the start screen instead and hand the link over
-                // once its native loop is running, the same as a link that
-                // arrives while the app is open: PHP navigates to it or gives it
-                // back to the browser.
-                val appLinkUrl = pendingDeepLinkUrl
-                if (pendingDeepLink != null && appLinkUrl != null &&
+                // A link to a path with no native screen could be a web route
+                // or nothing at all, and only PHP can tell. Loading it straight
+                // into the WebView shows a local 404 for the second kind, with
+                // no way back into the app. Boot the start screen instead and
+                // hand the link over once its native loop is running, the same
+                // as a link that arrives while the app is open: PHP navigates
+                // to it, gives an app link back to the browser, or drops it and
+                // stays on the start screen. Custom-scheme links and tapped
+                // notifications go this way too.
+                if (pendingDeepLink != null &&
                     plan == BootPlanner.Entry.WEB_LEGACY &&
                     BootPlanner.plan(this, startUrl) == BootPlanner.Entry.NATIVE_DIRECT) {
                     Log.d("DeepLink", "⏳ No native screen for $target, booting $startUrl and handing the link to PHP")
-                    coldAppLink = target to appLinkUrl
+                    coldAppLink = target to pendingDeepLinkUrl
                     target = startUrl
                     plan = BootPlanner.Entry.NATIVE_DIRECT
                 }
@@ -311,13 +319,16 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
                 // Defer the background queue worker — it boots a SECOND full Laravel
                 // runtime that would contend for CPU during first paint. Start it a
-                // couple of seconds after the UI is up. Guarded against a fast destroy
-                // and against double-starting if the activity was re-created.
+                // couple of seconds after the UI is up. Guarded against a fast destroy,
+                // against double-starting if the activity was re-created, and against
+                // a runtime reboot in flight, which starts its own worker when done.
                 Handler(Looper.getMainLooper()).postDelayed({
-                    if (!isFinishing && !isDestroyed &&
-                        phpBridge.isPersistentMode() && queueWorker == null) {
-                        Log.d("MainActivity", "▶️ Starting deferred background queue worker")
-                        queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                    synchronized(queueWorkerLock) {
+                        if (!isFinishing && !isDestroyed && !rebootingRuntime &&
+                            phpBridge.isPersistentMode() && queueWorker == null) {
+                            Log.d("MainActivity", "▶️ Starting deferred background queue worker")
+                            queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                        }
                     }
                 }, WORKER_START_DELAY_MS)
 
@@ -428,7 +439,11 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
      * suspends those itself.
      */
     private fun rebootPersistentRuntime() {
-        queueWorker?.stop()
+        val worker = synchronized(queueWorkerLock) {
+            rebootingRuntime = true
+            queueWorker.also { queueWorker = null }
+        }
+        worker?.stop()
 
         // Blocks until the async pool has drained: the shutdown below
         // destroys Zend state its live contexts reference.
@@ -439,7 +454,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         phpBridge.shutdownPersistentRuntime()
         phpBridge.bootPersistentRuntime()
 
-        queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+        synchronized(queueWorkerLock) {
+            queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+            rebootingRuntime = false
+        }
         asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
     }
 
@@ -1047,13 +1065,19 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val reloadFile = File("${appStorageDir.absolutePath}/laravel/storage/framework/reload_signal.json")
             // PHP's storage_path() resolves to persisted_data/storage/ (set by LARAVEL_STORAGE_PATH)
             val restartFile = File("${appStorageDir.absolutePath}/persisted_data/storage/framework/.hot_restart")
-            var lastModified: Long = 0
+            // Start from what is already on disk (0 when a file is missing).
+            // native:watch leaves reload_signal.json in app storage, and a
+            // .hot_restart stays behind when the app is killed mid-reload. A
+            // new process already runs the code they announce, so only a
+            // later write is a reload. Starting from 0 rebooted the runtime
+            // on every cold start after a watch session.
+            var lastModified: Long = reloadFile.lastModified()
             // Track .hot_restart's last-seen mtime so the polling loop
             // doesn't re-trigger reboot every iteration while the file
             // exists. PHP consumes the file (deletes it) inside its
             // Route::native macro after extracting the nav stack; the
             // loop here just needs to fire once per write.
-            var lastRestartModified: Long = 0
+            var lastRestartModified: Long = restartFile.lastModified()
             var pollCount = 0
             // Generation counter — increments on every hot-reload
             // cycle. Helps identify exactly which reload is stuck in

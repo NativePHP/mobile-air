@@ -151,6 +151,7 @@ struct NativeRootTabsRenderer: View {
         let searchMode = node.props.getString("nav_search_mode", default: "static")
         let searchDebounceMs = node.props.getInt("nav_search_debounce_ms", default: 250)
         let searchOnQueryCb = Int(node.props.getCallbackId("nav_search_on_query"))
+        let searchOnSubmitCb = Int(node.props.getCallbackId("nav_search_on_submit"))
         // Each search item is a `search_item` child node of the tabs
         // root (parallel to `bottom_nav_item`). PHP couldn't carry the
         // mixed string/object/element item shapes through the prop
@@ -333,6 +334,7 @@ struct NativeRootTabsRenderer: View {
                         itemNodes: searchItemNodes,
                         mode: searchMode,
                         onQueryCallbackId: searchOnQueryCb,
+                        onSubmitCallbackId: searchOnSubmitCb,
                         debounceMs: searchDebounceMs
                     )
                     .modifier(SystemTabBarSuppressionModifier(
@@ -350,6 +352,7 @@ struct NativeRootTabsRenderer: View {
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
         .modifier(TabBarAccessoryModifier(accessory: customPresenter == nil ? accessory : nil))
+        .modifier(SearchTabActivationModifier())
         .modifier(CustomTabPresentationModifier(
             presenter: customPresenter,
             context: presentationContext,
@@ -530,10 +533,19 @@ private struct PerTabContent: View {
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
+                // Each level names itself to the morph store (`heroScreen`),
+                // scoped by tab so two tabs can't collide. See
+                // `HeroFlightStore`.
                 levelView(uri: coordinator.rootLevelUri, isRoot: true)
+                    .environment(\.heroScreen, HeroFlightStore.screenId(
+                        stack: coordinator.rootUri, uri: coordinator.rootLevelUri
+                    ))
                     .navigationDestination(for: String.self) { uri in
                         StackLevelView(level: coordinator.level(for: uri)) {
                             levelView(uri: uri, isRoot: false)
+                                .environment(\.heroScreen, HeroFlightStore.screenId(
+                                    stack: coordinator.rootUri, uri: uri
+                                ))
                         }
                     }
             }
@@ -953,7 +965,9 @@ private struct TabsActionView: View {
 /// Uses `.safeAreaInset(.bottom)` — the battle-tested primitive that
 /// reserves space above the safe-area-bottom and renders the bar inside
 /// it. Keyboard avoidance is automatic. Bar content is responsible for
-/// its own visible chrome (bg color or glass class).
+/// its own visible chrome (bg color or glass class), except that a
+/// `bottom_bar` carrying `glass` gets soft glass behind the whole bar
+/// (see `BottomBarSoftGlass`).
 private struct BottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -979,6 +993,9 @@ private struct BottomBarInsetModifier: ViewModifier {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity)
                     .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+                    .background(alignment: .top) {
+                        BottomBarSoftGlass(flags: bottomBar.props.getInt("glass", default: 0))
+                    }
             }
         } else {
             content
@@ -1188,6 +1205,28 @@ private struct TabBarAccessoryModifier: ViewModifier {
     }
 }
 
+/// Keeps the search tab as its own round button beside the bar, and makes
+/// tapping it open the search field, as iOS 26 did by default.
+///
+/// From the iOS 27 SDK, the default activation (`.automatic`) puts a
+/// `Tab(role: .search)` inside the bar as an ordinary tab, and selecting it
+/// no longer brings up the field. An app built with Xcode 26 keeps the old
+/// look even on iOS 27, so the change only shows once an app is rebuilt with
+/// Xcode 27. Asking for `.searchTabSelection` restores the iOS 26 behaviour.
+private struct SearchTabActivationModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.tabViewSearchActivation(.searchTabSelection)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 /// Replaces only the visual tab strip. The underlying TabView and every
 /// per-tab NavigationStack remain mounted and owned by NativePHP.
 private struct CustomTabPresentationModifier: ViewModifier {
@@ -1293,12 +1332,15 @@ struct SearchableNavBarModifier: ViewModifier {
 ///
 /// Debounced query changes forward to PHP's `onSearchQuery` via the
 /// existing TEXT_CHANGE event (dynamic mode); static mode filters
-/// locally inside `NativeSearchTabRoot`.
+/// locally inside `NativeSearchTabRoot`. Submitting the field (the
+/// keyboard's Search key) sends its text to PHP's `onSearchSubmit` as a
+/// SUBMIT event, when the screen defines one.
 private struct SearchTabContainer: View {
     let placeholder: String
     let itemNodes: [NativeUINode]
     let mode: String
     let onQueryCallbackId: Int
+    let onSubmitCallbackId: Int
     let debounceMs: Int
 
     @State private var query: String = ""
@@ -1315,6 +1357,13 @@ private struct SearchTabContainer: View {
                 .modifier(WindowBackgroundModifier())
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
+        .onSubmit(of: .search) {
+            guard onSubmitCallbackId != 0 else { return }
+            // The submit carries the whole query, so a keystroke still
+            // waiting on the debounce has nothing left to add.
+            debounceTask?.cancel()
+            NativeElementBridge.sendSubmitEvent(onSubmitCallbackId, nodeId: 0, text: query)
+        }
         .onChange(of: query) { _, newValue in
             guard mode == "dynamic", onQueryCallbackId != 0 else { return }
             debounceTask?.cancel()
@@ -1507,5 +1556,59 @@ private struct ObjectResultRow: View {
         }
         .buttonStyle(.plain)
         .disabled(tapCallback == 0)
+    }
+}
+
+/// Liquid Glass behind a bottom bar whose `bottom_bar` element carries the
+/// `glass` class (`<native:bottom-bar class="glass">`). The glass runs on
+/// through the bottom safe area, under the home indicator, and fades in over
+/// the bar's top `fade` points, so what scrolls under the bar blurs into it
+/// without the hard top edge (rim and lensing) a plain `glass` surface has.
+/// The bar's own content draws on top; give it a translucent fill to tint
+/// the glass. `glass:clear` takes the clear variant. Before iOS 26 it's
+/// `.regularMaterial`, faded the same way. Shared with the stack renderer's
+/// `StackBottomBarInsetModifier`.
+struct BottomBarSoftGlass: View {
+    let flags: Int
+    var fade: CGFloat = 28
+
+    var body: some View {
+        if flags & 1 != 0 {
+            GeometryReader { geo in
+                glass.mask(
+                    LinearGradient(
+                        stops: Self.fadeIn(until: min(1, fade / max(geo.size.height, 1))),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            }
+            // Past the screen's sides, so the glass draws no rim down them.
+            .padding(.horizontal, -24)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Clear to opaque on an ease-in-out curve, which leaves no line where
+    /// a straight ramp would stop.
+    static func fadeIn(until end: CGFloat) -> [Gradient.Stop] {
+        (0...8).map { step in
+            let t = CGFloat(step) / 8
+            return .init(color: .black.opacity(t * t * (3 - 2 * t)), location: t * end)
+        }
+    }
+
+    @ViewBuilder
+    private var glass: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            Rectangle().fill(.clear).glassEffect(flags & 8 != 0 ? .clear : .regular, in: Rectangle())
+        } else {
+            Rectangle().fill(.regularMaterial)
+        }
+        #else
+        Rectangle().fill(.regularMaterial)
+        #endif
     }
 }

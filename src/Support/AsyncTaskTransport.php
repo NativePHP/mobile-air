@@ -97,6 +97,12 @@ class AsyncTaskTransport
     /** Drop a spooled payload for a task that will never run. */
     public static function forgetPayload(string $id): void
     {
+        // A failed task's id comes back in an event, which a web view page
+        // can have native post, and the id becomes part of a path.
+        if (! Str::isUuid($id)) {
+            return;
+        }
+
         @unlink(static::directory('payload').DIRECTORY_SEPARATOR.$id.'.task');
     }
 

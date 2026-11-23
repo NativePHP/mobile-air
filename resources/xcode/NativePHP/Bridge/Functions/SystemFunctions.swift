@@ -62,6 +62,72 @@ enum SystemFunctions {
         }
     }
 
+    // MARK: - System.SetAppearance
+
+    /// UserDefaults key holding the mode last passed to `System.SetAppearance`.
+    static let appearanceDefaultsKey = "NativePHP.appearance"
+
+    /// The window style for a `System::setAppearance()` mode, nil for an unknown
+    /// one. `system` is `.unspecified`: windows follow the device again, or the
+    /// build-time `UIUserInterfaceStyle` when `nativephp.appearance` pins one.
+    static func interfaceStyle(for mode: String) -> UIUserInterfaceStyle? {
+        switch mode {
+        case "system": return .unspecified
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+
+    private static var appearanceObserver: NSObjectProtocol?
+
+    /// Re-apply the saved mode on every window as it becomes visible: the app
+    /// window on launch, and the keyboard and alert windows later. Started from
+    /// `NativePHPApp.init()`, before any window exists, so the first SwiftUI body
+    /// (the splash included) already sees the saved color scheme and never flips.
+    static func startAppearanceOverride() {
+        guard appearanceObserver == nil else { return }
+
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: UIWindow.didBecomeVisibleNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let mode = UserDefaults.standard.string(forKey: appearanceDefaultsKey) ?? "system"
+            (notification.object as? UIWindow)?.overrideUserInterfaceStyle =
+                interfaceStyle(for: mode) ?? .unspecified
+        }
+    }
+
+    /// Pin the app to light or dark, or follow the device again. Sets every
+    /// window's `overrideUserInterfaceStyle`, so UIKit and SwiftUI redraw in it
+    /// (bars, sheets and keyboards included) and ContentView's colorScheme
+    /// observer pushes AppearanceChanged as it does for a device switch. Saved
+    /// in UserDefaults and re-applied at launch by `startAppearanceOverride()`.
+    /// Parameters:
+    ///   - mode: string - "system", "light" or "dark"
+    /// Returns:
+    ///   - success: boolean - True once the mode is saved
+    class SetAppearance: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            guard let mode = parameters["mode"] as? String,
+                  let style = SystemFunctions.interfaceStyle(for: mode) else {
+                throw BridgeError.invalidParameters("mode must be system, light or dark")
+            }
+
+            UserDefaults.standard.set(mode, forKey: SystemFunctions.appearanceDefaultsKey)
+
+            DispatchQueue.main.async {
+                UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .flatMap(\.windows)
+                    .forEach { $0.overrideUserInterfaceStyle = style }
+            }
+
+            return ["success": true]
+        }
+    }
+
     // MARK: - System.GetOrientation
 
     /// Current app window orientation (portrait / landscape), derived from the

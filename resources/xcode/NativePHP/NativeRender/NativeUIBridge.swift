@@ -30,6 +30,17 @@ final class NativeUIBridge: ObservableObject {
     /// Screen key — incremented on navigation to drive transitions
     @Published var screenKey: Int = 0
 
+    /// Highest screen key handed out. `screenKey` goes back down when an
+    /// edge swipe makes the kept backdrop the current screen again, but each
+    /// new screen still gets a key no earlier screen had, so it sorts above
+    /// every layer and a late key-guarded cleanup can't match it.
+    private var highestScreenKey = 0
+
+    func nextScreenKey() -> Int {
+        highestScreenKey = max(highestScreenKey, screenKey) + 1
+        return highestScreenKey
+    }
+
     /// Pending transition type
     @Published var pendingTransition: String?
 
@@ -54,6 +65,23 @@ final class NativeUIBridge: ObservableObject {
     }
 
     @Published var outgoingScreen: OutgoingScreen?
+
+    /// The tabs screen beneath a stack session pushed from it, kept mounted
+    /// (hidden) for as long as that session lasts, so an edge swipe on the
+    /// stack's root can reveal it under the finger (`RootBackSwipe`). Only
+    /// kept when PHP's router has it exactly one level below the stack's
+    /// root (`stack_depth`), which is the level a back from that root lands
+    /// on. When the swipe goes back, the bridge makes this view the current
+    /// screen again instead of mounting a new one, so the tabs keep their
+    /// state, as UIKit keeps a popped-to view controller.
+    struct BackdropScreen {
+        let tree: NativeUITree
+        let key: Int
+        let uri: String
+        let depth: Int
+    }
+
+    @Published var backdropScreen: BackdropScreen?
 
     /// Flag set by UI.SetTransition bridge function
     var navigationPending = false

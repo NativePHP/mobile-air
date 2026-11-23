@@ -178,6 +178,32 @@ class System
     }
 
     /**
+     * Pin the app to 'light' or 'dark', or hand it back to the device with
+     * 'system' — the same values as the build-time `nativephp.appearance`,
+     * applied at runtime, so a Settings screen can offer a theme choice.
+     *
+     * The whole app switches, system chrome included (bars, sheets,
+     * keyboards), and the choice survives relaunches. When the effective
+     * appearance flips, the usual AppearanceChanged event follows, so
+     * `appearance()`, `theme()` and #[On(AppearanceChanged)] handlers catch
+     * up. Android needs API 31+; older versions keep following the device.
+     *
+     * @param  'system'|'light'|'dark'  $mode
+     *
+     * @throws \InvalidArgumentException for any other value
+     */
+    public function setAppearance(string $mode): void
+    {
+        if (! in_array($mode, ['system', 'light', 'dark'], true)) {
+            throw new \InvalidArgumentException("Appearance must be 'system', 'light' or 'dark', got '{$mode}'.");
+        }
+
+        if (function_exists('nativephp_call')) {
+            nativephp_call('System.SetAppearance', json_encode(['mode' => $mode]));
+        }
+    }
+
+    /**
      * Update the process-cached appearance. Called by the AppearanceChanged
      * listener so `appearance()` stays fresh without re-probing the bridge.
      */

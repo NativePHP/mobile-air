@@ -41,4 +41,24 @@ class TestDumpHandler
             $dumper->dump((new VarCloner)->cloneVar($var));
         });
     }
+
+    /**
+     * Whether register() can take effect in this process. When it can't,
+     * a component's dd() dumps and exits the test run as it would in any
+     * other Laravel test.
+     *
+     * Two things are known to get in the way:
+     *  - Laravel Herd's dump interception, when it watches CLI dumps. Its
+     *    auto_prepend_file aliases Symfony's VarDumper to a class whose
+     *    setHandler() does nothing, and defines its own global dd() that
+     *    never calls a handler.
+     *  - VAR_DUMPER_FORMAT being set. Symfony ignores setHandler() then.
+     */
+    public static function canCapture(): bool
+    {
+        $probe = static fn () => null;
+        $previous = VarDumper::setHandler($probe);
+
+        return VarDumper::setHandler($previous) === $probe;
+    }
 }

@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static string appearance()
  * @method static bool isDarkMode()
  * @method static bool isLightMode()
+ * @method static void setAppearance(string $mode)
  * @method static void rememberAppearance(string $mode)
  * @method static string orientation()
  * @method static bool isPortrait()

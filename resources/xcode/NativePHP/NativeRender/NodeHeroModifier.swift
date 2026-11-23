@@ -27,6 +27,7 @@ struct NodeHeroModifier: ViewModifier {
 
     @Environment(\.heroIsOutgoing) private var isOutgoing
     @Environment(\.heroIsFlyingCopy) private var isFlyingCopy
+    @Environment(\.heroScreen) private var screen
     @ObservedObject private var store = HeroFlightStore.shared
 
     func body(content: Content) -> some View {
@@ -51,8 +52,20 @@ struct NodeHeroModifier: ViewModifier {
                 .onGeometryChange(for: CGRect.self) { proxy in
                     proxy.frame(in: .global)
                 } action: { rect in
-                    store.report(ref: ref, rect: rect, isOutgoing: isOutgoing)
+                    frame = rect
+                    store.report(ref: ref, rect: rect, isOutgoing: isOutgoing, screen: screen)
+                }
+                // A screen that stops being outgoing without moving (the tabs
+                // kept beneath a stack, made current again by an edge swipe)
+                // never gets another geometry change, and the store dropped
+                // its frames meanwhile. Report the last one again, or the next
+                // morph from this screen has nothing to fly from.
+                .onChange(of: isOutgoing) { _, outgoing in
+                    guard !outgoing, let frame else { return }
+                    store.report(ref: ref, rect: frame, isOutgoing: false, screen: screen)
                 }
         )
     }
+
+    @State private var frame: CGRect?
 }

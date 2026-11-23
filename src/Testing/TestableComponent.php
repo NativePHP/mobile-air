@@ -481,12 +481,18 @@ class TestableComponent
     }
 
     /**
-     * Fire a gesture-area pinch-end bound to `@pinchEnd`, delivering the
-     * final scale factor (1.0 = identity) as a float.
+     * Fire a gesture-area zoom-end bound to `@zoomEnd` (or `@pinchEnd`),
+     * delivering the final scale factor (1.0 = identity) as a float.
      */
-    public function pinch(string $target, float $scale): static
+    public function zoom(string $target, float $scale): static
     {
         return $this->fireEvent($target, self::EVENT_SLIDER_CHANGE, ['value' => $scale]);
+    }
+
+    /** The older name of zoom(). */
+    public function pinch(string $target, float $scale): static
+    {
+        return $this->zoom($target, $scale);
     }
 
     /**
@@ -660,6 +666,33 @@ class TestableComponent
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
+        }));
+
+        return $this->afterInteraction();
+    }
+
+    /**
+     * Submit the search tab's field (the keyboard's Search key) with
+     * this text: runs the screen's onSearchSubmit() as the runloop does
+     * for the field's SUBMIT event, so its navigation can be asserted.
+     */
+    public function submitSearch(string $query): static
+    {
+        $this->startInteraction();
+
+        $overridden = $this->scoped(function () {
+            /** @var NativeComponent $this */
+            return $this->hasOnSearchSubmitOverride();
+        });
+
+        Assert::assertTrue(
+            $overridden,
+            get_class($this->component).' does not override onSearchSubmit() — there is no search submit to drive.'
+        );
+
+        $this->guard(fn () => $this->scoped(function () use ($query) {
+            /** @var NativeComponent $this */
+            $this->onSearchSubmit($query);
         }));
 
         return $this->afterInteraction();

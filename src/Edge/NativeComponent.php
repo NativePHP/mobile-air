@@ -297,7 +297,7 @@ abstract class NativeComponent extends CoreNativeComponent
      * components' too, along with any plugin element whose class opts in
      * through Element::closesOnNavigation(). All are presented over the
      * whole window, so one still open would cover the next screen until
-     * its first frame arrives. The frame is a full emit (no REUSE
+     * its first frame arrives. The frame is built as a full emit (no REUSE
      * markers), so each of them is in it with all of its props.
      *
      * `bottom_sheet` and `modal` are listed by type because the UI plugin
@@ -420,7 +420,7 @@ abstract class NativeComponent extends CoreNativeComponent
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
-                        $this->publishedFrame = null;
+                        $this->forgetPublishedTree();
                         $this->flushDeferredTransition();
                         if ($perf) {
                             NativeRouter::debugLog(sprintf(
@@ -490,6 +490,15 @@ abstract class NativeComponent extends CoreNativeComponent
                         fn () => $this->runDuePolls(),
                     );
                 }
+
+                continue;
+            }
+
+            // The native reader asks for a full frame. That is plumbing and not
+            // a user action, so no tree observer hears of it. The next frame
+            // then goes out in full, with every node and no REUSE marker.
+            if (($event['type'] ?? -1) === self::EVENT_FULL_FRAME) {
+                $this->forgetPublishedTree();
 
                 continue;
             }

@@ -170,3 +170,65 @@ it('renders a bounded zoom and pan area from Blade', function () {
         ->and($tree['props']['pan-y-id'])->toBe($y->id)
         ->and($tree['props']['pinch-id'])->toBe($zoom->id);
 });
+
+it('renders a photo page that zooms on a double tap from Blade', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-double-tap.blade.php',
+        '<native:gesture-area :zoom="$zoom" zoom-min="1" zoom-max="4" @doubleTap.zoom="2" :pan-x="$x" :pan-y="$y" bounded :content-ratio="$ratio" @zoomEnd="zoomEnded">'
+        .'<native:image src="https://example.com/a.png" :scale="$zoom" :translate-x="$x" :translate-y="$y" fit="contain" />'
+        .'</native:gesture-area>'
+    );
+
+    $zoom = SharedValue::make(1.0);
+    $x = SharedValue::make();
+    $y = SharedValue::make();
+    $registry = new CallbackRegistry;
+
+    NativeElementCollector::reset();
+    view('gesture-double-tap', ['zoom' => $zoom, 'x' => $x, 'y' => $y, 'ratio' => 3 / 2])->render();
+    $tree = NativeElementCollector::collect()->toArray($registry);
+
+    expect($tree['props']['double-tap-zoom'])->toBe(2.0)
+        ->and($tree['props']['pinch-id'])->toBe($zoom->id)
+        ->and($tree['props']['pinch-min'])->toBe(1.0)
+        ->and($tree['props']['pinch-max'])->toBe(4.0)
+        ->and($tree['props']['pan-x-id'])->toBe($x->id)
+        ->and($tree['props']['pan-y-id'])->toBe($y->id)
+        ->and($tree['props']['bounded'])->toBeTrue()
+        ->and($tree['props']['content-ratio'])->toBe(3 / 2)
+        ->and($tree['props'])->not->toHaveKey('zoom-pan-x-id')
+        ->and($tree['props'])->not->toHaveKey('zoom-pan-y-id')
+        ->and($tree['props'])->not->toHaveKey('on_double_tap')
+        ->and($tree['props'])->not->toHaveKey('_doubleTap.zoom')
+        ->and($registry->resolve($tree['props']['on_pinch_end'])['method'])->toBe('zoomEnded');
+});
+
+it('takes the double tap zoom from an echoed value', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-double-tap-echo.blade.php',
+        '<native:gesture-area :zoom="$zoom" @doubleTap.zoom="{{ $level }}">'
+        .'<native:image src="https://example.com/a.png" :scale="$zoom" />'
+        .'</native:gesture-area>'
+    );
+
+    NativeElementCollector::reset();
+    view('gesture-double-tap-echo', ['zoom' => SharedValue::make(1.0), 'level' => 2.5])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['props']['double-tap-zoom'])->toBe(2.5);
+});
+
+it('ignores a modifier on an element that has no use for it', function () {
+    file_put_contents(
+        __DIR__.'/views/gesture-stray-modifier.blade.php',
+        '<native:column @doubleTap.zoom="2"><native:text>hi</native:text></native:column>'
+    );
+
+    NativeElementCollector::reset();
+    view('gesture-stray-modifier')->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['type'])->toBe('column')
+        ->and($tree['props'] ?? [])->not->toHaveKey('_doubleTap.zoom')
+        ->and($tree['props'] ?? [])->not->toHaveKey('on_double_tap');
+});

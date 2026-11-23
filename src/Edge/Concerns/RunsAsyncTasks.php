@@ -9,7 +9,9 @@ use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Exceptions\AsyncTaskException;
 use Native\Mobile\PendingAsyncTask;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Support\NativeCallbacks;
+use SupaNative\Core\Edge\NativeComponent as CoreNativeComponent;
 
 /**
  * Background PHP work whose result comes back to the screen that asked for it.
@@ -122,9 +124,10 @@ trait RunsAsyncTasks
      *     screen is showing. No origin-screen check.
      *   - otherwise (scoped) → DROP if the screen that dispatched the task is no
      *     longer topmost (firing a component-bound callback against the wrong
-     *     live component is a footgun). Else run the finished()/failed() callback,
-     *     rebound to this live component, with the raw result / an
-     *     AsyncTaskException.
+     *     live component is a footgun). Else run the finished()/failed() callback
+     *     with the raw result / an AsyncTaskException: against the child
+     *     component that wrote it while that child is still mounted, otherwise
+     *     rebound to this live component.
      */
     private function handleAsyncCompletion(string $eventClass, array $payload): void
     {
@@ -135,6 +138,16 @@ trait RunsAsyncTasks
 
         $failed = $eventClass === AsyncTaskFailed::class;
         $scope = AsyncTaskRegistry::scope($id);
+
+        // A task fails before it has run when its watchdog fires while it still
+        // waits for a free background context, as every one can be when a server
+        // takes requests and never answers them. Without its payload it does
+        // nothing once a context frees up, rather than doing work the screen
+        // has already been told failed, such as sending a write it handed back
+        // to be sent again. A task that ran has read its payload already.
+        if ($failed) {
+            AsyncTaskTransport::forgetPayload($id);
+        }
 
         // Shared: deliver as a named event to whatever component is active.
         if ($scope !== null && $scope['shared'] !== null) {
@@ -172,10 +185,20 @@ trait RunsAsyncTasks
                 $callback = app($callback);
             }
 
-            // Bind the closure to this live component so finished()/failed() can
-            // mutate state via $this. Static closures run without $this.
-            if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
-                $callback = \Closure::bind($callback, $this, static::class);
+            // A closure written inside a child component keeps that child as
+            // $this, as long as the child is still mounted on this screen. A
+            // child that has since unmounted, or been replaced by a new
+            // instance under the same key, drops the result. Any other
+            // closure is bound to this screen so finished()/failed() can
+            // mutate its state. Static closures run without $this.
+            if ($callback instanceof \Closure && ! ($reflection = new \ReflectionFunction($callback))->isStatic()) {
+                $owner = $reflection->getClosureThis();
+
+                if (! $owner instanceof self) {
+                    $callback = \Closure::bind($callback, $this, static::class);
+                } elseif (! in_array($owner, iterator_to_array(self::mountedComponents($this), false), true)) {
+                    return;
+                }
             }
 
             if ($failed) {
@@ -191,6 +214,22 @@ trait RunsAsyncTasks
             // One outcome per task — drop the finished/failed sibling too.
             NativeCallbacks::forget($id);
             AsyncTaskRegistry::forget($id);
+        }
+    }
+
+    /**
+     * The given component, and every child mounted under it, at any depth.
+     * Core walks this tree in componentTree(), private to core's class,
+     * so this trait, which a subclass uses, keeps a walk of its own.
+     *
+     * @return \Generator<int, CoreNativeComponent>
+     */
+    private static function mountedComponents(CoreNativeComponent $component): \Generator
+    {
+        yield $component;
+
+        foreach ($component->nativeChildComponents as $child) {
+            yield from self::mountedComponents($child);
         }
     }
 }

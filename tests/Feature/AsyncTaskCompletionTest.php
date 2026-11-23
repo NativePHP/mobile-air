@@ -10,6 +10,7 @@ use Native\Mobile\Edge\Transition;
 use Native\Mobile\Events\Async\AsyncTaskFailed;
 use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\Testing\FakeBridge;
 
@@ -139,6 +140,43 @@ it('drops the callback when the origin screen has been freed and its object id r
         ->and(AsyncTaskRegistry::scope($id))->toBeNull();
 });
 
+it('runs a child component\'s finished() callback against that child, not the screen', function () {
+    $screen = new AsyncScreenDouble;
+    $child = new AsyncScreenDouble;
+    (fn () => $this->nativeChildComponents = ['card' => $child])->call($screen);
+    setActiveComponent($screen);
+
+    $id = 'a2c';
+    AsyncTaskRegistry::register($id, $screen, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, (fn () => function ($result) {
+        $this->result = $result;
+    })->call($child));
+
+    $screen->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($child->result)->toBe('DONE')
+        ->and($screen->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
+it('drops a child component\'s callback once that child has left the screen', function () {
+    $screen = new AsyncScreenDouble;
+    $detached = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $id = 'a2d';
+    AsyncTaskRegistry::register($id, $screen, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, (fn () => function ($result) {
+        $this->result = $result;
+    })->call($detached));
+
+    $screen->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($detached->result)->toBeNull()
+        ->and($screen->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
 it('routes a failed() callback an AsyncTaskException with the original message', function () {
     $screen = new AsyncScreenDouble;
     setActiveComponent($screen);
@@ -156,6 +194,35 @@ it('routes a failed() callback an AsyncTaskException with the original message',
     ]);
 
     expect($screen->error)->toBe('kaboom');
+});
+
+it('drops the work of a task that timed out while it waited for a background context', function () {
+    config(['app.key' => 'base64:'.base64_encode(Encrypter::generateKey('AES-256-CBC'))]);
+    $bridge = FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
+
+    $screen = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $task = AsyncTask::dispatch(static fn () => 'sent too late')
+        ->timeout(5)
+        ->failed(function ($e) {
+            $this->error = $e->getMessage();
+        });
+    $id = $task->getId();
+    $task->start();
+
+    // Every context is busy, so the watchdog fails it before one picks it up.
+    $screen->fireEvent([
+        'type' => 20,
+        'event' => AsyncTaskFailed::class,
+        'payload' => ['id' => $id, 'exceptionClass' => 'RuntimeException', 'message' => 'The async task did not complete within 5 seconds.', 'trace' => null],
+    ]);
+
+    expect($screen->error)->toBe('The async task did not complete within 5 seconds.')
+        // When a context frees up, there is nothing left to run.
+        ->and(AsyncTaskTransport::readPayload($id))->toBeNull();
+
+    FakeBridge::disable();
 });
 
 it('delivers a shared() task as a named event regardless of active screen', function () {
@@ -294,6 +361,26 @@ it('keeps a completion that lands before the new screen has drawn its first fram
         ->and($router->takeCarriedEvent())->toBeNull()
         ->and(nativephp_element_wait_event(0))->toBeNull()
         ->and($bridge->resetCount)->toBe(1);
+
+    FakeBridge::disable();
+});
+
+it('keeps a device event that lands before the new screen has drawn its first frame', function () {
+    $bridge = FakeBridge::enable();
+    $router = new NativeRouter;
+    (new ReflectionProperty(NativeRouter::class, 'deferredTransition'))->setValue($router, Transition::Fade);
+
+    // A position the new screen asked for in mount(), answered before its first frame, between two taps on the old one.
+    $position = ['type' => 20, 'event' => 'App\\Events\\PositionReceived', 'payload' => ['id' => 'form', 'latitude' => 48.85]];
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 7]);
+    $bridge->queueEvent($position);
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 8]);
+
+    $router->flushDeferredTransition();
+
+    expect($router->takeCarriedEvent())->toBe($position)
+        ->and($router->takeCarriedEvent())->toBeNull()
+        ->and(nativephp_element_wait_event(0))->toBeNull();
 
     FakeBridge::disable();
 });

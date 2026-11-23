@@ -1,0 +1,51 @@
+name: Close stale draft PRs
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close-stale-drafts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const days = 28;
+            const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              ...context.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            for (const pull of pulls) {
+              if (!pull.draft || new Date(pull.updated_at).getTime() > cutoff) {
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: pull.number,
+                body: [
+                  `Hi @${pull.user.login}, this draft hasn't had any activity for 4 weeks, so we're closing it to keep the PR list tidy.`,
+                  '',
+                  "This doesn't mean we don't want what you've put together here. You're free to reopen it whenever you want to pick it back up. If GitHub doesn't show you a reopen button, leave a comment and one of us will reopen it for you.",
+                  '',
+                  'Thanks for contributing!',
+                ].join('\n'),
+              });
+
+              await github.rest.pulls.update({
+                ...context.repo,
+                pull_number: pull.number,
+                state: 'closed',
+              });
+
+              core.info(`Closed #${pull.number}: ${pull.title}`);
+            }

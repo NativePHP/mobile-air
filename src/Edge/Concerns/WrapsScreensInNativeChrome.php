@@ -541,6 +541,12 @@ trait WrapsScreensInNativeChrome
                 $attrs['navSearchOnQueryMethod'] = 'onSearchQuery';
             }
 
+            // The search field's submit (the keyboard's Search key) goes
+            // to `onSearchSubmit($q)` when the screen overrides it.
+            if ($this->hasOnSearchSubmitOverride()) {
+                $attrs['navSearchOnSubmitMethod'] = 'onSearchSubmit';
+            }
+
             $root->applyAttributes($attrs);
 
             // Tab items as bottom_nav_item children — builder tabs and
@@ -818,6 +824,38 @@ trait WrapsScreensInNativeChrome
     final protected function hasOnSearchQueryOverride(): bool
     {
         $reflection = new \ReflectionMethod($this, 'onSearchQuery');
+
+        return $reflection->getDeclaringClass()->getName() !== self::class;
+    }
+
+    /**
+     * Override to act when the user submits the search tab's field —
+     * the keyboard's Search key — for example to open a full results
+     * screen for what they typed. Receives the field's text.
+     *
+     *     public function onSearchSubmit(string $query): void
+     *     {
+     *         $this->navigate('/search?q='.urlencode($query));
+     *     }
+     *
+     * Independent of `onSearchQuery()` / `searchItems()`, which supply
+     * the rows shown while typing: a screen can define any of them.
+     * The default does nothing, and the framework detects "overridden"
+     * via reflection, as for `onSearchQuery()`.
+     */
+    public function onSearchSubmit(string $query): void
+    {
+        //
+    }
+
+    /**
+     * True when this component overrides `onSearchSubmit()`. Used by
+     * `wrapWithNativeChrome` to decide whether to register the
+     * search-submit callback.
+     */
+    final protected function hasOnSearchSubmitOverride(): bool
+    {
+        $reflection = new \ReflectionMethod($this, 'onSearchSubmit');
 
         return $reflection->getDeclaringClass()->getName() !== self::class;
     }

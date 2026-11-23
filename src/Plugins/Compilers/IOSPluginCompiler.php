@@ -6,6 +6,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Native\Mobile\Exceptions\PluginConflictException;
+use Native\Mobile\Plugins\CoreFeatures;
 use Native\Mobile\Plugins\LegacyFirebaseConfig;
 use Native\Mobile\Plugins\Plugin;
 use Native\Mobile\Plugins\PluginHookRunner;
@@ -165,6 +166,10 @@ class IOSPluginCompiler
         // early return would quietly leave the last build's languages on an
         // app that no longer claims them.
         $this->writeSupportedLocales($allPlugins);
+
+        // Same reasoning: core code a plugin switches on has to be switched
+        // off again when that plugin goes, so this runs with no plugins too.
+        $this->syncCompilationConditions($allPlugins);
 
         // If no plugins have any iOS-related data, generate empty registrations
         if (
@@ -991,6 +996,93 @@ PLIST;
     /**
      * Add Swift Package Manager dependencies from plugins to project.pbxproj
      */
+    /**
+     * Compile core's plugin-dependent Swift code in or out (see CoreFeatures).
+     *
+     * The conditions go on the project-level Debug and Release configurations,
+     * which every target inherits through $(inherited). Only the conditions
+     * CoreFeatures manages are touched; DEBUG and anything the developer added
+     * stay as they are.
+     */
+    protected function syncCompilationConditions(Collection $plugins): void
+    {
+        $projectPath = $this->iosProjectPath.'/NativePHP.xcodeproj/project.pbxproj';
+
+        if (! $this->files->exists($projectPath)) {
+            return;
+        }
+
+        $features = CoreFeatures::for($plugins);
+        $managed = array_map(CoreFeatures::swiftCondition(...), array_keys($features));
+        $enabled = array_map(CoreFeatures::swiftCondition(...), array_keys(array_filter($features)));
+
+        $pbxproj = $this->files->get($projectPath);
+
+        if (! preg_match('/buildConfigurationList = (\w+) \/\* Build configuration list for PBXProject /', $pbxproj, $list)) {
+            return;
+        }
+
+        $listPattern = '/\b'.preg_quote($list[1], '/').' \/\*[^*]*\*\/ = \{\s*isa = XCConfigurationList;\s*buildConfigurations = \(([^)]*)\)/';
+
+        if (! preg_match($listPattern, $pbxproj, $configurations)) {
+            return;
+        }
+
+        preg_match_all('/(\w+)\s*\/\*/', $configurations[1], $ids);
+
+        $updated = $pbxproj;
+
+        foreach ($ids[1] as $id) {
+            $configPattern = '/(\b'.preg_quote($id, '/').' \/\*[^*]*\*\/ = \{\s*isa = XCBuildConfiguration;.*?buildSettings = \{)(.*?)(\n\s*\};)/s';
+
+            $updated = preg_replace_callback(
+                $configPattern,
+                fn ($m) => $m[1].$this->withCompilationConditions($m[2], $managed, $enabled).$m[3],
+                $updated,
+                1
+            ) ?? $updated;
+        }
+
+        if ($updated !== $pbxproj) {
+            $this->files->put($projectPath, $updated);
+        }
+    }
+
+    /**
+     * One configuration's buildSettings body with the managed conditions
+     * replaced by the enabled ones.
+     *
+     * @param  array<int, string>  $managed
+     * @param  array<int, string>  $enabled
+     */
+    protected function withCompilationConditions(string $settings, array $managed, array $enabled): string
+    {
+        $pattern = '/(\n\s*SWIFT_ACTIVE_COMPILATION_CONDITIONS = )("[^"]*"|[^;\s]*);/';
+
+        if (! preg_match($pattern, $settings, $current)) {
+            if ($enabled === []) {
+                return $settings;
+            }
+
+            $indent = preg_match('/\n([ \t]*)\S/', $settings, $m) ? $m[1] : "\t\t\t\t";
+
+            return $settings."\n{$indent}SWIFT_ACTIVE_COMPILATION_CONDITIONS = \""
+                .implode(' ', [...$enabled, '$(inherited)']).'";';
+        }
+
+        $existing = preg_split('/\s+/', trim($current[2], '"'), -1, PREG_SPLIT_NO_EMPTY);
+        $kept = array_values(array_diff($existing, $managed, ['$(inherited)']));
+        $conditions = [...$kept, ...$enabled];
+
+        if (in_array('$(inherited)', $existing, true)) {
+            $conditions[] = '$(inherited)';
+        }
+
+        $value = '"'.implode(' ', $conditions).'"';
+
+        return preg_replace_callback($pattern, fn ($m) => $m[1].$value.';', $settings, 1);
+    }
+
     protected function addSwiftPackageDependencies(Collection $plugins): void
     {
         $projectPath = $this->iosProjectPath.'/NativePHP.xcodeproj/project.pbxproj';

@@ -12,6 +12,7 @@ use Native\Mobile\Concerns\RunsIos;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\InstalledBinaries;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\PhpVersions;
 use SupaNative\Core\Concerns\ManagesWatchman;
 
 use function Laravel\Prompts\confirm;
@@ -337,6 +338,12 @@ class RunCommand extends Command
         $this->newLine();
     }
 
+    /** The host's PHP minor. A seam for tests, which can't change the PHP they run on. */
+    protected function hostPhpVersion(): string
+    {
+        return PhpVersions::host();
+    }
+
     protected function ensureHostPhpMatchesLock(): bool
     {
         $lockPath = base_path('nativephp.lock');
@@ -352,8 +359,8 @@ class RunCommand extends Command
             return true;
         }
 
-        $lockedMinor = implode('.', array_slice(explode('.', $lockedVersion), 0, 2));
-        $hostMinor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+        $lockedMinor = PhpVersions::minor($lockedVersion);
+        $hostMinor = $this->hostPhpVersion();
 
         if ($lockedMinor === $hostMinor) {
             return true;
@@ -371,14 +378,6 @@ class RunCommand extends Command
             return false;
         }
 
-        $supported = ['8.5', '8.4', '8.3'];
-
-        if (! in_array($hostMinor, $supported, true)) {
-            note("Your host PHP {$hostMinor} is not supported by NativePHP. Switch your host to PHP {$lockedMinor}.x and retry.");
-
-            return false;
-        }
-
         if (! confirm("Re-run `native:install --force` to bundle PHP {$hostMinor} instead?", default: true)) {
             note("Switch your host to PHP {$lockedMinor}.x and retry, or re-install when ready.");
 
@@ -392,6 +391,20 @@ class RunCommand extends Command
 
         if ($exitCode !== 0) {
             error('native:install --force failed. Resolve the install error and retry.');
+
+            return false;
+        }
+
+        // Only the manifest knows which minors the pinned release has, so
+        // the install is what finds out. When it hasn't got the host's, the
+        // install bundles the nearest one, says so, and records that here.
+        $lock = json_decode((string) @file_get_contents($lockPath), true) ?? [];
+        $installed = $lock['php']['version'] ?? null;
+        $installedMinor = is_string($installed) ? PhpVersions::minor($installed) : null;
+
+        if ($installedMinor !== null && $installedMinor !== $hostMinor) {
+            error('PHP binaries release '.PhpBinaries::release()." has no PHP {$hostMinor} build.");
+            note("Switch your host to PHP {$installedMinor}.x and retry.");
 
             return false;
         }

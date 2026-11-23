@@ -343,7 +343,8 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   works); a plain `icon` string is the cross-platform fallback. `AndroidOutlined` cases carry their variant
   automatically.
 - `<native:fab>` floats above the content (give it `@tap` or `url`; `label` makes it an extended fab).
-  `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance.
+  `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance. On iOS,
+  `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
   element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.
 - Never hand-roll top bars or bottom navs out of rows and pressables — that forfeits native back gestures,

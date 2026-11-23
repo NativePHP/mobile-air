@@ -3,6 +3,7 @@ package com.nativephp.mobile.bridge
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import com.nativephp.mobile.bridge.plugins.PluginFeatures
 import com.nativephp.mobile.security.AppKeyStore
 import java.io.File
 import java.io.FileOutputStream
@@ -91,7 +92,6 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_APP = "persisted_data/storage/app"
         private const val DIR_PUBLIC = "persisted_data/storage/app/public"
         private const val DIR_DATABASE = "persisted_data/database/"
-        private const val DIR_PHP_SESSIONS = "php_sessions"
 
         // Version constants
         private const val VERSION_DEBUG = "DEBUG"
@@ -485,6 +485,12 @@ class LaravelEnvironment(private val context: Context) {
     }
 
     private fun applyPendingUpdatesUnlocked(): Boolean {
+        // Only the mobile-ota plugin queues payloads. Without it this path is
+        // switched off, and a stray pending.zip is never run as the app.
+        if (!PluginFeatures.OTA) {
+            return false
+        }
+
         // DEBUG is the native:run payload. Always extract it (extractLaravelBundleUnlocked)
         // and do not apply a leftover pending OTA on top — otherwise developers
         // never see the PHP they just shipped. Versioned builds still apply pending.
@@ -914,15 +920,6 @@ class LaravelEnvironment(private val context: Context) {
             )
 
             Log.d(TAG, "✅ Environment variables configured")
-
-            val phpSessionDir = File(appStorageDir, DIR_PHP_SESSIONS).apply {
-                mkdirs()
-                setReadable(true, true)
-                setWritable(true, true)
-                setExecutable(true, true)
-            }
-            setEnvironmentVariable("SESSION_SAVE_PATH", phpSessionDir.absolutePath)
-            Log.d(TAG, "PHP session path set to: ${phpSessionDir.absolutePath}")
 
             try {
                 // Check if we're in DEBUG mode to force certificate refresh

@@ -982,6 +982,7 @@ class NativeServiceProvider extends PackageServiceProvider
             'top_bar_title' => ChromeElements\TopBarTitle::class,
             'bottom_nav' => ChromeElements\BottomNav::class,
             'bottom_nav_item' => ChromeElements\BottomNavItem::class,
+            'bottom_bar' => ChromeElements\BottomBar::class,
             'fab' => ChromeElements\Fab::class,
 
             // Gesture / interaction

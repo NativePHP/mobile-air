@@ -3,6 +3,7 @@
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\PestExpectations;
+use Native\Mobile\Testing\TestDumpHandler;
 use PHPUnit\Framework\AssertionFailedError;
 use Tests\Fixtures\Edge\ChromeColumnLayout;
 use Tests\Fixtures\Edge\ChromeScreen;
@@ -148,6 +149,16 @@ it('drives dynamic search and stages results', function () {
 
 it('refuses search on screens without onSearchQuery', function () {
     Native::test(CounterScreen::class)->search('anything');
+})->throws(AssertionFailedError::class);
+
+it('drives a search submit, so its navigation can be asserted', function () {
+    Native::test(SearchableScreen::class)
+        ->submitSearch('gamma rays')
+        ->assertNavigatedTo('/search?q=gamma+rays');
+});
+
+it('refuses a search submit on screens without onSearchSubmit', function () {
+    Native::test(CounterScreen::class)->submitSearch('anything');
 })->throws(AssertionFailedError::class);
 
 // ── Platform variants ───────────────────────────────
@@ -323,9 +334,29 @@ it('matches the wire tree snapshot', function () {
 
 // ── dd() capture ────────────────────────────────────
 
+// Locally this can't run under Herd's CLI dump interception or with
+// VAR_DUMPER_FORMAT set: dd() would end the whole test run. CI has neither.
+// The expectation lives in the body because Pest's skip exception is itself
+// an AssertionFailedError, which ->throws() would catch.
 it('turns a component dd() into a readable failure', function () {
-    Native::test(CounterScreen::class)->call('boom');
-})->throws(AssertionFailedError::class, 'kaboom');
+    expect(fn () => Native::test(CounterScreen::class)->call('boom'))
+        ->toThrow(AssertionFailedError::class, 'kaboom');
+})->skip(fn () => ! TestDumpHandler::canCapture(), 'dd() can\'t be caught in this process (Herd\'s CLI dump interception or VAR_DUMPER_FORMAT)');
+
+it('knows dd() can\'t be caught while VAR_DUMPER_FORMAT is set', function () {
+    $original = $_SERVER['VAR_DUMPER_FORMAT'] ?? null;
+    $_SERVER['VAR_DUMPER_FORMAT'] = 'cli';
+
+    try {
+        expect(TestDumpHandler::canCapture())->toBeFalse();
+    } finally {
+        if ($original === null) {
+            unset($_SERVER['VAR_DUMPER_FORMAT']);
+        } else {
+            $_SERVER['VAR_DUMPER_FORMAT'] = $original;
+        }
+    }
+});
 
 // ── Pest expectations ───────────────────────────────
 
@@ -371,4 +402,19 @@ it('refuses to overwrite an existing test without --force', function () {
     expect(file_get_contents($path))->toBe('<?php // existing');
 
     @unlink($path);
+});
+
+it('keeps the folders of a relative name in the test path', function () {
+    $path = base_path('tests/Feature/Settings/ProfileTest.php');
+    @unlink($path);
+
+    $this->artisan('native:make-test', ['name' => 'Settings/Profile'])
+        ->expectsOutputToContain('php artisan native:make Settings/Profile')
+        ->assertExitCode(0);
+
+    expect(file_exists($path))->toBeTrue()
+        ->and(file_get_contents($path))->toContain('use App\NativeComponents\Settings\Profile;');
+
+    @unlink($path);
+    @rmdir(dirname($path));
 });
