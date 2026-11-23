@@ -27,41 +27,20 @@ class Text extends Element
         // Attributes arrive verbatim from the precompiler; Tailwind classes
         // parse to the camelCase keys below, but hand-written attributes use
         // the documented kebab spellings. Accept both, camelCase winning.
-        foreach ([
-            'font-size' => 'fontSize',
-            'font-weight' => 'fontWeight',
-            'font-style' => 'fontStyle',
-            'font-family' => 'fontFamily',
-            'line-through' => 'lineThrough',
-            'text-transform' => 'textTransform',
-            'letter-spacing' => 'letterSpacing',
-            'text-outline' => 'textOutline',
-            'line-height' => 'lineHeight',
-            'line-height-px' => 'lineHeightPx',
-            'text-align' => 'textAlign',
-            'max-lines' => 'maxLines',
-            'min-scale' => 'minScale',
-            'content-transition' => 'contentTransition',
-        ] as $kebab => $camel) {
-            if (isset($attrs[$kebab]) && ! isset($attrs[$camel])) {
-                $attrs[$camel] = $attrs[$kebab];
-            }
-        }
-
         if (isset($attrs['text'])) {
             $this->textProps['text'] = $attrs['text'];
         }
-        if (isset($attrs['fontSize'])) {
-            $this->fontSize((float) $attrs['fontSize']);
+        if (($fontSize = $attrs['fontSize'] ?? $attrs['font-size'] ?? null) !== null) {
+            $this->fontSize((float) $fontSize);
         }
-        if (isset($attrs['fontWeight'])) {
-            $this->fontWeight((int) $attrs['fontWeight']);
+        if (($fontWeight = $attrs['fontWeight'] ?? $attrs['font-weight'] ?? null) !== null) {
+            $this->fontWeight((int) $fontWeight);
         }
-        if (isset($attrs['fontStyle'])) {
-            $this->fontStyle((int) $attrs['fontStyle']);
+        if (($fontStyle = $attrs['fontStyle'] ?? $attrs['font-style'] ?? null) !== null) {
+            $this->fontStyle((int) $fontStyle);
         }
-        if (isset($attrs['fontFamily'])) {
-            $this->textProps['font_family'] = (int) $attrs['fontFamily'];
+        if (($fontFamily = $attrs['fontFamily'] ?? $attrs['font-family'] ?? null) !== null) {
+            $this->textProps['font_family'] = (int) $fontFamily;
         }
         // Custom font by name (e.g. `font="Inter-Bold"`). The token is a font
         // file (minus extension) bundled from the app's resources/fonts/ by the
@@ -72,44 +51,44 @@ class Text extends Element
         if (isset($attrs['underline'])) {
             $this->textProps['underline'] = (int) $attrs['underline'];
         }
-        if (isset($attrs['lineThrough'])) {
-            $this->textProps['line_through'] = (int) $attrs['lineThrough'];
+        if (($lineThrough = $attrs['lineThrough'] ?? $attrs['line-through'] ?? null) !== null) {
+            $this->textProps['line_through'] = (int) $lineThrough;
         }
-        if (isset($attrs['textTransform'])) {
-            $this->textProps['text_transform'] = (int) $attrs['textTransform'];
+        if (($textTransform = $attrs['textTransform'] ?? $attrs['text-transform'] ?? null) !== null) {
+            $this->textProps['text_transform'] = (int) $textTransform;
         }
-        if (isset($attrs['letterSpacing'])) {
-            $this->textProps['letter_spacing'] = (float) $attrs['letterSpacing'];
+        if (($letterSpacing = $attrs['letterSpacing'] ?? $attrs['letter-spacing'] ?? null) !== null) {
+            $this->textProps['letter_spacing'] = (float) $letterSpacing;
         }
         // Outlined text: the glyphs drawn hollow, as an outline this many
         // points wide in the text colour. Inherited by nested runs; 0 turns
         // it off again.
-        if (isset($attrs['textOutline'])) {
-            $this->textProps['text_outline'] = (float) $attrs['textOutline'];
+        if (($textOutline = $attrs['textOutline'] ?? $attrs['text-outline'] ?? null) !== null) {
+            $this->textProps['text_outline'] = (float) $textOutline;
         }
         // Line height (leading). `line_height` is a unitless multiplier of the
         // font size; `line_height_px` is an absolute override. Renderers apply
         // px when present, else multiplier × font size.
-        if (isset($attrs['lineHeight'])) {
-            $this->textProps['line_height'] = (float) $attrs['lineHeight'];
+        if (($lineHeight = $attrs['lineHeight'] ?? $attrs['line-height'] ?? null) !== null) {
+            $this->textProps['line_height'] = (float) $lineHeight;
         }
-        if (isset($attrs['lineHeightPx'])) {
-            $this->textProps['line_height_px'] = (float) $attrs['lineHeightPx'];
+        if (($lineHeightPx = $attrs['lineHeightPx'] ?? $attrs['line-height-px'] ?? null) !== null) {
+            $this->textProps['line_height_px'] = (float) $lineHeightPx;
         }
         if (isset($attrs['color'])) {
             $this->color($attrs['color']);
         }
-        if (isset($attrs['textAlign'])) {
-            $this->textAlign($attrs['textAlign']);
+        if (($textAlign = $attrs['textAlign'] ?? $attrs['text-align'] ?? null) !== null) {
+            $this->textAlign($textAlign);
         }
-        if (isset($attrs['maxLines'])) {
-            $this->maxLines((int) $attrs['maxLines']);
+        if (($maxLines = $attrs['maxLines'] ?? $attrs['max-lines'] ?? null) !== null) {
+            $this->maxLines((int) $maxLines);
         }
-        if (isset($attrs['minScale'])) {
-            $this->minScale((float) $attrs['minScale']);
+        if (($minScale = $attrs['minScale'] ?? $attrs['min-scale'] ?? null) !== null) {
+            $this->minScale((float) $minScale);
         }
-        if (isset($attrs['contentTransition'])) {
-            $this->contentTransition((string) $attrs['contentTransition']);
+        if (($contentTransition = $attrs['contentTransition'] ?? $attrs['content-transition'] ?? null) !== null) {
+            $this->contentTransition((string) $contentTransition);
         }
     }
 

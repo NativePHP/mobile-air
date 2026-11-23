@@ -245,13 +245,17 @@ abstract class Element
         // `dark_*` props for blade elements. Without the same split here,
         // programmatically built elements silently dropped ALL dark-mode
         // styling (light hexes rendered in both modes).
-        $this->mergeDarkProps(NativeElementCollector::buildDarkProps($attrs));
+        if (isset($attrs['dark'])) {
+            $this->mergeDarkProps(NativeElementCollector::buildDarkProps($attrs));
+        }
         // Responsive variants — same JSON prop the collector emits for
         // blade elements, so `->class('md:flex-row')` re-flows too. Built
         // against this class string only: styling set fluently before the
         // call isn't part of the base a breakpoint builds on.
-        foreach (NativeElementCollector::buildVariantProps($attrs, fn () => new static) as $key => $value) {
-            $this->setProp($key, $value);
+        if (isset($attrs['variants'])) {
+            foreach (NativeElementCollector::buildVariantProps($attrs, fn () => new static) as $key => $value) {
+                $this->setProp($key, $value);
+            }
         }
 
         return $this;
@@ -777,14 +781,17 @@ abstract class Element
 
     public function getLayout(): array
     {
-        return array_merge($this->layoutDefaults(), $this->layout);
+        $defaults = $this->layoutDefaults();
+
+        return $defaults === [] ? $this->layout : array_merge($defaults, $this->layout);
     }
 
     public function getStyle(): array
     {
-        return NativeElementCollector::withDefaultBorderColor(
-            array_merge($this->styleDefaults(), $this->style)
-        );
+        $defaults = $this->styleDefaults();
+        $style = $defaults === [] ? $this->style : array_merge($defaults, $this->style);
+
+        return $style === [] ? [] : NativeElementCollector::withDefaultBorderColor($style);
     }
 
     public function getPressCallbackId(CallbackRegistry $registry): int
@@ -813,7 +820,9 @@ abstract class Element
 
     public function getResolvedProps(CallbackRegistry $registry): array
     {
-        $props = array_merge($this->defaults(), $this->resolveProps($registry));
+        $defaults = $this->defaults();
+        $resolved = $this->resolveProps($registry);
+        $props = $defaults === [] ? $resolved : array_merge($defaults, $resolved);
 
         // Generic extras (Tailwind-dispatched glass / etc.) merged after
         // resolveProps so subclass props (`current_uri`, `nav_*`, …) take
@@ -879,8 +888,8 @@ abstract class Element
 
     /**
      * FNV-1a 32-bit hash. Used to derive stable node ids from key-paths.
-     * Inline implementation (no `hash()` / extension call per node) —
-     * `toArray()` calls this per keyed node, which can be thousands.
+     * Uses PHP's built-in `hash('fnv1a32', ...)` C implementation — `toArray()`
+     * calls this per keyed node, which can be thousands per frame.
      *
      * Exposed publicly so the Blade streaming path
      * (`NativeElementCollector`) can derive identical ids from a
@@ -890,14 +899,7 @@ abstract class Element
      */
     public static function fnv1a32(string $s): int
     {
-        $hash = 0x811C9DC5;
-        $len = strlen($s);
-        for ($i = 0; $i < $len; $i++) {
-            $hash ^= ord($s[$i]);
-            // 64-bit PHP keeps the intermediate product as int; mask
-            // back to 32-bit unsigned to match the C-side semantics.
-            $hash = ($hash * 0x01000193) & 0xFFFFFFFF;
-        }
+        $hash = intval(hash('fnv1a32', $s), 16);
 
         // Avoid id=0 — the C/native side treats 0 as "no callback set"
         // for callback ids and may also reserve it for sentinel meanings
