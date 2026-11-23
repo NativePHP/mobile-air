@@ -1998,6 +1998,11 @@ class NativeElementCollector
         if (isset($attrs['glass'])) {
             $element->setProp('glass', (int) $attrs['glass']);
         }
+        // `glass/80`: how opaque the glass itself is drawn (0..1), apart
+        // from the element's content. Only sent when the class had one.
+        if (isset($attrs['glassOpacity'])) {
+            $element->setProp('glass_opacity', (float) $attrs['glassOpacity']);
+        }
         // Text selection opt-in (`select-text` / `select-none`). Generic across
         // element types — set on any node to make its subtree selectable (or
         // exempt one inside a selectable ancestor). Renderers read it via

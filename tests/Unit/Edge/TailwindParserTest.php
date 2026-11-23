@@ -2,6 +2,7 @@
 
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Text;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\TailwindParser;
@@ -1172,4 +1173,43 @@ it('marks authored zero insets with the -0.0 sentinel so bottom-0 can anchor', f
     // Non-zero insets are unaffected, negatives keep their bleed meaning.
     expect(TailwindParser::parse('bottom-2'))->toBe(['positionBottom' => 8]);
     expect(TailwindParser::parse('-right-8'))->toBe(['positionRight' => -32.0]);
+});
+
+// ── Glass opacity ───────────────────────────────────
+
+it('leaves glass without an opacity suffix exactly as it was', function () {
+    expect(TailwindParser::parse('glass'))->toBe(['glass' => 1])
+        ->and(TailwindParser::parse('glass:clear:interactive'))->toBe(['glass' => 13]);
+});
+
+it('reads an opacity suffix at the end of a glass chain', function (string $class, int $flags, float $opacity) {
+    expect(TailwindParser::parse($class))->toEqual(['glass' => $flags, 'glassOpacity' => $opacity]);
+})->with([
+    'plain' => ['glass/80', 1, 0.8],
+    'clear' => ['glass:clear/60', 9, 0.6],
+    'interactive' => ['glass:interactive/50', 5, 0.5],
+    'chained' => ['glass:clear:interactive/25', 13, 0.25],
+    'zero' => ['glass/0', 1, 0.0],
+    'full' => ['glass/100', 1, 1.0],
+]);
+
+it('ignores an opacity suffix on glass that is not a whole percentage', function (string $class) {
+    expect(TailwindParser::parse($class))->toBe(['glass' => 1]);
+})->with(['glass/150', 'glass/abc', 'glass/8.5', 'glass/']);
+
+it('keeps a glass opacity apart from a background colour opacity', function () {
+    expect(TailwindParser::parse('bg-red-500/40 glass/80'))
+        ->toMatchArray(['glass' => 1, 'glassOpacity' => 0.8, 'bg' => '#66EF4444']);
+});
+
+it('sends glass_opacity as its own prop only when the class has one', function () {
+    $registry = new CallbackRegistry;
+
+    $faded = Column::make()->class('rounded-full glass:clear/60')->toArray($registry);
+    $plain = Column::make()->class('rounded-full glass:clear')->toArray($registry);
+
+    expect($faded['props']['glass'])->toBe(9)
+        ->and($faded['props']['glass_opacity'])->toBe(0.6)
+        ->and($plain['props']['glass'])->toBe(9)
+        ->and($plain['props'])->not->toHaveKey('glass_opacity');
 });
