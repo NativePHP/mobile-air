@@ -37,11 +37,17 @@
  *     Native\Mobile\Http\Bridge\RequestBodyParser → SupaNative\Core\Http\Bridge\RequestBodyParser
  *     ... and the rest of `Http\Bridge` but BridgeDispatcher
  *
- * The thermal enum came last. It sits at the root of the
+ * The thermal enum came next. It sits at the root of the
  * namespace, beside no prefix, so it is listed whole,
  * and it is aliased right away, as the file loads:
  *
  *     Native\Mobile\ThermalState → SupaNative\Core\ThermalState
+ *
+ * PhpVersions, which picks the PHP minor an app bundles,
+ * came last. `Support` is a prefix already, so it has
+ * no entry, nor a sweep, as no type ever names it:
+ *
+ *     Native\Mobile\Support\PhpVersions → SupaNative\Core\Support\PhpVersions
  *
  * The marker `Events\Concerns\BroadcastsGlobally` moved to core as well, and
  * is not aliased here. The old name is an interface of this package which
