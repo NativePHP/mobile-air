@@ -270,8 +270,28 @@ class TabBar
      * matching tab wins. This is a superset of the previous
      * exact-match behavior.
      */
-    public function highlight(string $currentUrl): self
+    public function highlight(?string $currentUrl, ?string $tabId = null): self
     {
+        if ($tabId !== null && $tabId !== '') {
+            $matched = null;
+            foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
+                if ($matched === null && $tab->getId() === $tabId) {
+                    $matched = $tab;
+                }
+            }
+            if ($matched !== null) {
+                foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
+                    $tab->setActive($tab === $matched);
+                }
+
+                return $this;
+            }
+        }
+
+        if ($currentUrl === null || $currentUrl === '') {
+            return $this;
+        }
+
         // Respect an explicit choice: when this bar was reconstructed from
         // an inline `<native:bottom-nav>` and the blade already marks a tab
         // `active`, the dev decided — don't second-guess with URL matching.

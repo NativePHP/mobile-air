@@ -681,33 +681,38 @@ abstract class NativeComponent
         }
 
         $tabBar = null;
+        $tabOptions = null;
         if ($inlineBottomNav !== null) {
+            $tabOptions = $this->tabBarOptions();
             $tabBar = TabBar::fromElement($inlineBottomNav);
             $tabBar->defaultFont($layout?->chromeFont());
             // Auto-highlight the tab owning the current URI — unless the
             // blade marked one `active` explicitly (highlight() respects
             // explicit choices on inline items).
             $currentUri = $this->nativeRouter?->currentUri();
-            if ($currentUri !== null) {
-                $tabBar->highlight($currentUri);
+            if ($currentUri !== null || $tabOptions?->highlight !== null) {
+                $tabBar->highlight($currentUri, $tabOptions?->highlight);
             }
         } elseif (! $hasCustomBottomNav && $layout !== null) {
             $tabBar = $layout->tabBar($this);
-            // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
-            // builder), mirroring the NavBar handling above. On the
-            // custom-Column path hiding is identical to the layout
-            // returning null — dropping the bar also hands the bottom
-            // safe-area edge back to the wrapper in buildChromeColumn().
-            // The native-chrome path instead keeps the config and folds a
-            // `hide_tab_bar` prop onto the sentinel, so the TabView
-            // survives for tab switching.
-            if ($tabBar !== null && ! $usesNativeChrome && $this->shouldHideTabBar()) {
-                $tabBar = null;
+            if ($tabBar !== null) {
+                $tabOptions = $this->tabBarOptions();
+                // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
+                // builder), mirroring the NavBar handling above. On the
+                // custom-Column path hiding is identical to the layout
+                // returning null — dropping the bar also hands the bottom
+                // safe-area edge back to the wrapper in buildChromeColumn().
+                // The native-chrome path instead keeps the config and folds a
+                // `hide_tab_bar` prop onto the sentinel, so the TabView
+                // survives for tab switching.
+                if (! $usesNativeChrome && $this->resolveHideTabBar($tabOptions)) {
+                    $tabBar = null;
+                }
             }
             if ($tabBar !== null) {
                 $currentUri = $this->nativeRouter?->currentUri();
-                if ($currentUri !== null) {
-                    $tabBar->highlight($currentUri);
+                if ($currentUri !== null || $tabOptions?->highlight !== null) {
+                    $tabBar->highlight($currentUri, $tabOptions?->highlight);
                 }
                 $tabBar->defaultFont($layout->chromeFont());
             }
@@ -721,7 +726,7 @@ abstract class NativeComponent
                 // native iOS / Android renderers for those types take over
                 // and use NavigationStack / TabView / NavHost / Scaffold to
                 // render chrome system-natively.
-                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
+                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout, $tabOptions);
             } else {
                 $root = $this->buildChromeColumn($content, $navBar, $tabBar);
             }
@@ -987,6 +992,7 @@ abstract class NativeComponent
         ?NavBar $navBar,
         ?TabBar $tabBar,
         ?NativeLayout $layout,
+        ?TabBarOptions $tabOptions = null,
     ): Element {
         if ($tabBar !== null) {
             $root = NativeRootTabs::make();
@@ -1008,11 +1014,15 @@ abstract class NativeComponent
             // than being misread as a pop back to the earlier one.
             $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
 
+            if (func_num_args() < 5) {
+                $tabOptions = $this->tabBarOptions();
+            }
+
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
             // as flat props so the iOS / Android renderers don't need to
             // re-derive visibility from URI matching or `nav_back`.
-            if ($this->shouldHideTabBar()) {
+            if ($this->resolveHideTabBar($tabOptions)) {
                 $attrs['hideTabBar'] = true;
             }
             // Per-screen nav-bar opt-out, same shape as `hideTabBar` — the
@@ -1020,7 +1030,6 @@ abstract class NativeComponent
             if ($navBar !== null && $this->shouldHideNavBar()) {
                 $attrs['hideNavBar'] = true;
             }
-            $tabOptions = $this->tabBarOptions();
             if ($tabOptions !== null) {
                 if ($tabOptions->highlight !== null) {
                     $attrs['tabHighlight'] = $tabOptions->highlight;
@@ -1469,7 +1478,11 @@ abstract class NativeComponent
      */
     public function shouldHideTabBar(): bool
     {
-        $options = $this->tabBarOptions();
+        return $this->resolveHideTabBar($this->tabBarOptions());
+    }
+
+    private function resolveHideTabBar(?TabBarOptions $options): bool
+    {
         if ($options !== null && $options->hidden !== null) {
             return $options->isHidden();
         }

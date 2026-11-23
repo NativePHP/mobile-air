@@ -115,8 +115,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // analogue of iOS's `.safeAreaInset(.bottom)`.
     val bottomBarNode = node.children.firstOrNull { it.type == "bottom_bar" }
 
-    // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).
-    val activeTabIdx = tabs.indexOfFirst { it.props.getBool("active") }.coerceAtLeast(0)
+    // Activeness flows from `tab_highlight` (TabBarOptions::highlight()) or
+    // `BottomNavItem.active` (TabBar::highlight() set it).
+    val tabHighlight = node.props.getString("tab_highlight", "")
+    val highlightedTabIdx = if (tabHighlight.isNotEmpty()) {
+        tabs.indexOfFirst { it.props.getString("id", "") == tabHighlight }.takeIf { it >= 0 }
+    } else null
+    val activeTabIdx = (highlightedTabIdx ?: tabs.indexOfFirst { it.props.getBool("active") }).coerceAtLeast(0)
 
     // Stable per-tab identity for the in-flight-navigation trackers below —
     // FlatBuffer node ids regenerate every publish, so use the PHP-side slug.

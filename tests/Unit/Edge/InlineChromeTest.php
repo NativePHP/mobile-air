@@ -129,6 +129,30 @@ it('auto-highlights prebuilt tab items only when none is explicitly active', fun
     [$home, $settings] = $explicit->tabElements();
     expect($home->isActive())->toBeFalse()
         ->and($settings->isActive())->toBeTrue();
+
+    // Explicit tabId override (from TabBarOptions::highlight()) wins over URL matching
+    // and over an inline active flag on another tab.
+    $forced = $make(false)->highlight('/people', 'settings');
+    [$home, $settings] = $forced->tabElements();
+    expect($home->isActive())->toBeFalse()
+        ->and($settings->isActive())->toBeTrue();
+
+    $forcedOverInline = $make(true)->highlight('/people', 'home');
+    [$home, $settings] = $forcedOverInline->tabElements();
+    expect($home->isActive())->toBeTrue()
+        ->and($settings->isActive())->toBeFalse();
+
+    // Unknown tabId falls back to URL matching when a URL is given, and preserves
+    // existing selection when no URL is given instead of matching '/'.
+    $fallbackUrl = $make(false)->highlight('/settings', 'missing');
+    [$home, $settings] = $fallbackUrl->tabElements();
+    expect($home->isActive())->toBeFalse()
+        ->and($settings->isActive())->toBeTrue();
+
+    $fallbackNoUrl = $make(true)->highlight(null, 'missing');
+    [$home, $settings] = $fallbackNoUrl->tabElements();
+    expect($home->isActive())->toBeFalse()
+        ->and($settings->isActive())->toBeTrue();
 });
 
 it('mixes builder tabs and prebuilt items in highlight and tabElements', function () {
