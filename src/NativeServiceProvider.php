@@ -2,10 +2,12 @@
 
 namespace Native\Mobile;
 
+use Illuminate\Bus\Events\BatchDispatched;
 use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
+use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
@@ -209,6 +211,29 @@ class NativeServiceProvider extends PackageServiceProvider
             ThermalStateChanged::class,
             fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
+
+        $wakeQueueWorker = static function (object $event): void {
+            if (! config('nativephp-internal.running') && ! env('NATIVEPHP_RUNNING')) {
+                return;
+            }
+
+            if (Runtime::queueWorkerMode() === 'disabled') {
+                return;
+            }
+
+            if ($event instanceof BatchDispatched) {
+                $connection = $event->batch->options['connection'] ?? config('queue.default');
+                if (is_string($connection) && config("queue.connections.{$connection}.driver") === 'sync') {
+                    return;
+                }
+            }
+
+            if (function_exists('nativephp_call')) {
+                nativephp_call('Queue.Wake', '{}');
+            }
+        };
+
+        Event::listen([JobQueued::class, BatchDispatched::class], $wakeQueueWorker);
     }
 
     protected function registerCoreFacades(): void

@@ -93,7 +93,9 @@ enum NativeSession {
         PHPQueueWorker.shared.stopAndWait()
         AsyncTaskExecutor.shared.stop()
         let booted = PersistentPHPRuntime.shared.reboot()
-        PHPQueueWorker.shared.start()
+        if booted {
+            PHPQueueWorker.shared.startIfNeeded()
+        }
         AsyncTaskExecutor.shared.start()
 
         NSLog("[NativeSession] Runtime rebooted, booted=\(booted)")

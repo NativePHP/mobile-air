@@ -252,11 +252,17 @@ return [
     |
     | reset_instances:        Clear resolved facade instances between dispatches
     | gc_between_dispatches:  Run gc_collect_cycles() between dispatches
+    | queue_worker:           How the background queue worker runtime starts:
+    |                           - 'lazy' (default): start only when a job is
+    |                             queued or pending rows exist in `jobs`
+    |                           - false / 'disabled': never start the worker
+    |                           - true / 'eager': start eagerly on launch
     |
     */
 
     'runtime' => [
         'mode' => env('NATIVEPHP_RUNTIME_MODE', 'persistent'),
+        'queue_worker' => env('NATIVEPHP_QUEUE_WORKER', 'lazy'),
         'reset_instances' => true,
         'gc_between_dispatches' => false,
     ],

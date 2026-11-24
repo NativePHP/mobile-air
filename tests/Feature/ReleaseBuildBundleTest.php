@@ -173,11 +173,16 @@ class ReleaseBuildBundleTest extends TestCase
 
         $this->assertSame('1.0.0', $meta['version']);
         $this->assertSame(1, $meta['version_code']);
+        $this->assertSame('lazy', $meta['queue_worker_mode']);
     }
 
     public function test_ios_bundle_meta_writes_version_code_as_an_int(): void
     {
-        config(['nativephp.version' => '1.0.0', 'nativephp.version_code' => '1']);
+        config([
+            'nativephp.version' => '1.0.0',
+            'nativephp.version_code' => '1',
+            'nativephp.runtime.queue_worker' => false,
+        ]);
 
         $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
         File::ensureDirectoryExists(dirname($zipPath));
@@ -190,6 +195,7 @@ class ReleaseBuildBundleTest extends TestCase
 
         $this->assertSame('1.0.0b1', trim(File::get(dirname($zipPath).'/bundled.version')));
         $this->assertSame(1, $meta['version_code']);
+        $this->assertSame('disabled', $meta['queue_worker_mode']);
     }
 
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void

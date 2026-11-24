@@ -40,6 +40,8 @@ enum AppLifecycleMonitor {
     }
 
     private static func didEnterBackground() {
+        PHPQueueWorker.shared.pause()
+
         if backgroundedAt == nil {
             backgroundedAt = clock_gettime_nsec_np(CLOCK_MONOTONIC)
         }
@@ -48,6 +50,8 @@ enum AppLifecycleMonitor {
     }
 
     private static func willEnterForeground() {
+        PHPQueueWorker.shared.resume()
+
         guard let since = backgroundedAt else { return }
         backgroundedAt = nil
 

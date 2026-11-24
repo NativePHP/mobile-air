@@ -174,7 +174,7 @@ class HotReloadCoordinator {
                 // Clear compiled Blade views so templates are recompiled from
                 // the updated source files copied by the watcher.
                 _ = PersistentPHPRuntime.shared.artisan(command: "view:clear")
-                PHPQueueWorker.shared.start()
+                PHPQueueWorker.shared.startIfNeeded()
                 AsyncTaskExecutor.shared.start()
             } else {
                 _ = NativePHPApp.shared?.artisan(additionalArgs: ["view:clear"])

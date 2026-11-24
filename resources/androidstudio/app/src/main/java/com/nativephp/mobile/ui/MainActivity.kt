@@ -105,6 +105,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     // start one, and two workers in one process segfault.
     private val queueWorkerLock = Any()
     private var rebootingRuntime = false
+    @Volatile private var queueWorkerMode: String = "lazy"
+    @Volatile private var isActivityPaused: Boolean = false
+    private val queueWakeHandler: () -> Boolean = { ensureQueueWorkerStarted() }
 
     private var asyncExecutor: com.nativephp.mobile.bridge.AsyncTaskExecutor? = null
     @Volatile private var nativeUIThread: Thread? = null
@@ -317,20 +320,45 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                     }
                 }
 
-                // Defer the background queue worker — it boots a SECOND full Laravel
-                // runtime that would contend for CPU during first paint. Start it a
-                // couple of seconds after the UI is up. Guarded against a fast destroy,
-                // against double-starting if the activity was re-created, and against
-                // a runtime reboot in flight, which starts its own worker when done.
-                Handler(Looper.getMainLooper()).postDelayed({
-                    synchronized(queueWorkerLock) {
-                        if (!isFinishing && !isDestroyed && !rebootingRuntime &&
-                            phpBridge.isPersistentMode() && queueWorker == null) {
-                            Log.d("MainActivity", "▶️ Starting deferred background queue worker")
-                            queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                // Background queue worker: boots a second full Laravel runtime.
+                // Respects `queue_worker_mode` from bundle_meta.json:
+                //   - "disabled": never start
+                //   - "lazy" (default): start only if `jobs` already has rows, or
+                //     on demand when PHP fires `Queue.Wake` on JobQueued
+                //   - "eager": start unconditionally after WORKER_START_DELAY_MS
+                if (queueWorkerMode != "disabled" && phpBridge.isPersistentMode()) {
+                    PHPQueueWorker.setWakeHandler(queueWakeHandler)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (!isFinishing && !isDestroyed) {
+                            if (queueWorkerMode == "eager") {
+                                synchronized(queueWorkerLock) {
+                                    if (!isFinishing && !isDestroyed && !rebootingRuntime &&
+                                        phpBridge.isPersistentMode() && queueWorker == null) {
+                                        Log.d("MainActivity", "▶️ Starting deferred background queue worker (mode=$queueWorkerMode)")
+                                        queueWorker = PHPQueueWorker(phpBridge).also { it.start(startPaused = isActivityPaused) }
+                                    }
+                                }
+                            } else {
+                                val alreadyHandled = synchronized(queueWorkerLock) {
+                                    queueWorker != null || rebootingRuntime
+                                }
+                                if (!alreadyHandled) {
+                                    Thread({
+                                        if (LaravelEnvironment.hasPendingQueueJobs(this)) {
+                                            synchronized(queueWorkerLock) {
+                                                if (!isFinishing && !isDestroyed && !rebootingRuntime &&
+                                                    phpBridge.isPersistentMode() && queueWorker == null) {
+                                                    Log.d("MainActivity", "▶️ Starting deferred background queue worker (pending jobs found)")
+                                                    queueWorker = PHPQueueWorker(phpBridge).also { it.start(startPaused = isActivityPaused) }
+                                                }
+                                            }
+                                        }
+                                    }, "php-queue-probe").start()
+                                }
+                            }
                         }
-                    }
-                }, WORKER_START_DELAY_MS)
+                    }, WORKER_START_DELAY_MS)
+                }
 
                 // Start hot reload watcher AFTER Laravel environment is initialized
                 startHotReloadWatcher()
@@ -454,11 +482,38 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         phpBridge.shutdownPersistentRuntime()
         phpBridge.bootPersistentRuntime()
 
+        val shouldStartWorker = shouldStartQueueWorkerEagerly()
         synchronized(queueWorkerLock) {
-            queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+            if (shouldStartWorker) {
+                queueWorker = PHPQueueWorker(phpBridge).also { it.start(startPaused = isActivityPaused) }
+            }
             rebootingRuntime = false
         }
         asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+    }
+
+    private fun shouldStartQueueWorkerEagerly(): Boolean = when (queueWorkerMode) {
+        "disabled" -> false
+        "eager" -> true
+        else -> LaravelEnvironment.hasPendingQueueJobs(this)
+    }
+
+    private fun ensureQueueWorkerStarted(): Boolean {
+        synchronized(queueWorkerLock) {
+            if (queueWorkerMode == "disabled" || isFinishing || isDestroyed || rebootingRuntime || !phpBridge.isPersistentMode()) {
+                return false
+            }
+
+            val existing = queueWorker
+            if (existing != null) {
+                existing.wake()
+                return true
+            }
+
+            Log.d("MainActivity", "▶️ Starting queue worker on demand")
+            queueWorker = PHPQueueWorker(phpBridge).also { it.start(startPaused = isActivityPaused) }
+            return true
+        }
     }
 
     private fun handleNativeSessionExit(rawResponse: String) {
@@ -690,9 +745,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
             Log.d("LaravelInit", "Laravel environment ready")
 
-            // Check runtime mode from bundle_meta.json
+            // Check runtime mode and queue worker policy from bundle_meta.json
             val runtimeMode = LaravelEnvironment.getRuntimeMode(this)
-            Log.d("LaravelInit", "Runtime mode: $runtimeMode")
+            queueWorkerMode = LaravelEnvironment.getQueueWorkerMode(this)
+            Log.d("LaravelInit", "Runtime mode: $runtimeMode, queue worker mode: $queueWorkerMode")
 
             if (runtimeMode == "classic") {
                 Log.d("LaravelInit", "Classic mode configured — skipping persistent runtime boot")
@@ -743,6 +799,8 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
     override fun onResume() {
         super.onResume()
+        isActivityPaused = false
+        synchronized(queueWorkerLock) { queueWorker?.resume() }
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_RESUME)
         registerShakeDetector()
         // Appearance gets a config-change nudge when the theme flipped while
@@ -753,6 +811,8 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
     override fun onPause() {
         super.onPause()
+        isActivityPaused = true
+        synchronized(queueWorkerLock) { queueWorker?.pause() }
         NativePHPLifecycle.post(NativePHPLifecycle.Events.ON_PAUSE)
         sensorManager?.unregisterListener(shakeDetector)
     }
@@ -970,7 +1030,9 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         NativeUIBridge.stopWatching()
 
         // Stop background queue worker
-        queueWorker?.stop()
+        PHPQueueWorker.clearWakeHandler(queueWakeHandler)
+        val workerToStop = synchronized(queueWorkerLock) { queueWorker.also { queueWorker = null } }
+        workerToStop?.stop()
 
         // Stop async task lane
         asyncExecutor?.stop()

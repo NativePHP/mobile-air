@@ -19,6 +19,7 @@ use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginHookRunner;
 use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Plugins\PluginSecretsValidator;
+use Native\Mobile\Runtime;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleFileManager;
@@ -1069,6 +1070,7 @@ class BuildIosAppCommand extends Command
             'version_code' => (int) $versionCode,
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+            'queue_worker_mode' => Runtime::queueWorkerMode(),
             'entry_mode' => $entryMode,
             'native_routes' => $nativeRoutes,
             // What this shell ships with, so a lane cannot offer it a release

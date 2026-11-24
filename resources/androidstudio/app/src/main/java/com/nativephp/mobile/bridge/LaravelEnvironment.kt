@@ -137,6 +137,55 @@ class LaravelEnvironment(private val context: Context) {
         }
 
         /**
+         * Read queue_worker_mode from bundle_meta.json ("lazy", "eager", or "disabled").
+         * Defaults to "lazy" so apps that never queue jobs do not boot a second
+         * Laravel runtime at launch.
+         */
+        fun getQueueWorkerMode(context: Context): String {
+            return try {
+                val json = context.assets.open(BUNDLE_META).bufferedReader().use { it.readText() }
+                val obj = JSONObject(json)
+                if (obj.has("queue_worker_mode") && !obj.isNull("queue_worker_mode")) {
+                    when (obj.getString("queue_worker_mode").trim().lowercase()) {
+                        "disabled", "false", "0", "off", "no", "none" -> "disabled"
+                        "eager", "true", "1", "on", "yes", "always" -> "eager"
+                        else -> "lazy"
+                    }
+                } else {
+                    "lazy"
+                }
+            } catch (e: Exception) {
+                "lazy"
+            }
+        }
+
+        /**
+         * Read-only probe against database.sqlite to check whether any rows are
+         * already queued in the default `jobs` table (e.g. persisted from a prior
+         * app run) without booting the worker PHP runtime.
+         */
+        fun hasPendingQueueJobs(context: Context): Boolean {
+            val dbFile = File(context.getDir("storage", Context.MODE_PRIVATE), "${DIR_DATABASE}database.sqlite")
+            if (!dbFile.exists() || dbFile.length() == 0L) {
+                return false
+            }
+
+            return try {
+                android.database.sqlite.SQLiteDatabase.openDatabase(
+                    dbFile.absolutePath,
+                    null,
+                    android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+                ).use { db ->
+                    db.rawQuery("SELECT 1 FROM jobs LIMIT 1", null).use { cursor ->
+                        cursor.moveToFirst()
+                    }
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        /**
          * Read NATIVEPHP_START_URL from the extracted .env file
          */
         fun getStartURL(context: Context): String {

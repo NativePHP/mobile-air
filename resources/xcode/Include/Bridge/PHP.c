@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <sqlite3.h>
 #include <time.h>
 #include <zend_exceptions.h>
 
@@ -1125,6 +1126,37 @@ void worker_php_shutdown(void) {
 
 int worker_php_is_booted(void) {
     return worker_initialized;
+}
+
+// Read-only probe against database.sqlite to check whether the default `jobs`
+// table already holds pending rows (e.g. persisted from a previous run),
+// without booting the worker PHP runtime.
+int worker_php_has_pending_jobs(const char *db_path) {
+    if (db_path == NULL || db_path[0] == '\0') {
+        return 0;
+    }
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db != NULL) {
+            sqlite3_close(db);
+        }
+        return 0;
+    }
+
+    sqlite3_busy_timeout(db, 200);
+
+    sqlite3_stmt *stmt = NULL;
+    int has_jobs = 0;
+    if (sqlite3_prepare_v2(db, "SELECT 1 FROM jobs LIMIT 1", -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            has_jobs = 1;
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    sqlite3_close(db);
+    return has_jobs;
 }
 
 // ============================================================================

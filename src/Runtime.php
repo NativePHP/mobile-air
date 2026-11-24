@@ -227,6 +227,38 @@ class Runtime
     }
 
     /**
+     * Resolved queue-worker boot policy: 'lazy', 'eager', or 'disabled'.
+     */
+    public static function queueWorkerMode(): string
+    {
+        return static::normalizeQueueWorkerMode(config('nativephp.runtime.queue_worker', 'lazy'));
+    }
+
+    /**
+     * Normalize a config or env value into one of 'lazy', 'eager', or 'disabled'.
+     */
+    public static function normalizeQueueWorkerMode(mixed $value): string
+    {
+        if (is_bool($value)) {
+            return $value ? 'eager' : 'disabled';
+        }
+
+        if (is_int($value)) {
+            return $value === 0 ? 'disabled' : 'eager';
+        }
+
+        if (is_string($value)) {
+            return match (strtolower(trim($value))) {
+                'false', '0', 'off', 'no', 'disabled', 'none' => 'disabled',
+                'true', '1', 'on', 'yes', 'eager', 'always' => 'eager',
+                default => 'lazy',
+            };
+        }
+
+        return 'lazy';
+    }
+
+    /**
      * Whether an error's message and trace may go in front of whoever is
      * looking: only when the app is in debug, as on the EDGE error screen.
      *

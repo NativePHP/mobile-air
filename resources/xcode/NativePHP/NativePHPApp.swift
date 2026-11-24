@@ -156,8 +156,8 @@ struct NativePHPApp: App {
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render
         if booted {
-            NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
-            PHPQueueWorker.shared.start()
+            NSLog("[NativePHP] PHPQueueWorker.startIfNeeded() (deferred)")
+            PHPQueueWorker.shared.startIfNeeded()
 
             // Async task lane (AsyncTask::dispatch()) — pool boots on a
             // background thread, so this returns immediately.
@@ -345,6 +345,27 @@ struct NativePHPApp: App {
             return "persistent"
         }
         return mode
+    }
+
+    /// Read queue_worker_mode from bundle_meta.json ("lazy", "eager", or "disabled").
+    /// Defaults to "lazy" so apps that never queue jobs do not boot a second
+    /// Laravel runtime at launch.
+    static func getQueueWorkerMode() -> String {
+        guard let path = Bundle.main.path(forResource: "bundle_meta", ofType: "json"),
+              let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["queue_worker_mode"] as? String else {
+            return "lazy"
+        }
+
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "disabled", "false", "0", "off", "no", "none":
+            return "disabled"
+        case "eager", "true", "1", "on", "yes", "always":
+            return "eager"
+        default:
+            return "lazy"
+        }
     }
 
     /// Read the NATIVEPHP_START_URL from the .env file

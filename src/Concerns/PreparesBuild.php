@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Icon\Svg\SvgConversionException;
+use Native\Mobile\Runtime;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleExclusions;
@@ -445,6 +446,7 @@ trait PreparesBuild
                 'version_code' => (int) $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+                'queue_worker_mode' => Runtime::queueWorkerMode(),
                 'entry_mode' => $entryMode,
                 'native_routes' => $nativeRoutes,
                 // What this shell ships with, so a lane cannot offer it a release
