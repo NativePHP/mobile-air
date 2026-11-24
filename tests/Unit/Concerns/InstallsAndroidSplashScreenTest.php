@@ -221,6 +221,74 @@ class InstallsAndroidSplashScreenTest extends TestCase
         }
     }
 
+    public function test_copies_animated_webp_splash_unscaled_to_nodpi()
+    {
+        $this->createAnimatedWebp($this->publicPath.'/splash.webp');
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileEquals($this->publicPath.'/splash.webp', $this->androidResPath.'/drawable-nodpi/splash.webp');
+        foreach (['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi'] as $density) {
+            $this->assertFileDoesNotExist($this->androidResPath."/drawable-{$density}/splash.png");
+            $this->assertFileDoesNotExist($this->androidResPath."/drawable-{$density}/splash.webp");
+        }
+    }
+
+    public function test_copies_animated_dark_splash_to_night_nodpi()
+    {
+        $this->createAnimatedWebp($this->publicPath.'/splash-dark.webp');
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileEquals($this->publicPath.'/splash-dark.webp', $this->androidResPath.'/drawable-night-nodpi/splash.webp');
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-nodpi/splash.webp');
+    }
+
+    public function test_animated_splash_removes_scaled_copies_from_an_earlier_build()
+    {
+        $this->createTestSplashImage();
+        $this->installAndroidSplashScreen();
+        File::delete($this->publicPath.'/splash.png');
+        $this->createAnimatedWebp($this->publicPath.'/splash.webp');
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileExists($this->androidResPath.'/drawable-nodpi/splash.webp');
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-xxhdpi/splash.png');
+    }
+
+    public function test_still_splash_removes_animated_copy_from_an_earlier_build()
+    {
+        $this->createAnimatedWebp($this->androidResPath.'/drawable-nodpi/splash.webp');
+        $this->createTestSplashImage();
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileExists($this->androidResPath.'/drawable-xxhdpi/splash.png');
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-nodpi/splash.webp');
+    }
+
+    public function test_skips_animated_splash_smaller_than_the_minimum()
+    {
+        $this->createAnimatedWebp($this->publicPath.'/splash.webp', 160, 240);
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-nodpi/splash.webp');
+    }
+
+    /**
+     * Only the VP8X header is read on the PHP side, so the file needs no frames.
+     */
+    protected function createAnimatedWebp(string $path, int $width = 640, int $height = 960): void
+    {
+        $vp8x = "\x02\0\0\0".substr(pack('V', $width - 1), 0, 3).substr(pack('V', $height - 1), 0, 3);
+        $chunks = 'VP8X'.pack('V', strlen($vp8x)).$vp8x.'ANIM'.pack('V', 6)."\0\0\0\0\0\0";
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, 'RIFF'.pack('V', 4 + strlen($chunks)).'WEBP'.$chunks);
+    }
+
     /**
      * Helper method to create a test splash image
      */
