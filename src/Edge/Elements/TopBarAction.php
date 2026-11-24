@@ -41,7 +41,7 @@ class TopBarAction extends Element
             $attrs['show_label'] = $attrs['show-label'];
         }
 
-        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image', 'subtitle'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }
