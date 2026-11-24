@@ -600,6 +600,7 @@ struct NativePHPApp: App {
         // package's migrations in both runtime modes.
         setenv("NATIVEPHP_RUNNING", "true", 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
+        setenv("NATIVEPHP_OS_VERSION", NativeOSVersion.string, 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("LARAVEL_STORAGE_PATH", storageDir, 1)
         setenv("VIEW_COMPILED_PATH", viewCacheDir, 1)

@@ -79,6 +79,10 @@ class NativeRootTabs extends Element
         if (isset($attrs['minimizeOnScroll'])) {
             $this->props['minimize_on_scroll'] = (bool) $attrs['minimizeOnScroll'];
         }
+        $edgeBlur = BottomBar::edgeBlurStyle($attrs['edgeBlur'] ?? null);
+        if ($edgeBlur !== null) {
+            $this->props['edge_blur'] = $edgeBlur;
+        }
         if (isset($attrs['tabPresentationId'])) {
             $this->props['tab_presentation_id'] = $attrs['tabPresentationId'];
         }

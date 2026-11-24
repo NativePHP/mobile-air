@@ -516,7 +516,10 @@ struct StackRootEdgeSwipeBack: UIViewRepresentable {
 /// renderer's `BottomBarInsetModifier`: iOS 26 uses `.safeAreaBar`
 /// (first-class floating glass bar primitive), pre-26 falls back to
 /// `.safeAreaInset(.bottom)`. A `bottom_bar` carrying `glass` gets soft
-/// glass behind the whole bar (see `BottomBarSoftGlass`).
+/// glass behind the whole bar (see `BottomBarSoftGlass`), except on iOS 26+
+/// when it also asks for the scroll edge effect (`edge-blur="soft"` or
+/// `"hard"`), which takes the glass's place there (see
+/// `bottomBarScrollEdgeStyle`).
 private struct StackBottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -537,10 +540,19 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // `LiquidGlassAvailability.swift`.
             let glass = bottomBar.props.getInt("glass", default: 0)
             let glassOpacity = CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
+            let edgeBlur = bottomBar.props.getString("edge_blur", default: "")
             #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
-                content.safeAreaBar(edge: .bottom) {
-                    barContent(inner, glass: glass, glassOpacity: glassOpacity)
+                if !edgeBlur.isEmpty {
+                    content
+                        .safeAreaBar(edge: .bottom) {
+                            barContent(inner, glass: 0, glassOpacity: glassOpacity)
+                        }
+                        .bottomBarScrollEdgeStyle(edgeBlur)
+                } else {
+                    content.safeAreaBar(edge: .bottom) {
+                        barContent(inner, glass: glass, glassOpacity: glassOpacity)
+                    }
                 }
             } else {
                 fallback(content, inner, glass: glass, glassOpacity: glassOpacity)

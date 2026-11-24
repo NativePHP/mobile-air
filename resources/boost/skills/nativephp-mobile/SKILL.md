@@ -369,6 +369,14 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance. On iOS,
   `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge. `glass/80` caps that glass
   at 80% so more of the screen shows through.
+  `edge-blur="soft"` (or `"hard"`) on it asks iOS 26+ for the system scroll edge effect under the bar, a
+  progressive blur (or opaque fade) of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
+  `System::osVersion()` tells a screen which it got.
+- On iOS 26+ the tab bar blurs what scrolls under it at each tab's root, lists inside a pager included. The default,
+  `soft`, is a gradual progressive blur from just above the bar to the bottom of the screen, like the soft edge under
+  a composer but stronger, with content still recognisable behind the glass (it replaces the system's own soft edge). A root level with its own bottom
+  bar keeps the system effect. `<native:bottom-nav edge-blur="hard">` (or `TabBar::make()->edgeBlur('hard')`) swaps
+  it for the system's opaque fade, and `none` turns it off.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
   element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.
 - Never hand-roll top bars or bottom navs out of rows and pressables — that forfeits native back gestures,

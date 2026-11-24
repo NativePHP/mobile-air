@@ -1213,3 +1213,7 @@ it('sends glass_opacity as its own prop only when the class has one', function (
         ->and($plain['props']['glass'])->toBe(9)
         ->and($plain['props'])->not->toHaveKey('glass_opacity');
 });
+
+it('has no scroll edge effect classes, edge-blur is an attribute', function () {
+    expect(TailwindParser::parse('scroll-edge-soft scroll-edge-hard'))->toBe([]);
+});
