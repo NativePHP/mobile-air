@@ -385,6 +385,7 @@ class NativeElementCollector
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
+                + static::buildLayoutAnimationProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -485,6 +486,7 @@ class NativeElementCollector
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
+                + static::buildLayoutAnimationProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -824,6 +826,32 @@ class NativeElementCollector
         }
 
         return $props;
+    }
+
+    /**
+     * `animate-layout`: animate a container's children between frames (keyed
+     * children slide to their new place, new ones fade in, removed ones fade
+     * out). Bare `animate-layout` is true; `false` / `"false"` / `"0"` leave
+     * the prop off, so the wire is unchanged unless a container opts in.
+     */
+    public static function buildLayoutAnimationProps(array $attrs): array
+    {
+        $value = $attrs['animate-layout'] ?? $attrs['animateLayout'] ?? null;
+
+        return $value !== null && static::truthy($value) ? ['animate_layout' => true] : [];
+    }
+
+    /**
+     * A boolean attribute's value. A bare attribute compiles to `true`; the
+     * strings "false", "0", "no" and "off" are false.
+     */
+    protected static function truthy(mixed $value): bool
+    {
+        if (is_string($value)) {
+            return $value === '' || filter_var($value, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        return (bool) $value;
     }
 
     /**
@@ -2016,6 +2044,11 @@ class NativeElementCollector
         if (isset($attrs['scroll-anchor'])) {
             $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
         }
+        // Layout animation between frames. Generic, so it works on column,
+        // row, stack, scroll-view and plugin containers such as list alike.
+        foreach (static::buildLayoutAnimationProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
         // Shared-element motion controls. The element's IDENTITY is its
         // `ref` (applied generically in applyCallbacks → Element::ref), so
         // these only shape HOW a matched pair travels.
@@ -2155,6 +2188,20 @@ class NativeElementCollector
             // ScrollView::autoScrollTo() so both authoring styles behave alike.
             if (isset($attrs['autoScrollTo']) || isset($attrs['auto-scroll-to'])) {
                 $element->autoScrollTo((int) ($attrs['autoScrollTo'] ?? $attrs['auto-scroll-to']));
+            }
+
+            // `auto-scroll-animated`: animate every move, the first included
+            // (a request the scroll view opens with still jumps).
+            $animated = $attrs['auto-scroll-animated'] ?? $attrs['autoScrollAnimated'] ?? null;
+            if ($animated !== null) {
+                $element->autoScrollAnimated(static::truthy($animated));
+            }
+
+            // `:auto-scroll-token="$n"`: a new token re-requests the same
+            // child, which repeating `auto-scroll-to` alone can't do.
+            $token = $attrs['auto-scroll-token'] ?? $attrs['autoScrollToken'] ?? null;
+            if (is_string($token) || is_int($token)) {
+                $element->autoScrollToken($token);
             }
         }
 

@@ -243,6 +243,29 @@ bottom-nav, fab, bottom-bar, side-nav — see Native Chrome below), lists (list,
 overlays (modal, bottom-sheet), and drawing (canvas, shapes). Fetch the component's doc page before using it —
 required props are validated at render time.
 
+### Animating layout changes
+
+Add `animate-layout` to a container (column, row, scroll-view, list) to animate what changes inside it from
+one frame to the next. Children that are in both frames slide to their new place and size, new ones fade in
+and removed ones fade out. Children are matched by id, so key them with `native:key` (a stable domain id,
+not the loop index) and keep the container's own key the same, or every row reads as new. A frame that only
+changes text or styling isn't animated. It's off by default and follows Reduce Motion on iOS and the
+animator duration scale on Android. In PHP: `->animateLayout()`.
+
+```blade
+<native:scroll-view animate-layout :auto-scroll-to="$focusIndex" :auto-scroll-token="$focusRequest" auto-scroll-animated>
+    @foreach ($rows as $row)
+        <native:column native:key="row-{{ $row->id }}">...</native:column>
+    @endforeach
+</native:scroll-view>
+```
+
+`:auto-scroll-to` brings a direct child into view. The first move jumps and later ones animate, unless you
+add `auto-scroll-animated`, which animates every move except the one the scroll view opens with. The scroll
+view only moves when the request changes, so asking for the same index again does nothing. Bump
+`:auto-scroll-token` (any string or number) to ask again; don't remount the scroll view with a new key.
+On Android, removed children of a plain column or row disappear without fading; in a scroll view they fade.
+
 ## Custom Fonts
 
 Drop `.ttf`/`.otf`/`.ttc` files into `resources/fonts/` — the build bundles them into the native project
