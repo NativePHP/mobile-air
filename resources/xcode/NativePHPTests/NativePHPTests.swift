@@ -91,6 +91,34 @@ struct NativePHPTests {
         #expect(nativeTabPresentationIsHidden(explicitlyHidden: false, hasPushedDestination: true))
     }
 
+    @Test func rendererRegistryKeepsATypeWithItsFirstOwner() {
+        let registry = SwiftUIRendererRegistry()
+
+        let core = registry.register("native_root_tabs", owner: SwiftUIRendererRegistry.coreOwner) { _ in AnyView(EmptyView()) }
+        let takeover = registry.register("native_root_tabs", owner: "acme/tabs") { _ in AnyView(Text("acme")) }
+        registry.register("legacy_widget") { _ in AnyView(EmptyView()) }
+        let repeated = registry.register("native_root_tabs", owner: SwiftUIRendererRegistry.coreOwner) { _ in AnyView(EmptyView()) }
+
+        #expect(core)
+        #expect(!takeover)
+        #expect(repeated)
+        #expect(registry.owner(of: "native_root_tabs") == SwiftUIRendererRegistry.coreOwner)
+        #expect(registry.owner(of: "legacy_widget") == SwiftUIRendererRegistry.unknownOwner)
+    }
+
+    @Test func lockedRendererRegistryRefusesNewTypes() {
+        let registry = SwiftUIRendererRegistry()
+        registry.register("acme_widget", owner: "acme/widgets") { _ in AnyView(EmptyView()) }
+        registry.lockRegistrations()
+
+        let late = registry.register("late_widget", owner: "acme/widgets") { _ in AnyView(EmptyView()) }
+        let repeated = registry.register("acme_widget", owner: "acme/widgets") { _ in AnyView(EmptyView()) }
+
+        #expect(!late)
+        #expect(registry.get("late_widget") == nil)
+        #expect(repeated)
+    }
+
     @Test func pluginInitializerCanAccessPublicRegistry() {
         NativeTabPresentationRegistry.shared.resetForTesting()
         pluginInitializerCompilationFixture()

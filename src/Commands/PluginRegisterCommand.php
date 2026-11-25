@@ -274,7 +274,8 @@ class PluginRegisterCommand extends Command
     }
 
     /**
-     * Detect conflicts between the new plugin and existing registered plugins.
+     * Detect conflicts between the new plugin and existing registered plugins,
+     * or core.
      *
      * @return array<string> Conflict messages
      */
@@ -298,6 +299,24 @@ class PluginRegisterCommand extends Command
             if (in_array($func['name'], $existingNames, true)) {
                 $conflicts[] = "Bridge function '{$func['name']}' is already registered by another plugin";
             }
+        }
+
+        // Check component type collision, with other plugins and with core
+        $existingComponents = [];
+        foreach ($existingPlugins as $existing) {
+            foreach ($existing->getComponents() as $component) {
+                $existingComponents[$component['type']] ??= $existing->name;
+            }
+        }
+
+        foreach ($newPlugin->getComponents() as $component) {
+            if (isset($existingComponents[$component['type']])) {
+                $conflicts[] = "Component '{$component['type']}' is already declared by '{$existingComponents[$component['type']]}'";
+            }
+        }
+
+        foreach (PluginRegistry::coreConflictsFor($newPlugin) as $conflict) {
+            $conflicts[] = "Component '{$conflict['value']}' is rendered by NativePHP core and can't be provided by a plugin";
         }
 
         return $conflicts;

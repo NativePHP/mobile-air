@@ -310,6 +310,12 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerChildComponents();
         $this->registerCoreElements();
         $this->registerUiPluginComponents();
+
+        // Once the app has booted, core, every plugin manifest and every
+        // service provider's boot() have had their turn. From then on a new
+        // element type is refused rather than quietly added.
+        $this->app->booted(fn () => ElementRegistry::lock());
+
         $this->registerFilesystems();
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
@@ -849,7 +855,9 @@ class NativeServiceProvider extends PackageServiceProvider
      * Register UI components from installed nativephp-ui-plugin packages.
      *
      * For each component declared in a UI plugin's manifest:
-     * - Registers the Element class in ElementRegistry (for NativeElementCollector resolution)
+     * - Registers the Element class in ElementRegistry under the plugin's name
+     *   (for NativeElementCollector resolution). Throws when the type already
+     *   belongs to core or another plugin with a different class.
      * - Registers the Blade component (for <native:vendor-component> tag support)
      */
     protected function registerUiPluginComponents(): void
@@ -862,13 +870,20 @@ class NativeServiceProvider extends PackageServiceProvider
 
         foreach ($registry->components() as $component) {
             $type = $component['type'];
-            $elementClass = $component['element'];
+            $elementClass = ltrim($component['element'], '\\');
             $bladeClass = $component['blade'];
 
-            // Register in ElementRegistry so NativeElementCollector's default case resolves it
-            // Skip types already registered as core elements
-            if (class_exists($elementClass) && ! ElementRegistry::has($type)) {
-                ElementRegistry::register($type, $elementClass);
+            // Register in ElementRegistry so NativeElementCollector's default
+            // case resolves it, under the plugin's name. A UI plugin may pair
+            // its native renderer with one of core's own Element classes
+            // (mobile-ui does this for `text`, `column`, `top_bar`, ...).
+            // That takes nothing over, so there is nothing to register. Any
+            // other claim on a type that is already held throws.
+            $sharesCoreElement = ElementRegistry::owner($type) === ElementRegistry::CORE
+                && ElementRegistry::get($type) === $elementClass;
+
+            if (class_exists($elementClass) && ! $sharesCoreElement) {
+                ElementRegistry::register($type, $elementClass, $component['plugin'] ?? ElementRegistry::UNKNOWN);
             }
 
             if (isset($component['element_events']) && is_array($component['element_events'])) {
@@ -905,9 +920,9 @@ class NativeServiceProvider extends PackageServiceProvider
             // Input (core primitive only)
             'pressable' => Elements\Pressable::class,
             // `button`, `text_input`, `toggle`, `activity_indicator`, `bottom_sheet`
-            // are registered by UI plugins (see nativephp/native-ui). Plugin
-            // discovery can't override an existing registration, so these must
-            // NOT be registered here.
+            // are registered by UI plugins (see nativephp/mobile-ui). A plugin
+            // can't take over a type core already registered (it throws), so
+            // these must NOT be registered here.
 
             // Navigation chrome
             'top_bar' => Elements\TopBar::class,
@@ -934,7 +949,7 @@ class NativeServiceProvider extends PackageServiceProvider
         ];
 
         foreach ($elements as $type => $class) {
-            ElementRegistry::register($type, $class);
+            ElementRegistry::register($type, $class, ElementRegistry::CORE);
         }
     }
 

@@ -10,7 +10,7 @@ use Tests\Fixtures\Edge\SignupScreen;
 
 beforeEach(function () {
     app('view')->addLocation(__DIR__.'/../../Fixtures/views');
-    ElementRegistry::register('error_probe', ErrorProbeElement::class);
+    ElementRegistry::swap('error_probe', ErrorProbeElement::class);
 });
 
 /** @return array<int, string|null> error prop of each probe, in tree order */
