@@ -7,7 +7,7 @@ use Illuminate\Contracts\Routing\UrlRoutable as ImplicitlyBindable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Str;
-use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Edge\Exceptions\ComponentMethodNotFoundException;
 use Native\Mobile\Edge\Exceptions\DirectlyCallingLifecycleHooksNotAllowedException;
 use Native\Mobile\Edge\Exceptions\RemoteActionNotAllowedException;
@@ -76,7 +76,7 @@ class ComponentMethodInvoker extends BoundMethod
     /**
      * Throw unless something outside the app, for example a server, may run
      * this method with these arguments: everything assertCallable() asks,
-     * plus a `#[NativeAction]` attribute on the method, and parameters that
+     * plus a `#[ClientAction]` attribute on the method, and parameters that
      * take the arguments as they are.
      *
      * The arguments are plain values passed positionally, with no
@@ -91,8 +91,8 @@ class ComponentMethodInvoker extends BoundMethod
 
         $reflection = new ReflectionMethod($component, $method);
 
-        if ($reflection->getAttributes(NativeAction::class) === []) {
-            throw new RemoteActionNotAllowedException($component, $method, 'it is not marked #[NativeAction]');
+        if ($reflection->getAttributes(ClientAction::class) === []) {
+            throw new RemoteActionNotAllowedException($component, $method, 'it is not marked #[ClientAction]');
         }
 
         $args = array_values($args);

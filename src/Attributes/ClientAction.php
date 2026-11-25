@@ -8,7 +8,7 @@ use Attribute;
  * Marks a method as one that something outside the app, for example a
  * server, may ask the component to run.
  *
- *     #[NativeAction]
+ *     #[ClientAction]
  *     public function refresh(): void
  *     {
  *         // ...
@@ -25,4 +25,4 @@ use Attribute;
  * ComponentMethodInvoker::assertRemoteCallable().
  */
 #[Attribute(Attribute::TARGET_METHOD)]
-class NativeAction {}
+class ClientAction {}
