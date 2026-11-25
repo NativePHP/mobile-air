@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge\Contracts;
 
 use Closure;
 use Native\Mobile\Edge\Enums\ActionSource;
+use Native\Mobile\Edge\Extensions\RunloopExtensionBase;
 use Native\Mobile\Edge\NativeComponent;
 
 /**
@@ -12,7 +13,7 @@ use Native\Mobile\Edge\NativeComponent;
  *
  * Every method is called for every screen, so an extension that has
  * nothing to do should return as quickly as it can. Extend
- * {@see \Native\Mobile\Edge\Extensions\RunloopExtensionBase} to implement
+ * {@see RunloopExtensionBase} to implement
  * only the hooks you need.
  *
  * The `$tree` the loop hooks receive is the screen and its nested child
