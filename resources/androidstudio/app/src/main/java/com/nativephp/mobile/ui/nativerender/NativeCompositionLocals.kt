@@ -13,6 +13,8 @@ import androidx.compose.runtime.compositionLocalOf
  */
 val LocalSafeAreaTop = compositionLocalOf { 0f }
 val LocalSafeAreaBottom = compositionLocalOf { 0f }
+val LocalSafeAreaLeft = compositionLocalOf { 0f }
+val LocalSafeAreaRight = compositionLocalOf { 0f }
 val LocalAvailableWidth = compositionLocalOf { 390f }
 val LocalAvailableHeight = compositionLocalOf { 844f }
 
