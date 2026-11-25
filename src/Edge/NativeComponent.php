@@ -1474,7 +1474,7 @@ abstract class NativeComponent
      * that resolved to this screen, and the pattern of its parent route
      * when it was registered with `->children()`.
      */
-    public function setRouteContext(?string $pattern, ?string $parentPattern): void
+    public function setRoutePattern(?string $pattern, ?string $parentPattern): void
     {
         $this->nativeRoutePattern = $pattern;
         $this->nativeParentRoutePattern = $parentPattern;

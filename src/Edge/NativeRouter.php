@@ -1039,7 +1039,7 @@ class NativeRouter
                     $resolved['params'] ?: ($entry['params'] ?? []),
                     query: $resolved['query'],
                 );
-                $this->applyRouteContext($component, $resolved);
+                $this->applyResolvedRoute($component, $resolved);
                 $component->mountComponent();
             } catch (\Throwable $e) {
                 static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
@@ -1086,7 +1086,7 @@ class NativeRouter
             // component knows its chrome before mount() runs.
             $resolved = $uri !== '' ? static::resolve($uri) : null;
             if ($resolved !== null) {
-                $this->applyRouteContext($component, $resolved);
+                $this->applyResolvedRoute($component, $resolved);
             }
 
             // The launch screen has always been recorded by its path, and the
@@ -1252,7 +1252,7 @@ class NativeRouter
                         $intent->data,
                         $resolved['query'],
                     );
-                    $this->applyRouteContext($next, $resolved);
+                    $this->applyResolvedRoute($next, $resolved);
                     static::debugLog('NAVIGATE: component created, pushing to stack');
 
                     $this->stack[] = [
@@ -1317,7 +1317,7 @@ class NativeRouter
                             $intent->data,
                             $resolved['query'],
                         );
-                        $this->applyRouteContext($next, $resolved);
+                        $this->applyResolvedRoute($next, $resolved);
 
                         $this->stack[] = [
                             'component' => $next,
@@ -1429,13 +1429,13 @@ class NativeRouter
      *
      * @param  array{layout: ?string, pattern: string, parent: ?string}  $resolved
      */
-    protected function applyRouteContext(NativeComponent $component, array $resolved): void
+    protected function applyResolvedRoute(NativeComponent $component, array $resolved): void
     {
         if (! empty($resolved['layout'])) {
             $component->setLayout($resolved['layout']);
         }
 
-        $component->setRouteContext($resolved['pattern'] ?? null, $resolved['parent'] ?? null);
+        $component->setRoutePattern($resolved['pattern'] ?? null, $resolved['parent'] ?? null);
     }
 
     protected function createComponent(string $class, array $params = [], array $data = [], array $query = []): NativeComponent

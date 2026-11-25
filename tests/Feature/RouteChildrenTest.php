@@ -832,7 +832,7 @@ it('leaves an inline item marked active alone, whatever the route tree says', fu
 function screenOnRoute(bool $child): ChromeScreen
 {
     $screen = new ChromeScreen;
-    $screen->setRouteContext($child ? '/chats/{id}' : '/chats', $child ? '/chats' : null);
+    $screen->setRoutePattern($child ? '/chats/{id}' : '/chats', $child ? '/chats' : null);
 
     return $screen;
 }
@@ -932,7 +932,7 @@ it('lets the screen\'s own tab bar knobs beat the TabBar', function () {
             return TabBarOptions::make()->hidden(false);
         }
     };
-    $optionsKeep->setRouteContext('/chats/{id}', '/chats');
+    $optionsKeep->setRoutePattern('/chats/{id}', '/chats');
 
     expect(TabBar::make()->hidden(false)->forScreen($hidesTabBar)->isHidden())->toBeTrue()
         ->and(TabBar::make()->hidden(false)->forScreen($optionsHide)->isHidden())->toBeTrue()

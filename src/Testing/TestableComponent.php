@@ -221,7 +221,7 @@ class TestableComponent
         // ->children() tree, which drives the child-screen defaults.
         if ($uri !== null) {
             $pattern = NativeRouter::patternFor($uri);
-            $component->setRouteContext($pattern, $pattern !== null ? NativeRouter::parentOf($pattern) : null);
+            $component->setRoutePattern($pattern, $pattern !== null ? NativeRouter::parentOf($pattern) : null);
 
             $router = new NativeRouter;
             \Closure::bind(function () use ($component, $uri, $params) {
