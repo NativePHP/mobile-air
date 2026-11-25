@@ -1,8 +1,10 @@
 <?php
 
 use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\Concerns\ValidatesInput;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\Elements\Column;
 use Native\Mobile\Edge\Elements\Text;
@@ -140,6 +142,23 @@ class RecordingExtension extends RunloopExtensionBase
     public function componentUnmounted(NativeComponent $component): void
     {
         $this->log[] = 'unmounted:'.class_basename($component);
+    }
+}
+
+class ValidatingExtensionScreen extends NativeComponent
+{
+    use ValidatesInput;
+
+    public bool $saved = false;
+
+    public function save(): void
+    {
+        $this->saved = true;
+    }
+
+    public function render(): Element
+    {
+        return Column::make(Text::make('Saved: '.json_encode($this->saved)));
     }
 }
 
@@ -451,6 +470,18 @@ it('lets an extension run something else in place of the action', function () {
 
     expect($result)->toBe('replaced')
         ->and($screen->get('ran'))->toBe([]);
+});
+
+it('hands ValidatesInput a validation error from an extension that ran the action itself', function () {
+    $ext = new RecordingExtension;
+    $ext->onAction = fn (Closure $next) => throw ValidationException::withMessages(['name' => 'Taken on the server.']);
+    NativeComponent::extend($ext);
+
+    $screen = Native::test(ValidatingExtensionScreen::class)->instance();
+
+    expect($screen->__invokeInteraction('save', []))->toBeNull()
+        ->and($screen->getErrorBag()->get('name'))->toBe(['Taken on the server.'])
+        ->and($screen->saved)->toBeFalse();
 });
 
 it('wraps polls and remote calls too, with their source', function () {
