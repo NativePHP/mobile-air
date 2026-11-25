@@ -889,6 +889,7 @@ class LaravelEnvironment(private val context: Context) {
                 // false and routes/mobile.php never loads on device.
                 "NATIVEPHP_RUNNING" to "true",
                 "NATIVEPHP_PLATFORM" to "android",
+                "NATIVEPHP_OS_VERSION" to android.os.Build.VERSION.RELEASE,
                 "NATIVEPHP_TEMPDIR" to context.cacheDir.absolutePath
             )
 

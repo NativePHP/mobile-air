@@ -29,6 +29,8 @@ class NavAction
 
     private ?string $image = null;
 
+    private ?string $subtitle = null;
+
     private ?string $event = null;
 
     private ?string $press = null;
@@ -87,6 +89,19 @@ class NavAction
     public function image(?string $url): self
     {
         $this->image = ($url === null || trim($url) === '') ? null : $url;
+
+        return $this;
+    }
+
+    /**
+     * A second, smaller line under the label of a menu row, such as an
+     * account's handle under its name. mobile-ui's `:menu`,
+     * `:context-menu` and `:trailing-menu` rows draw it; the top bar's own
+     * buttons and menus don't yet. Null or an empty string clears it.
+     */
+    public function subtitle(?string $subtitle): self
+    {
+        $this->subtitle = ($subtitle === null || $subtitle === '') ? null : $subtitle;
 
         return $this;
     }
@@ -211,6 +226,9 @@ class NavAction
         }
         if ($this->image !== null) {
             $attrs['image'] = $this->image;
+        }
+        if ($this->subtitle !== null) {
+            $attrs['subtitle'] = $this->subtitle;
         }
         if ($this->event !== null) {
             $attrs['event'] = $this->event;

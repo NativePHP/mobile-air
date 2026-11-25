@@ -300,10 +300,10 @@ it('leaves auto_scroll_to unset when the attribute is absent', function () {
 });
 
 it('applies lazy grid scroll-indicator props', function () {
-    // The lazy_grid type is registered by the native-ui plugin's manifest,
-    // but the element class is core-owned — register it explicitly so this
-    // stays testable without the plugin.
-    ElementRegistry::register('lazy_grid', LazyGrid::class);
+    // The lazy_grid type is registered by the mobile-ui plugin's manifest,
+    // but the element class is core-owned — swap it in so this stays
+    // testable without the plugin.
+    ElementRegistry::swap('lazy_grid', LazyGrid::class);
 
     NativeElementCollector::open('lazy_grid', [
         'columns' => 3,
@@ -317,8 +317,6 @@ it('applies lazy grid scroll-indicator props', function () {
     expect($tree['type'])->toBe('lazy_grid');
     expect($tree['props']['columns'])->toBe(3);
     expect($tree['props']['shows_indicators'])->toBeTrue();
-
-    ElementRegistry::reset();
 });
 
 it('applies refreshable scroll-indicator props', function () {
@@ -556,7 +554,7 @@ it('strips compiled _event- bindings from plain elements', function () {
 
 it('registers Element::elementEvents names with the precompiler', function () {
     NativeTagPrecompiler::resetElementEvents();
-    ElementRegistry::register('custom_widget', CustomEventElement::class);
+    ElementRegistry::swap('custom_widget', CustomEventElement::class);
 
     expect(NativeTagPrecompiler::customElementEvents())->toContain('link')
         ->and(NativeTagPrecompiler::customElementEvents())->toContain('scan');

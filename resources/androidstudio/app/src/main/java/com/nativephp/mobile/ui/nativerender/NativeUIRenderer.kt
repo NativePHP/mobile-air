@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -188,6 +189,15 @@ internal fun transitionFor(type: String?): ContentTransform {
             slideOutHorizontally(intSpec) { it }
         "slide_from_bottom" -> slideInVertically(intSpec) { it } togetherWith
             slideOutVertically(intSpec) { -it }
+        // Inverse of slide_from_bottom, for dismissing a screen presented
+        // that way: the incoming screen is in place beneath from the first
+        // frame (no enter motion) while the outgoing screen slides off the
+        // bottom edge on top of it. A negative targetContentZIndex draws the
+        // outgoing pane above the incoming one. 300 ms like iOS's slide-down
+        // (ScreenExitModifier in ScreenTransitions.swift).
+        "slide_to_bottom" -> (EnterTransition.None togetherWith
+            slideOutVertically(tween(durationMillis = 300)) { it })
+            .apply { targetContentZIndex = -1f }
         "fade" -> fadeIn(spec) togetherWith fadeOut(spec)
         // Short upward drift (1/8 screen height) + fade over the HELD
         // outgoing screen — the conventional "fade from bottom" (React

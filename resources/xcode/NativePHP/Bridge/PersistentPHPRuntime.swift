@@ -73,6 +73,7 @@ final class PersistentPHPRuntime {
         setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
+        setenv("NATIVEPHP_OS_VERSION", NativeOSVersion.string, 1)
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
 
         // Composer autoloader and bootstrap paths (used by persistent.php)
@@ -262,5 +263,17 @@ final class PersistentPHPRuntime {
             return String(data: data, encoding: .utf8)
         }
         return nil
+    }
+}
+
+/// The iOS version as `UIDevice.systemVersion` spells it ("26.1", "26.0.1"),
+/// for NATIVEPHP_OS_VERSION (PHP's `System::osVersion()`). Read from
+/// `ProcessInfo`, which any thread may use, since the persistent runtime
+/// sets its env off the main thread.
+enum NativeOSVersion {
+    static var string: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let base = "\(version.majorVersion).\(version.minorVersion)"
+        return version.patchVersion > 0 ? "\(base).\(version.patchVersion)" : base
     }
 }

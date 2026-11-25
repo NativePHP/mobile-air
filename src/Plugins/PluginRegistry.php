@@ -4,6 +4,7 @@ namespace Native\Mobile\Plugins;
 
 use Illuminate\Support\Collection;
 use IteratorAggregate;
+use Native\Mobile\Edge\CoreRenderers;
 use Traversable;
 
 class PluginRegistry implements IteratorAggregate
@@ -102,12 +103,16 @@ class PluginRegistry implements IteratorAggregate
     }
 
     /**
-     * Get all UI component declarations from all plugins.
+     * Get all UI component declarations from all plugins. Each one carries
+     * a `plugin` key with the package name that declared it.
      */
     public function components(): array
     {
         return $this->all()
-            ->flatMap(fn (Plugin $plugin) => $plugin->getComponents())
+            ->flatMap(fn (Plugin $plugin) => array_map(
+                fn (array $component) => $component + ['plugin' => $plugin->name],
+                $plugin->getComponents(),
+            ))
             ->all();
     }
 
@@ -201,7 +206,9 @@ class PluginRegistry implements IteratorAggregate
     }
 
     /**
-     * Detect conflicts between registered plugins.
+     * Detect conflicts between registered plugins, and between a plugin and
+     * core: a plugin may not declare a component for a type core renders
+     * natively itself (see CoreRenderers).
      *
      * @return array<array{type: string, value: string, plugins: array<string>}>
      */
@@ -240,6 +247,8 @@ class PluginRegistry implements IteratorAggregate
                 $functionNames[$name] = $plugin->name;
             }
 
+            array_push($conflicts, ...static::coreConflictsFor($plugin));
+
             // Check component type collision
             foreach ($plugin->getComponents() as $component) {
                 $compType = $component['type'];
@@ -251,6 +260,31 @@ class PluginRegistry implements IteratorAggregate
                     ];
                 }
                 $componentTypes[$compType] = $plugin->name;
+            }
+        }
+
+        return $conflicts;
+    }
+
+    /**
+     * Components a plugin declares for a type core renders natively itself.
+     * The generated registration would otherwise hand that type's renderer
+     * to the plugin. Supplying renderers for core's Element classes (`text`,
+     * `column`, ...) is fine and not reported here.
+     *
+     * @return list<array{type: string, value: string, plugins: array<string>}>
+     */
+    public static function coreConflictsFor(Plugin $plugin): array
+    {
+        $conflicts = [];
+
+        foreach ($plugin->getComponents() as $component) {
+            if (CoreRenderers::owns($component['type'])) {
+                $conflicts[] = [
+                    'type' => 'core_component',
+                    'value' => $component['type'],
+                    'plugins' => [CoreRenderers::OWNER, $plugin->name],
+                ];
             }
         }
 
