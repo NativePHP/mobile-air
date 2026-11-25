@@ -385,6 +385,7 @@ class NativeElementCollector
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
+                + static::buildLayoutAnimationProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -485,6 +486,7 @@ class NativeElementCollector
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
+                + static::buildLayoutAnimationProps($attrs)
                 + static::buildVariantProps($attrs, fn () => static::makeElement($type));
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
@@ -827,6 +829,32 @@ class NativeElementCollector
     }
 
     /**
+     * `animate-layout`: animate a container's children between frames (keyed
+     * children slide to their new place, new ones fade in, removed ones fade
+     * out). Bare `animate-layout` is true; `false` / `"false"` / `"0"` leave
+     * the prop off, so the wire is unchanged unless a container opts in.
+     */
+    public static function buildLayoutAnimationProps(array $attrs): array
+    {
+        $value = $attrs['animate-layout'] ?? $attrs['animateLayout'] ?? null;
+
+        return $value !== null && static::truthy($value) ? ['animate_layout' => true] : [];
+    }
+
+    /**
+     * A boolean attribute's value. A bare attribute compiles to `true`; the
+     * strings "false", "0", "no" and "off" are false.
+     */
+    protected static function truthy(mixed $value): bool
+    {
+        if (is_string($value)) {
+            return $value === '' || filter_var($value, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        return (bool) $value;
+    }
+
+    /**
      * Shared-element identity + motion props for the builtin streaming path.
      *
      * `ref` is the public identity (test handle AND morph id). Morph shape/timing
@@ -867,7 +895,10 @@ class NativeElementCollector
      * of painting something the author never asked for. When present, the
      * native style modifiers draw this INSTEAD of `bg_color`.
      *
-     * @return array{gradient_dx?: float, gradient_dy?: float, gradient_stops?: string}
+     * `dark_gradient_stops` is added when a theme stop has a dark hex; stops
+     * without one repeat their light colour, so both lists line up.
+     *
+     * @return array{gradient_dx?: float, gradient_dy?: float, gradient_stops?: string, dark_gradient_stops?: string}
      */
     public static function buildGradientProps(array $attrs): array
     {
@@ -888,13 +919,25 @@ class NativeElementCollector
             return [];
         }
 
-        return [
+        $darkStops = array_values(array_filter([
+            $gradient['darkFrom'] ?? $gradient['from'] ?? null,
+            $gradient['darkVia'] ?? $gradient['via'] ?? null,
+            $gradient['darkTo'] ?? $gradient['to'] ?? null,
+        ]));
+
+        $props = [
             'gradient_dx' => (float) $direction[0],
             'gradient_dy' => (float) $direction[1],
             // Comma-joined so the stop list stays a single string prop; the
             // native side splits it. Two or three `#AARRGGBB` entries.
             'gradient_stops' => implode(',', $stops),
         ];
+
+        if ($darkStops !== $stops) {
+            $props['dark_gradient_stops'] = implode(',', $darkStops);
+        }
+
+        return $props;
     }
 
     /**
@@ -1983,6 +2026,11 @@ class NativeElementCollector
         if (isset($attrs['glass'])) {
             $element->setProp('glass', (int) $attrs['glass']);
         }
+        // `glass/80`: how opaque the glass itself is drawn (0..1), apart
+        // from the element's content. Only sent when the class had one.
+        if (isset($attrs['glassOpacity'])) {
+            $element->setProp('glass_opacity', (float) $attrs['glassOpacity']);
+        }
         // Text selection opt-in (`select-text` / `select-none`). Generic across
         // element types — set on any node to make its subtree selectable (or
         // exempt one inside a selectable ancestor). Renderers read it via
@@ -1995,6 +2043,11 @@ class NativeElementCollector
         // auto-scrolls on new content when the user is already near the bottom.
         if (isset($attrs['scroll-anchor'])) {
             $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
+        }
+        // Layout animation between frames. Generic, so it works on column,
+        // row, stack, scroll-view and plugin containers such as list alike.
+        foreach (static::buildLayoutAnimationProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
         }
         // Shared-element motion controls. The element's IDENTITY is its
         // `ref` (applied generically in applyCallbacks → Element::ref), so
@@ -2135,6 +2188,20 @@ class NativeElementCollector
             // ScrollView::autoScrollTo() so both authoring styles behave alike.
             if (isset($attrs['autoScrollTo']) || isset($attrs['auto-scroll-to'])) {
                 $element->autoScrollTo((int) ($attrs['autoScrollTo'] ?? $attrs['auto-scroll-to']));
+            }
+
+            // `auto-scroll-animated`: animate every move, the first included
+            // (a request the scroll view opens with still jumps).
+            $animated = $attrs['auto-scroll-animated'] ?? $attrs['autoScrollAnimated'] ?? null;
+            if ($animated !== null) {
+                $element->autoScrollAnimated(static::truthy($animated));
+            }
+
+            // `:auto-scroll-token="$n"`: a new token re-requests the same
+            // child, which repeating `auto-scroll-to` alone can't do.
+            $token = $attrs['auto-scroll-token'] ?? $attrs['autoScrollToken'] ?? null;
+            if (is_string($token) || is_int($token)) {
+                $element->autoScrollToken($token);
             }
         }
 

@@ -49,10 +49,16 @@ struct NativeRootStackRenderer: View {
             // very first publish, before the coordinator has seeded its
             // root, fall back to `currentUri`.
             let rootUri = coordinator.rootUri ?? currentUri
+            // Each level names itself to the morph store (`heroScreen`), so
+            // a ref on the level pushed from and the same ref on the level
+            // pushed to are told apart. See `HeroFlightStore`.
             destination(uri: rootUri, isRoot: true)
+                .environment(\.heroScreen, HeroFlightStore.screenId(stack: "stack", uri: rootUri))
+                .background(StackRootEdgeSwipeBack())
                 .navigationDestination(for: String.self) { uri in
                     StackLevelView(level: coordinator.level(for: uri)) {
                         destination(uri: uri, isRoot: false)
+                            .environment(\.heroScreen, HeroFlightStore.screenId(stack: "stack", uri: uri))
                     }
                 }
         }
@@ -401,12 +407,119 @@ struct NativeRootStackRenderer: View {
     }
 }
 
+/// Edge swipe back from the root of a stack session that PHP entered from
+/// another chrome.
+///
+/// Pushing a stack-layout screen from a tabs layout swaps the chrome and
+/// starts a new `NavigationStack` whose root is that screen, so the system
+/// edge swipe has nothing to pop. PHP's router still has the tabs level
+/// beneath, and the root's back chevron goes back to it. This adds a
+/// leading-edge pan to the navigation controller that does the same.
+///
+/// When the bridge kept the tabs screen beneath the stack
+/// (`NativeUIBridge.backdropScreen`), the swipe is interactive: the screen
+/// follows the finger over the tabs, as a system pop does (`RootBackSwipe`).
+/// Otherwise a swipe that commits (`RootBackSwipe.commits`) sends the back
+/// when it ends, and PHP's back animation plays.
+///
+/// The pan only begins while `NavigationCoordinator.canGoBackFromRoot`, so
+/// pushed levels keep the system's interactive edge swipe, and the root of
+/// an app's first stack (nothing beneath it in PHP) is unchanged.
+struct StackRootEdgeSwipeBack: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView { Probe() }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    private final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            var responder: UIResponder? = self
+            while let current = responder, !(current is UINavigationController) {
+                responder = current.next
+            }
+            guard let navigationController = responder as? UINavigationController,
+                  let view = navigationController.view,
+                  !(view.gestureRecognizers ?? []).contains(where: { $0 is RootEdgePan })
+            else { return }
+            view.addGestureRecognizer(RootEdgePan(navigationController: navigationController))
+        }
+    }
+
+    private final class RootEdgePan: UIScreenEdgePanGestureRecognizer, UIGestureRecognizerDelegate {
+        private weak var navigationController: UINavigationController?
+
+        /// Whether this pan moves the screen (a backdrop is kept) or only
+        /// sends the back when it ends.
+        private var isInteractive = false
+
+        init(navigationController: UINavigationController) {
+            self.navigationController = navigationController
+            super.init(target: nil, action: nil)
+            edges = navigationController.view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                ? .right : .left
+            delegate = self
+            addTarget(self, action: #selector(handle))
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let navigationController else { return false }
+
+            return NavigationCoordinator.shared.canGoBackFromRoot
+                && navigationController.viewControllers.count <= 1
+                && navigationController.transitionCoordinator == nil
+                && !RootBackSwipe.shared.isActive
+        }
+
+        @objc private func handle() {
+            // Measured in the window: the navigation controller's view moves
+            // with the screen during an interactive swipe, so in its own
+            // coordinates the finger would only seem to travel half as far.
+            guard let view, let window = view.window else { return }
+            let direction: CGFloat = edges == .right ? -1 : 1
+            let swipe = RootBackSwipe.shared
+
+            switch state {
+            case .began:
+                isInteractive = NativeUIBridge.shared.backdropScreen != nil
+                if isInteractive {
+                    swipe.begin(width: window.bounds.width)
+                }
+            case .changed:
+                if isInteractive {
+                    swipe.update(translation: translation(in: window).x, direction: direction)
+                }
+            case .ended:
+                if isInteractive {
+                    swipe.update(translation: translation(in: window).x, direction: direction)
+                    swipe.end(velocity: velocity(in: window).x, direction: direction)
+                } else {
+                    let distance = translation(in: window).x * direction
+                    let speed = velocity(in: window).x * direction
+                    if RootBackSwipe.commits(distance: distance, speed: speed, width: window.bounds.width) {
+                        NativeElementBridge.sendSystemBackEvent()
+                    }
+                }
+            case .cancelled, .failed:
+                if isInteractive {
+                    swipe.cancel()
+                }
+            default:
+                break
+            }
+        }
+    }
+}
+
 /// Pins a `bottom_bar` element above the safe-area-bottom (and above
 /// the keyboard when one is presented). Renders nothing if the layout
 /// didn't supply a bottom bar for this level. Mirrors the tabs
 /// renderer's `BottomBarInsetModifier`: iOS 26 uses `.safeAreaBar`
 /// (first-class floating glass bar primitive), pre-26 falls back to
-/// `.safeAreaInset(.bottom)`.
+/// `.safeAreaInset(.bottom)`. A `bottom_bar` carrying `glass` gets soft
+/// glass behind the whole bar (see `BottomBarSoftGlass`), except on iOS 26+
+/// when it also asks for the scroll edge effect (`edge-blur="soft"` or
+/// `"hard"`), which takes the glass's place there (see
+/// `bottomBarScrollEdgeStyle`).
 private struct StackBottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -425,16 +538,27 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // The `#if` keeps `.safeAreaBar` out of the compilation entirely
             // on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
             // `LiquidGlassAvailability.swift`.
+            let glass = bottomBar.props.getInt("glass", default: 0)
+            let glassOpacity = CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
+            let edgeBlur = bottomBar.props.getString("edge_blur", default: "")
             #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
-                content.safeAreaBar(edge: .bottom) {
-                    barContent(inner)
+                if !edgeBlur.isEmpty {
+                    content
+                        .safeAreaBar(edge: .bottom) {
+                            barContent(inner, glass: 0, glassOpacity: glassOpacity)
+                        }
+                        .bottomBarScrollEdgeStyle(edgeBlur)
+                } else {
+                    content.safeAreaBar(edge: .bottom) {
+                        barContent(inner, glass: glass, glassOpacity: glassOpacity)
+                    }
                 }
             } else {
-                fallback(content, inner)
+                fallback(content, inner, glass: glass, glassOpacity: glassOpacity)
             }
             #else
-            fallback(content, inner)
+            fallback(content, inner, glass: glass, glassOpacity: glassOpacity)
             #endif
         } else {
             content
@@ -444,9 +568,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// Pre-26 placement: a plain bottom safe-area inset, no floating glass
     /// bar primitive.
     @ViewBuilder
-    private func fallback(_ content: Content, _ inner: NativeUINode) -> some View {
+    private func fallback(_ content: Content, _ inner: NativeUINode, glass: Int, glassOpacity: CGFloat) -> some View {
         content.safeAreaInset(edge: .bottom, spacing: 0) {
-            barContent(inner)
+            barContent(inner, glass: glass, glassOpacity: glassOpacity)
         }
     }
 
@@ -457,11 +581,14 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// through the bottom safe area (the iMessage treatment). Bars without
     /// an explicit background keep `.clear` and are unaffected.
     @ViewBuilder
-    private func barContent(_ inner: NativeUINode) -> some View {
+    private func barContent(_ inner: NativeUINode, glass: Int, glassOpacity: CGFloat) -> some View {
         NodeView(node: inner)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity)
             .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+            .background(alignment: .top) {
+                BottomBarSoftGlass(flags: glass, opacity: glassOpacity)
+            }
     }
 
     /// The bar root's resolved background color for the active appearance —

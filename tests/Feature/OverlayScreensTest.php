@@ -47,7 +47,7 @@ function fakeOverlaySlider(): void
         }
     };
 
-    ElementRegistry::register('slider', $slider::class);
+    ElementRegistry::swap('slider', $slider::class);
 }
 
 /**
@@ -86,18 +86,6 @@ function recordReportedExceptions(bool $throws = false): ArrayObject
 
     return $reported;
 }
-
-beforeEach(function () {
-    $this->registeredElements = ElementRegistry::all();
-});
-
-afterEach(function () {
-    ElementRegistry::reset();
-
-    foreach ($this->registeredElements as $type => $class) {
-        ElementRegistry::register($type, $class);
-    }
-});
 
 it('renders the exception overlay with message, class, and a retry action', function () {
     config()->set('app.debug', true);

@@ -243,6 +243,29 @@ bottom-nav, fab, bottom-bar, side-nav — see Native Chrome below), lists (list,
 overlays (modal, bottom-sheet), and drawing (canvas, shapes). Fetch the component's doc page before using it —
 required props are validated at render time.
 
+### Animating layout changes
+
+Add `animate-layout` to a container (column, row, scroll-view, list) to animate what changes inside it from
+one frame to the next. Children that are in both frames slide to their new place and size, new ones fade in
+and removed ones fade out. Children are matched by id, so key them with `native:key` (a stable domain id,
+not the loop index) and keep the container's own key the same, or every row reads as new. A frame that only
+changes text or styling isn't animated. It's off by default and follows Reduce Motion on iOS and the
+animator duration scale on Android. In PHP: `->animateLayout()`.
+
+```blade
+<native:scroll-view animate-layout :auto-scroll-to="$focusIndex" :auto-scroll-token="$focusRequest" auto-scroll-animated>
+    @foreach ($rows as $row)
+        <native:column native:key="row-{{ $row->id }}">...</native:column>
+    @endforeach
+</native:scroll-view>
+```
+
+`:auto-scroll-to` brings a direct child into view. The first move jumps and later ones animate, unless you
+add `auto-scroll-animated`, which animates every move except the one the scroll view opens with. The scroll
+view only moves when the request changes, so asking for the same index again does nothing. Bump
+`:auto-scroll-token` (any string or number) to ask again; don't remount the scroll view with a new key.
+On Android, removed children of a plain column or row disappear without fading; in a scroll view they fade.
+
 ## Custom Fonts
 
 Drop `.ttf`/`.otf`/`.ttc` files into `resources/fonts/` — the build bundles them into the native project
@@ -343,7 +366,17 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   works); a plain `icon` string is the cross-platform fallback. `AndroidOutlined` cases carry their variant
   automatically.
 - `<native:fab>` floats above the content (give it `@tap` or `url`; `label` makes it an extended fab).
-  `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance.
+  `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance. On iOS,
+  `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge. `glass/80` caps that glass
+  at 80% so more of the screen shows through.
+  `edge-blur="soft"` (or `"hard"`) on it asks iOS 26+ for the system scroll edge effect under the bar, a
+  progressive blur (or opaque fade) of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
+  `System::osVersion()` tells a screen which it got.
+- On iOS 26+ the tab bar blurs what scrolls under it at each tab's root, lists inside a pager included. The default,
+  `soft`, is a gradual progressive blur from just above the bar to the bottom of the screen, like the soft edge under
+  a composer but stronger, with content still recognisable behind the glass (it replaces the system's own soft edge). A root level with its own bottom
+  bar keeps the system effect. `<native:bottom-nav edge-blur="hard">` (or `TabBar::make()->edgeBlur('hard')`) swaps
+  it for the system's opaque fade, and `none` turns it off.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
   element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.
 - Never hand-roll top bars or bottom navs out of rows and pressables — that forfeits native back gestures,

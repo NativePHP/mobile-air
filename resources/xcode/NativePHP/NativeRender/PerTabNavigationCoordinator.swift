@@ -18,7 +18,29 @@ final class PerTabNavigationCoordinator: ObservableObject {
 
     /// SwiftUI's `NavigationStack(path:)` binds to this. Pushed levels
     /// only — the root URI is implicit and rendered by the closure body.
-    @Published var path: [String] = []
+    @Published var path: [String] = [] {
+        // Every change to the tab's stack, PHP-driven or the user's chevron
+        // and swipe-back alike, lands here before SwiftUI lays out the new
+        // top level. That is the moment a `morph` push or pop has to hide its
+        // shared elements. See `HeroFlightStore.stackChanged`.
+        didSet {
+            guard path != oldValue else { return }
+            let root = rootLevelUri
+            let incoming = nodeCache[path.last ?? root]
+            let before = [root] + oldValue
+            let after = [root] + path
+            let stack = rootUri
+            // The app only ever moves the path on main (SwiftUI's binding,
+            // or `receive()` deferred to the main queue). Unit tests drive
+            // coordinators from a background executor and never fly anything.
+            guard Thread.isMainThread else { return }
+            MainActor.assumeIsolated {
+                HeroFlightStore.shared.stackChanged(
+                    stack: stack, before: before, after: after, incoming: incoming
+                )
+            }
+        }
+    }
 
     /// The URI whose cached tree the root level shows. Usually `rootUri`,
     /// but a screen opened at the tab's path with a query

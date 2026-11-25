@@ -40,3 +40,29 @@ val LocalBackgroundLayerPresent = compositionLocalOf { false }
 val LocalSharedTransitionScope = compositionLocalOf<SharedTransitionScope?> { null }
 
 val LocalAnimatedVisibilityScope = compositionLocalOf<AnimatedVisibilityScope?> { null }
+
+/**
+ * Shared-element state for refs inside native chrome (`native_root_stack`,
+ * `native_root_tabs`), provided by `ChromeMorphPane` for one pane of the
+ * chrome renderer's `AnimatedContent` while that pane takes part in a morph,
+ * and null the rest of the time.
+ *
+ * It sits beside the root pair rather than replacing it. The root pair is
+ * what a full-screen morph into or out of chrome uses, and a settled pane
+ * keeps it exactly as `NativeUIContent` provides it. This one drives a push
+ * or pop inside chrome. See `Modifier.heroMorph`.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+class ChromeMorphScopes(
+    val sharedScope: SharedTransitionScope,
+    val paneScope: AnimatedVisibilityScope,
+)
+
+val LocalChromeMorphScopes = compositionLocalOf<ChromeMorphScopes?> { null }
+
+/**
+ * The same scopes, provided under every pane of a native-chrome renderer
+ * whether or not it takes part in a morph, for the inert registration that
+ * `Modifier.heroMorph` keeps at the front of each ref'd node in chrome.
+ */
+val LocalInertChromeScopes = compositionLocalOf<ChromeMorphScopes?> { null }

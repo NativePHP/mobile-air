@@ -6,6 +6,7 @@ use Illuminate\Contracts\Routing\UrlRoutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -45,6 +46,7 @@ use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\JumpBridge;
 use Native\Mobile\PendingAsyncTask;
 use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Support\AsyncTaskTransport;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\System;
@@ -71,6 +73,15 @@ abstract class NativeComponent
      * that never returns and the main thread hangs (ANR).
      */
     const EVENT_SHUTDOWN = 16;
+
+    /**
+     * The native reader couldn't build a frame from what it holds: a REUSE
+     * marker named a node it doesn't have, or it had to drop frames. It
+     * keeps the screen as it was, and takes no frame with REUSE markers
+     * until one without arrives. The runloop forgets what it published and
+     * renders, so the next frame goes out in full.
+     */
+    const EVENT_FULL_FRAME = 17;
 
     const EVENT_NATIVE = 20;
 
@@ -198,10 +209,9 @@ abstract class NativeComponent
     private int $publishCount = 0;
 
     /**
-     * Opt out of subtree memoization for this component — every publish emits
-     * all nodes FULL (no REUSE markers), sidestepping the PHP↔native id desync
-     * that can truncate a growing/reordering dynamic list. Set to true in a
-     * subclass whose screen mutates a list frequently (e.g. a live roster).
+     * Opt out of subtree memoization for this component: every publish emits
+     * all nodes FULL (no REUSE markers), at the cost of serializing the whole
+     * tree every frame.
      */
     protected bool $forceFullFrames = false;
 
@@ -308,14 +318,11 @@ abstract class NativeComponent
 
         if (! $memoEnabled || $this->forceFullFrames) {
             // Throwaway array — never read across frames. Emits every node FULL
-            // (no REUSE markers), so there's no PHP↔native id desync to truncate
-            // the tree. Components with heavy dynamic lists opt in via
-            // $forceFullFrames to trade a little serialization cost for
-            // correctness while the keyed/positional REUSE desync is unsolved.
+            // (no REUSE markers).
             $throwaway = [];
 
             $tree = $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
-            $fingerprint = self::frameFingerprint($tree, $emitted);
+            $fingerprint = self::frameFingerprint($tree);
 
             return $tree;
         }
@@ -365,27 +372,37 @@ abstract class NativeComponent
         // frame guarantees a remounting node always re-emits FULL.
         $this->lastNodeHashes = array_intersect_key($this->lastNodeHashes, $emitted);
 
-        $fingerprint = self::frameFingerprint($tree, $emitted);
+        $fingerprint = self::frameFingerprint($tree);
 
         return $tree;
     }
 
     /**
      * What a built frame looks like to the native side, cheaply. toArray()
-     * folds every node's type, layout, style, props, callbacks and children
-     * into the root's `_hash`; node ids aren't in it, so they are added in
-     * emit order. Two frames with the same fingerprint publish the same tree.
+     * folds every node's id, type, layout, style, props, callbacks and
+     * children into the root's `_hash`, so two frames with the same
+     * fingerprint publish the same tree.
      *
      * @param  array<string, mixed>  $tree
-     * @param  array<int, true>  $emittedIds
      */
-    private static function frameFingerprint(array $tree, array $emittedIds): ?string
+    private static function frameFingerprint(array $tree): ?string
     {
-        if (! isset($tree['_hash'])) {
-            return null;
-        }
+        return $tree['_hash'] ?? null;
+    }
 
-        return $tree['_hash'].':'.hash('xxh3', implode(',', array_keys($emittedIds)));
+    /**
+     * Forget what the native side holds, so the next frame is published
+     * and goes out in full. For a tree published without memoizedToArray()
+     * (an overlay, the farewell frame, a streamed frame), and for when the
+     * native reader asks for a full frame. Their ids aren't what
+     * $lastNodeHashes records, and the overlays' positional ids are the
+     * screen's own, so a REUSE marker after one would splice an overlay
+     * node into the screen.
+     */
+    private function forgetPublishedTree(): void
+    {
+        $this->lastNodeHashes = [];
+        $this->publishedFrame = null;
     }
 
     /**
@@ -1063,6 +1080,12 @@ abstract class NativeComponent
                 $attrs['navSearchOnQueryMethod'] = 'onSearchQuery';
             }
 
+            // The search field's submit (the keyboard's Search key) goes
+            // to `onSearchSubmit($q)` when the screen overrides it.
+            if ($this->hasOnSearchSubmitOverride()) {
+                $attrs['navSearchOnSubmitMethod'] = 'onSearchSubmit';
+            }
+
             $root->applyAttributes($attrs);
 
             // Tab items as bottom_nav_item children — builder tabs and
@@ -1335,6 +1358,38 @@ abstract class NativeComponent
     final protected function hasOnSearchQueryOverride(): bool
     {
         $reflection = new \ReflectionMethod($this, 'onSearchQuery');
+
+        return $reflection->getDeclaringClass()->getName() !== self::class;
+    }
+
+    /**
+     * Override to act when the user submits the search tab's field —
+     * the keyboard's Search key — for example to open a full results
+     * screen for what they typed. Receives the field's text.
+     *
+     *     public function onSearchSubmit(string $query): void
+     *     {
+     *         $this->navigate('/search?q='.urlencode($query));
+     *     }
+     *
+     * Independent of `onSearchQuery()` / `searchItems()`, which supply
+     * the rows shown while typing: a screen can define any of them.
+     * The default does nothing, and the framework detects "overridden"
+     * via reflection, as for `onSearchQuery()`.
+     */
+    public function onSearchSubmit(string $query): void
+    {
+        //
+    }
+
+    /**
+     * True when this component overrides `onSearchSubmit()`. Used by
+     * `wrapWithNativeChrome` to decide whether to register the
+     * search-submit callback.
+     */
+    final protected function hasOnSearchSubmitOverride(): bool
+    {
+        $reflection = new \ReflectionMethod($this, 'onSearchSubmit');
 
         return $reflection->getDeclaringClass()->getName() !== self::class;
     }
@@ -2031,6 +2086,24 @@ abstract class NativeComponent
     }
 
     /**
+     * Leave the user where they are rather than open a link nothing can show,
+     * and say so in the log, which is the only place a dropped link shows up.
+     * Only the path goes in the log: a query can carry a token.
+     */
+    protected static function dropUnroutedDeepLink(string $uri): void
+    {
+        $path = (string) parse_url($uri, PHP_URL_PATH);
+
+        NativeRouter::debugLog("DEEPLINK: no route for $uri — staying on the current screen");
+
+        try {
+            Log::warning('NativePHP ignored a deep link that no route matches.', ['path' => $path === '' ? '/' : $path]);
+        } catch (\Throwable) {
+            // A failing log channel must not cost the user the screen they're on.
+        }
+    }
+
+    /**
      * Give a deep link back to the browser.
      *
      * Android goes through the core System.OpenInBrowser. A plain
@@ -2076,21 +2149,27 @@ abstract class NativeComponent
             $url = is_array($payload) ? ($payload['url'] ?? null) : null;
 
             if (is_string($uri) && $uri !== '') {
-                // A verified app link the app has no route for. Navigating would
-                // tear the native UI down and hand the path to the WebView, which
-                // serves a local 404 — a dead end the user can't back out of. The
-                // link belongs to the site we took it from, so give it back to the
-                // browser and leave the current screen alone.
-                // Only swallow the link if it was actually handed off — otherwise
-                // fall through and behave exactly as before.
-                if (is_string($url) && $url !== '' && ! static::routableDeepLink($uri)) {
-                    NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
+                // A link the app has no route for. Navigating would tear the
+                // native UI down and hand the path to the WebView, which serves
+                // a local 404 — a dead end the user can't back out of. A verified
+                // app link belongs to the site we took it from, so give it back
+                // to the browser. Anything else (a custom scheme, a tapped push
+                // notification, an app link the browser won't take) is dropped,
+                // and the user stays on the screen they were on.
+                if (! static::routableDeepLink($uri)) {
+                    if (is_string($url) && $url !== '') {
+                        NativeRouter::debugLog("DEEPLINK: no route for $uri — opening $url in the browser");
 
-                    if (static::openDeepLinkInBrowser($url)) {
-                        return;
+                        if (static::openDeepLinkInBrowser($url)) {
+                            return;
+                        }
+
+                        NativeRouter::debugLog('DEEPLINK: browser handoff unavailable');
                     }
 
-                    NativeRouter::debugLog('DEEPLINK: browser handoff unavailable, navigating anyway');
+                    static::dropUnroutedDeepLink($uri);
+
+                    return;
                 }
 
                 NativeRouter::debugLog("DEEPLINK: navigating to $uri");
@@ -2640,9 +2719,10 @@ abstract class NativeComponent
      *     screen is showing. No origin-screen check.
      *   - otherwise (scoped) → DROP if the screen that dispatched the task is no
      *     longer topmost (firing a component-bound callback against the wrong
-     *     live component is a footgun). Else run the finished()/failed() callback,
-     *     rebound to this live component, with the raw result / an
-     *     AsyncTaskException.
+     *     live component is a footgun). Else run the finished()/failed() callback
+     *     with the raw result / an AsyncTaskException: against the child
+     *     component that wrote it while that child is still mounted, otherwise
+     *     rebound to this live component.
      */
     private function handleAsyncCompletion(string $eventClass, array $payload): void
     {
@@ -2653,6 +2733,16 @@ abstract class NativeComponent
 
         $failed = $eventClass === AsyncTaskFailed::class;
         $scope = AsyncTaskRegistry::scope($id);
+
+        // A task fails before it has run when its watchdog fires while it still
+        // waits for a free background context, as every one can be when a server
+        // takes requests and never answers them. Without its payload it does
+        // nothing once a context frees up, rather than doing work the screen
+        // has already been told failed, such as sending a write it handed back
+        // to be sent again. A task that ran has read its payload already.
+        if ($failed) {
+            AsyncTaskTransport::forgetPayload($id);
+        }
 
         // Shared: deliver as a named event to whatever component is active.
         if ($scope !== null && $scope['shared'] !== null) {
@@ -2690,10 +2780,20 @@ abstract class NativeComponent
                 $callback = app($callback);
             }
 
-            // Bind the closure to this live component so finished()/failed() can
-            // mutate state via $this. Static closures run without $this.
-            if ($callback instanceof \Closure && ! (new \ReflectionFunction($callback))->isStatic()) {
-                $callback = \Closure::bind($callback, $this, static::class);
+            // A closure written inside a child component keeps that child as
+            // $this, as long as the child is still mounted on this screen. A
+            // child that has since unmounted, or been replaced by a new
+            // instance under the same key, drops the result. Any other
+            // closure is bound to this screen so finished()/failed() can
+            // mutate its state. Static closures run without $this.
+            if ($callback instanceof \Closure && ! ($reflection = new \ReflectionFunction($callback))->isStatic()) {
+                $owner = $reflection->getClosureThis();
+
+                if (! $owner instanceof self) {
+                    $callback = \Closure::bind($callback, $this, static::class);
+                } elseif (! in_array($owner, iterator_to_array($this->componentTree(), false), true)) {
+                    return;
+                }
             }
 
             if ($failed) {
@@ -3118,7 +3218,7 @@ abstract class NativeComponent
             if (! $this->nativeHasError && ! $skipRender) {
                 try {
                     if ($this->renderStreaming()) {
-                        $this->publishedFrame = null;
+                        $this->forgetPublishedTree();
                     } else {
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element, $fingerprint);
@@ -3172,7 +3272,7 @@ abstract class NativeComponent
             // Broadcast user-facing frames to observers; system frames like
             // hot reload / shutdown are dev-loop noise, not user actions.
             if (TreeObservers::any()
-                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN, self::EVENT_FULL_FRAME], true)) {
                 TreeObservers::event(
                     $event,
                     $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
@@ -3188,6 +3288,12 @@ abstract class NativeComponent
                     json_encode(['uri' => $uri, 'stack' => $stack, 'ts' => time()])
                 );
                 $this->stop();
+
+                continue;
+            }
+
+            if (($event['type'] ?? -1) === self::EVENT_FULL_FRAME) {
+                $this->forgetPublishedTree();
 
                 continue;
             }
@@ -3361,7 +3467,7 @@ abstract class NativeComponent
 
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
-                        $this->publishedFrame = null;
+                        $this->forgetPublishedTree();
                         $this->nativeRouter?->flushDeferredTransition();
                         if ($perf) {
                             NativeRouter::debugLog(sprintf(
@@ -3438,7 +3544,7 @@ abstract class NativeComponent
             // Broadcast user-facing frames to observers; system frames like
             // hot reload / shutdown are dev-loop noise, not user actions.
             if (TreeObservers::any()
-                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN], true)) {
+                && ! in_array($event['type'] ?? -1, [self::EVENT_HOT_RELOAD, self::EVENT_SHUTDOWN, self::EVENT_FULL_FRAME], true)) {
                 TreeObservers::event(
                     $event,
                     $this->nativeCallbacks->resolve((int) ($event['callback_id'] ?? 0))['method'] ?? null
@@ -3456,6 +3562,12 @@ abstract class NativeComponent
                 NativeRouter::debugLog("HOT_RELOAD: wrote restart signal for $uri (stack depth=".count($stack).')');
                 $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::RESTART, $uri);
                 $this->stop();
+
+                continue;
+            }
+
+            if (($event['type'] ?? -1) === self::EVENT_FULL_FRAME) {
+                $this->forgetPublishedTree();
 
                 continue;
             }
@@ -3742,7 +3854,14 @@ abstract class NativeComponent
         try {
             $element = $this->renderToElement();
             $tree = self::closeSheetsAndModals($element->toArray($this->nativeCallbacks));
-            $this->publishedFrame = null;
+
+            if ($this->subtreeMemoEnabled()
+                && ! $this->forceFullFrames
+                && nativephp_force_full_frame_epoch() === $this->lastSeenForceFullFrameEpoch) {
+                $tree = $this->reuseWhatNativeHolds($tree);
+            }
+
+            $this->forgetPublishedTree();
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             // Render failure on the way out — outgoing component is
@@ -3756,20 +3875,61 @@ abstract class NativeComponent
      * components' too, along with any plugin element whose class opts in
      * through Element::closesOnNavigation(). All are presented over the
      * whole window, so one still open would cover the next screen until
-     * its first frame arrives. The frame is a full emit (no REUSE
+     * its first frame arrives. The frame is built as a full emit (no REUSE
      * markers), so each of them is in it with all of its props.
+     *
+     * A node closed here, and every node above it, loses its `_hash`: it
+     * no longer shows what the hash says, so it must not be sent as REUSE.
      *
      * `bottom_sheet` and `modal` are listed by type because the UI plugin
      * that registers them may not declare closesOnNavigation().
      */
-    private static function closeSheetsAndModals(array $node): array
+    private static function closeSheetsAndModals(array $node, bool &$closed = false): array
     {
+        $closed = false;
+
         if (in_array($node['type'], ['bottom_sheet', 'modal'], true) || ElementRegistry::closesOnNavigation($node['type'])) {
             $node['props']['visible'] = false;
+            $closed = true;
         }
 
         foreach ($node['children'] ?? [] as $index => $child) {
-            $node['children'][$index] = self::closeSheetsAndModals($child);
+            $childClosed = false;
+            $node['children'][$index] = self::closeSheetsAndModals($child, $childClosed);
+            $closed = $closed || $childClosed;
+        }
+
+        if ($closed) {
+            unset($node['_hash']);
+        }
+
+        return $node;
+    }
+
+    /**
+     * The farewell frame as memoizedToArray() sends any frame: a subtree
+     * the native side already holds, by id and hash, goes as a REUSE
+     * marker. Without this, every navigation away from a screen whose
+     * frames went out partially sent the whole screen once more, because
+     * its bytes no longer matched the last frame's and the extension's
+     * identical-frame check let it through.
+     *
+     * @param  array<string, mixed>  $node
+     * @return array<string, mixed>
+     */
+    private function reuseWhatNativeHolds(array $node): array
+    {
+        if (isset($node['_hash']) && ($this->lastNodeHashes[$node['id']] ?? null) === $node['_hash']) {
+            return [
+                'id' => $node['id'],
+                'type' => $node['type'],
+                'flags' => 1, // NPHP_NODE_FLAG_REUSE
+                '_hash' => $node['_hash'],
+            ];
+        }
+
+        foreach ($node['children'] ?? [] as $index => $child) {
+            $node['children'][$index] = $this->reuseWhatNativeHolds($child);
         }
 
         return $node;
@@ -4060,7 +4220,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
-            $this->publishedFrame = null;
+            $this->forgetPublishedTree();
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Error screen render failed: '.$renderError->getMessage());
@@ -4123,7 +4283,7 @@ abstract class NativeComponent
             ]);
 
             $this->nativeRouter?->flushDeferredTransition();
-            $this->publishedFrame = null;
+            $this->forgetPublishedTree();
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Dump screen render failed: '.$renderError->getMessage());

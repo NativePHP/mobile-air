@@ -238,6 +238,46 @@ dependencies {
     /**
      * @test
      *
+     * Each generated renderer registration names the plugin that declared the
+     * component, so the registry can refuse one that would take over a type
+     * core or another plugin already holds.
+     */
+    public function it_generates_renderer_registrations_that_name_their_plugin(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'name' => 'acme/widgets',
+            'components' => [
+                [
+                    'type' => 'acme_widget',
+                    'element' => 'Acme\\Elements\\Widget',
+                    'blade' => 'Acme\\Components\\Widget',
+                    'ios_renderer' => 'AcmeWidgetRenderer',
+                    'android_renderer' => 'com.acme.ui.AcmeWidgetRenderer',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginRendererRegistration.kt');
+
+        $this->assertStringContainsString('import com.acme.ui.AcmeWidgetRenderer', $content);
+        $this->assertStringContainsString(
+            "    // Plugin: acme/widgets\n".
+            "    NativeRendererRegistry.register(\"acme_widget\", \"acme/widgets\", NodeRenderer { node, modifier ->\n".
+            "        AcmeWidgetRenderer.Render(node, modifier)\n".
+            '    })',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
      * Should copy Kotlin source files from plugin to Android project.
      */
     public function it_copies_kotlin_source_files(): void
@@ -2040,6 +2080,46 @@ object TestFunctions {
             $warnings,
             fn (string $warning) => str_contains($warning, "Ignoring invalid locale 'not a locale'")
         ));
+    }
+
+    /**
+     * @test
+     *
+     * Core's OTA apply path only runs for apps with the OTA plugin.
+     */
+    public function it_switches_on_core_features_for_installed_plugins(): void
+    {
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([
+            $this->createTestPlugin(['name' => 'nativephp/mobile-ota']),
+        ]));
+
+        $this->compiler->compile();
+
+        $features = $this->files->get($this->pluginFeaturesPath());
+        $this->assertStringContainsString('const val OTA = true', $features);
+    }
+
+    /**
+     * @test
+     *
+     * Core references PluginFeatures, so it has to exist with no plugins, and
+     * the template's copy has to say the same thing as a compile without any.
+     */
+    public function it_writes_the_template_plugin_features_when_no_plugins_are_installed(): void
+    {
+        $this->mockRegistry->shouldReceive('all')->andReturn(collect([]));
+
+        $this->compiler->compile();
+
+        $this->assertSame(
+            $this->files->get(dirname(__DIR__, 3).'/resources/androidstudio/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginFeatures.kt'),
+            $this->files->get($this->pluginFeaturesPath())
+        );
+    }
+
+    private function pluginFeaturesPath(): string
+    {
+        return $this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginFeatures.kt';
     }
 
     private function createTestPlugin(array $manifestData = [], ?string $path = null): Plugin

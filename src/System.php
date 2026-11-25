@@ -30,6 +30,9 @@ class System
      */
     private static ?string $platform = null;
 
+    /** The OS version under Jump or a test (see osVersion()). */
+    private static ?string $osVersion = null;
+
     /** Throttle re-probing after a failed attempt (see platform()). */
     private static ?float $lastFailedProbe = null;
 
@@ -106,6 +109,52 @@ class System
         self::$lastFailedProbe = null;
     }
 
+    /**
+     * The phone's OS version as the OS gives it ("26.1", "15"), or null off
+     * the device. For the few things a screen draws differently by OS
+     * version, such as leaving out a fade that iOS 26's scroll edge effect
+     * (`edge-blur="soft"` on a bottom bar) stands in for.
+     *
+     * The iOS and Android shells export NATIVEPHP_OS_VERSION before PHP
+     * starts, so on device this is an env read. Under `native:jump` nothing
+     * sets it, so the connected device is asked once (Device.GetInfo) and
+     * the answer kept. Elsewhere (tests, a web server) it's null without a
+     * round-trip.
+     */
+    public function osVersion(): ?string
+    {
+        $version = getenv('NATIVEPHP_OS_VERSION');
+
+        if (is_string($version) && $version !== '') {
+            return $version;
+        }
+
+        if (self::$osVersion !== null || ! self::runningInJump()) {
+            return self::$osVersion;
+        }
+
+        try {
+            $info = json_decode(Device::getInfo() ?? '', true);
+            $version = is_array($info) ? ($info['osVersion'] ?? null) : null;
+        } catch (\Throwable) {
+            $version = null;
+        }
+
+        return self::$osVersion = is_string($version) && $version !== '' ? $version : null;
+    }
+
+    /**
+     * Test seam: pretend to run on an OS version without touching
+     * NATIVEPHP_OS_VERSION. Pass null to forget it. Ignored wherever the env
+     * is set, so it can't move a device.
+     *
+     * @internal
+     */
+    public static function rememberOsVersion(?string $version): void
+    {
+        self::$osVersion = $version;
+    }
+
     public function isIos(): bool
     {
         return $this->platform() === 'ios';
@@ -175,6 +224,32 @@ class System
     public function isLightMode(): bool
     {
         return $this->appearance() === 'light';
+    }
+
+    /**
+     * Pin the app to 'light' or 'dark', or hand it back to the device with
+     * 'system' — the same values as the build-time `nativephp.appearance`,
+     * applied at runtime, so a Settings screen can offer a theme choice.
+     *
+     * The whole app switches, system chrome included (bars, sheets,
+     * keyboards), and the choice survives relaunches. When the effective
+     * appearance flips, the usual AppearanceChanged event follows, so
+     * `appearance()`, `theme()` and #[On(AppearanceChanged)] handlers catch
+     * up. Android needs API 31+; older versions keep following the device.
+     *
+     * @param  'system'|'light'|'dark'  $mode
+     *
+     * @throws \InvalidArgumentException for any other value
+     */
+    public function setAppearance(string $mode): void
+    {
+        if (! in_array($mode, ['system', 'light', 'dark'], true)) {
+            throw new \InvalidArgumentException("Appearance must be 'system', 'light' or 'dark', got '{$mode}'.");
+        }
+
+        if (function_exists('nativephp_call')) {
+            nativephp_call('System.SetAppearance', json_encode(['mode' => $mode]));
+        }
     }
 
     /**

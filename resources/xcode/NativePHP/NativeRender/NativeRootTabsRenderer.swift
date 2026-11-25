@@ -108,6 +108,10 @@ struct NativeRootTabsRenderer: View {
         let activeColor: Color = activeArgb != 0 ? Color(argb: activeArgb) : .accentColor
         let bgArgb = node.props.getColor("background_color", default: 0)
         let isDark = node.props.getBool("dark")
+        // iOS 26's scroll edge effect under the bar, for each tab's root
+        // level: "soft" (default), "hard" or "none". See
+        // `TabBarEdgeBlurModifier`.
+        let edgeBlur = node.props.getString("edge_blur", default: "soft")
 
         // `TabBar::labelVisibility('labeled'|'selected'|'unlabeled')`.
         // Defaults to "labeled" — matches Apple's TabView default.
@@ -151,6 +155,7 @@ struct NativeRootTabsRenderer: View {
         let searchMode = node.props.getString("nav_search_mode", default: "static")
         let searchDebounceMs = node.props.getInt("nav_search_debounce_ms", default: 250)
         let searchOnQueryCb = Int(node.props.getCallbackId("nav_search_on_query"))
+        let searchOnSubmitCb = Int(node.props.getCallbackId("nav_search_on_submit"))
         // Each search item is a `search_item` child node of the tabs
         // root (parallel to `bottom_nav_item`). PHP couldn't carry the
         // mixed string/object/element item shapes through the prop
@@ -303,6 +308,7 @@ struct NativeRootTabsRenderer: View {
                         fallbackShowBack: navBack,
                         fallbackTextArgb: navTextArgb,
                         fallbackBgArgb: navBgArgb,
+                        edgeBlur: edgeBlur,
                         isSelected: tabId == selection,
                         onPushVisibilityChange: { hidden in
                             if customPresentationHiddenForPush != hidden {
@@ -333,6 +339,7 @@ struct NativeRootTabsRenderer: View {
                         itemNodes: searchItemNodes,
                         mode: searchMode,
                         onQueryCallbackId: searchOnQueryCb,
+                        onSubmitCallbackId: searchOnSubmitCb,
                         debounceMs: searchDebounceMs
                     )
                     .modifier(SystemTabBarSuppressionModifier(
@@ -350,6 +357,7 @@ struct NativeRootTabsRenderer: View {
         .preferredColorScheme(isDark ? .dark : nil)
         .modifier(TabBarLabelVisibilityModifier(mode: labelVisibility, fontName: chromeFontName))
         .modifier(TabBarAccessoryModifier(accessory: customPresenter == nil ? accessory : nil))
+        .modifier(SearchTabActivationModifier())
         .modifier(CustomTabPresentationModifier(
             presenter: customPresenter,
             context: presentationContext,
@@ -524,16 +532,26 @@ private struct PerTabContent: View {
     let fallbackShowBack: Bool
     let fallbackTextArgb: Int
     let fallbackBgArgb: Int
+    let edgeBlur: String
     let isSelected: Bool
     let onPushVisibilityChange: (Bool) -> Void
 
     var body: some View {
         if hasNavBar {
             NavigationStack(path: $coordinator.path) {
+                // Each level names itself to the morph store (`heroScreen`),
+                // scoped by tab so two tabs can't collide. See
+                // `HeroFlightStore`.
                 levelView(uri: coordinator.rootLevelUri, isRoot: true)
+                    .environment(\.heroScreen, HeroFlightStore.screenId(
+                        stack: coordinator.rootUri, uri: coordinator.rootLevelUri
+                    ))
                     .navigationDestination(for: String.self) { uri in
                         StackLevelView(level: coordinator.level(for: uri)) {
                             levelView(uri: uri, isRoot: false)
+                                .environment(\.heroScreen, HeroFlightStore.screenId(
+                                    stack: coordinator.rootUri, uri: uri
+                                ))
                         }
                     }
             }
@@ -698,6 +716,14 @@ private struct PerTabContent: View {
             // tab bar *used to be* — visually mid-screen.
             .modifier(HideTabBarOnPushModifier(isRoot: isRoot, forceHide: forceHideTabBar))
             .modifier(BottomBarInsetModifier(bottomBar: bottomBar))
+            // Outside the bottom bar, so a root-level bar's own edge blur
+            // wins for its region. Only where the tab bar shows. Soft draws
+            // our own progressive blur band over the level, under the tab
+            // bar (see `TabBarProgressiveBlur`).
+            .modifier(TabBarEdgeBlurModifier(
+                style: isRoot && !forceHideTabBar ? edgeBlur : "",
+                hasBottomBar: bottomBar != nil
+            ))
     }
 
     @ViewBuilder
@@ -953,7 +979,16 @@ private struct TabsActionView: View {
 /// Uses `.safeAreaInset(.bottom)` — the battle-tested primitive that
 /// reserves space above the safe-area-bottom and renders the bar inside
 /// it. Keyboard avoidance is automatic. Bar content is responsible for
-/// its own visible chrome (bg color or glass class).
+/// its own visible chrome (bg color or glass class), except that a
+/// `bottom_bar` carrying `glass` gets soft glass behind the whole bar
+/// (see `BottomBarSoftGlass`).
+///
+/// A bar that opts into the scroll edge effect (`edge-blur="soft"` or
+/// `"hard"`, sent as `edge_blur`) is placed with
+/// `.safeAreaBar(.bottom)` on iOS 26+ instead, so the system draws its
+/// scroll edge effect on the scroll view under the bar, and the soft glass
+/// is left out there (see `BottomBarScrollEdge`). Before iOS 26 the bar is
+/// placed and drawn as without it.
 private struct BottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -970,19 +1005,47 @@ private struct BottomBarInsetModifier: ViewModifier {
         // height, and a FlexContainer fills any finite proposal, so a bar
         // whose root has no explicit height inflated to the proposal —
         // `.safeAreaBar` was never at fault. `.fixedSize(vertical:)` pins
-        // the bar to its intrinsic height either way; re-enabling
-        // `.safeAreaBar` for the floating-glass treatment is now viable
-        // but a separate, visual decision.
+        // the bar to its intrinsic height either way. `.safeAreaBar` is
+        // only taken for a bar that asks for the scroll edge effect, so a
+        // bar that doesn't keeps exactly the placement it had.
         if let bottomBar, let inner = bottomBar.children.first {
-            content.safeAreaInset(edge: .bottom, spacing: 0) {
-                NodeView(node: inner)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity)
-                    .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+            let edgeBlur = bottomBar.props.getString("edge_blur", default: "")
+            #if compiler(>=6.2)
+            if !edgeBlur.isEmpty, #available(iOS 26.0, *) {
+                content
+                    .safeAreaBar(edge: .bottom) {
+                        barContent(inner, bottomBar, softGlass: false)
+                    }
+                    .bottomBarScrollEdgeStyle(edgeBlur)
+            } else {
+                inset(content, inner, bottomBar)
             }
+            #else
+            inset(content, inner, bottomBar)
+            #endif
         } else {
             content
         }
+    }
+
+    private func inset(_ content: Content, _ inner: NativeUINode, _ bottomBar: NativeUINode) -> some View {
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            barContent(inner, bottomBar, softGlass: true)
+        }
+    }
+
+    @ViewBuilder
+    private func barContent(_ inner: NativeUINode, _ bottomBar: NativeUINode, softGlass: Bool) -> some View {
+        NodeView(node: inner)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+            .background(alignment: .top) {
+                BottomBarSoftGlass(
+                    flags: softGlass ? bottomBar.props.getInt("glass", default: 0) : 0,
+                    opacity: CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
+                )
+            }
     }
 
     /// The bar root's resolved background color for the active appearance,
@@ -1188,6 +1251,28 @@ private struct TabBarAccessoryModifier: ViewModifier {
     }
 }
 
+/// Keeps the search tab as its own round button beside the bar, and makes
+/// tapping it open the search field, as iOS 26 did by default.
+///
+/// From the iOS 27 SDK, the default activation (`.automatic`) puts a
+/// `Tab(role: .search)` inside the bar as an ordinary tab, and selecting it
+/// no longer brings up the field. An app built with Xcode 26 keeps the old
+/// look even on iOS 27, so the change only shows once an app is rebuilt with
+/// Xcode 27. Asking for `.searchTabSelection` restores the iOS 26 behaviour.
+private struct SearchTabActivationModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.tabViewSearchActivation(.searchTabSelection)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 /// Replaces only the visual tab strip. The underlying TabView and every
 /// per-tab NavigationStack remain mounted and owned by NativePHP.
 private struct CustomTabPresentationModifier: ViewModifier {
@@ -1293,12 +1378,15 @@ struct SearchableNavBarModifier: ViewModifier {
 ///
 /// Debounced query changes forward to PHP's `onSearchQuery` via the
 /// existing TEXT_CHANGE event (dynamic mode); static mode filters
-/// locally inside `NativeSearchTabRoot`.
+/// locally inside `NativeSearchTabRoot`. Submitting the field (the
+/// keyboard's Search key) sends its text to PHP's `onSearchSubmit` as a
+/// SUBMIT event, when the screen defines one.
 private struct SearchTabContainer: View {
     let placeholder: String
     let itemNodes: [NativeUINode]
     let mode: String
     let onQueryCallbackId: Int
+    let onSubmitCallbackId: Int
     let debounceMs: Int
 
     @State private var query: String = ""
@@ -1315,6 +1403,13 @@ private struct SearchTabContainer: View {
                 .modifier(WindowBackgroundModifier())
         }
         .searchable(text: $query, prompt: placeholder.isEmpty ? "Search" : placeholder)
+        .onSubmit(of: .search) {
+            guard onSubmitCallbackId != 0 else { return }
+            // The submit carries the whole query, so a keystroke still
+            // waiting on the debounce has nothing left to add.
+            debounceTask?.cancel()
+            NativeElementBridge.sendSubmitEvent(onSubmitCallbackId, nodeId: 0, text: query)
+        }
         .onChange(of: query) { _, newValue in
             guard mode == "dynamic", onQueryCallbackId != 0 else { return }
             debounceTask?.cancel()
@@ -1507,5 +1602,90 @@ private struct ObjectResultRow: View {
         }
         .buttonStyle(.plain)
         .disabled(tapCallback == 0)
+    }
+}
+
+/// The scroll edge effect a `bottom_bar` asks for with `edge-blur="soft"`
+/// or `edge-blur="hard"` (sent as `edge_blur`). On iOS 26+ both renderers
+/// place such a bar with `.safeAreaBar(.bottom)`, which is what makes the
+/// system draw its scroll edge effect on a scroll view running under the
+/// bar: a progressive blur (soft) or an opaque fade (hard), as under the
+/// system's own toolbars. `.safeAreaInset` draws none. The effect stands in
+/// for the bar's soft glass, so a bar carrying both (`class="glass/80"
+/// edge-blur="soft"`) gets the edge effect on iOS 26+ and the glass before.
+/// Elements inside the bar draw as they always do, so a bar that tints or
+/// fades its own rows covers the effect where it does.
+#if compiler(>=6.2)
+extension View {
+    @available(iOS 26.0, *)
+    @ViewBuilder
+    func bottomBarScrollEdgeStyle(_ edgeBlur: String) -> some View {
+        if edgeBlur == "hard" {
+            scrollEdgeEffectStyle(.hard, for: .bottom)
+        } else {
+            scrollEdgeEffectStyle(.soft, for: .bottom)
+        }
+    }
+}
+#endif
+
+/// Liquid Glass behind a bottom bar whose `bottom_bar` element carries the
+/// `glass` class (`<native:bottom-bar class="glass">`). The glass runs on
+/// through the bottom safe area, under the home indicator, and fades in over
+/// the bar's top `fade` points, so what scrolls under the bar blurs into it
+/// without the hard top edge (rim and lensing) a plain `glass` surface has.
+/// The bar's own content draws on top; give it a translucent fill to tint
+/// the glass. `glass:clear` takes the clear variant. Before iOS 26 it's
+/// `.regularMaterial`, faded the same way. `opacity` (`glass/80` on the bar
+/// sends `glass_opacity` 0.8) is how opaque the glass gets once it has
+/// faded in, so an app can let more of what's under the bar show through.
+/// Shared with the stack renderer's `StackBottomBarInsetModifier`.
+struct BottomBarSoftGlass: View {
+    let flags: Int
+    var opacity: CGFloat = 1
+    var fade: CGFloat = 28
+
+    var body: some View {
+        if flags & 1 != 0 {
+            GeometryReader { geo in
+                glass.mask(
+                    LinearGradient(
+                        stops: Self.fadeIn(
+                            until: min(1, fade / max(geo.size.height, 1)),
+                            to: min(1, max(0, opacity))
+                        ),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            }
+            // Past the screen's sides, so the glass draws no rim down them.
+            .padding(.horizontal, -24)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Clear to `peak` opacity on an ease-in-out curve, which leaves no line
+    /// where a straight ramp would stop. The last stop holds `peak` down the
+    /// rest of the bar.
+    static func fadeIn(until end: CGFloat, to peak: CGFloat = 1) -> [Gradient.Stop] {
+        (0...8).map { step in
+            let t = CGFloat(step) / 8
+            return .init(color: .black.opacity(peak * t * t * (3 - 2 * t)), location: t * end)
+        }
+    }
+
+    @ViewBuilder
+    private var glass: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            Rectangle().fill(.clear).glassEffect(flags & 8 != 0 ? .clear : .regular, in: Rectangle())
+        } else {
+            Rectangle().fill(.regularMaterial)
+        }
+        #else
+        Rectangle().fill(.regularMaterial)
+        #endif
     }
 }

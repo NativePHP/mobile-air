@@ -71,7 +71,8 @@ struct NodeStyleModifier: ViewModifier {
                 $0.modifier(GlassModifier(
                     flags: Self.glassHandledByRenderer.contains(nodeType) ? 0 : glassFlags,
                     cornerRadius: radius,
-                    cornerRadii: radii
+                    cornerRadii: radii,
+                    opacity: CGFloat(props.getFloat("glass_opacity", default: 1))
                 ))
             }
             // The border is built only when there is one. Inside the overlay,
@@ -125,7 +126,7 @@ struct NodeStyleModifier: ViewModifier {
     /// The `.background(_ view:)` overload stops at the safe area, which left
     /// the platform default (black in dark mode) showing in those insets.
     private func backgroundFill(dark: Bool) -> AnyShapeStyle {
-        if let gradient = linearGradient {
+        if let gradient = linearGradient(dark: dark) {
             AnyShapeStyle(gradient)
         } else {
             AnyShapeStyle(backgroundColor(dark: dark))
@@ -145,8 +146,11 @@ struct NodeStyleModifier: ViewModifier {
     /// variable-length stop list. `gradient_stops` is a comma-joined list of
     /// two or three `#AARRGGBB` values; `gradient_dx`/`gradient_dy` are the
     /// unit vector the gradient travels toward, in view space (y grows down).
-    private var linearGradient: LinearGradient? {
-        let raw = props.getString("gradient_stops", default: "")
+    /// `dark_gradient_stops`, set when a stop is a theme token, replaces the
+    /// list in dark mode, as `dark_bg_color` replaces the flat colour.
+    private func linearGradient(dark: Bool) -> LinearGradient? {
+        let darkRaw = dark ? props.getString("dark_gradient_stops", default: "") : ""
+        let raw = darkRaw.isEmpty ? props.getString("gradient_stops", default: "") : darkRaw
         guard !raw.isEmpty else { return nil }
 
         let colors = raw
@@ -378,23 +382,55 @@ private struct GlassModifier: ViewModifier {
     /// Per-corner radii when `rounded-<side>-*` was used, so a glass surface
     /// takes the same asymmetric outline as its clip and border.
     let cornerRadii: RectangleCornerRadii?
+    /// `glass/80` → 0.8: how opaque the glass itself is drawn. 1 (no
+    /// suffix) keeps the `.glassEffect` on the content, exactly as before.
+    var opacity: CGFloat = 1
 
     private var enabled: Bool      { (flags & 1) != 0 }
     private var interactive: Bool  { (flags & 4) != 0 }
     private var clear: Bool        { (flags & 8) != 0 }
+    private var faded: Bool        { enabled && opacity < 1 }
+
+    func body(content: Content) -> some View {
+        if faded {
+            // The glass can't be faded while it's the content's own effect
+            // without fading the content too, so it's drawn on its own
+            // layer behind the content instead. Being behind, it gets no
+            // touches, so `interactive` has no highlight while faded.
+            content.background { fadedGlass.opacity(max(0, opacity)).allowsHitTesting(false) }
+        } else {
+            glass(content)
+        }
+    }
+
+    /// The glass on its own, for `faded`: the same material and shape the
+    /// unfaded path puts on the content.
+    @ViewBuilder
+    private var fadedGlass: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            Rectangle().fill(.clear).glassEffect(clear ? .clear : .regular, in: glassShape)
+        } else {
+            glassShape.fill(clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial))
+        }
+        #else
+        glassShape.fill(clear ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial))
+        #endif
+    }
 
     /// The `#if` keeps `.glassEffect` out of the compilation entirely on
     /// pre-Xcode-26 toolchains, whose SDK has no such symbol — see
     /// `LiquidGlassAvailability.swift`.
     ///
-    /// It gates the whole `body` rather than sitting inside it so that the
+    /// It gates the whole of `glass(_:)` rather than sitting inside it so that the
     /// Xcode 26 arm keeps the original `if / else if / else` chain verbatim.
     /// A `#if` nested in the `else` arm re-nests what ViewBuilder emits —
     /// `_ConditionalContent<_ConditionalContent<A, B>, C>` becomes
     /// `_ConditionalContent<A, _ConditionalContent<B, C>>` — which changes
     /// the view type on builds this fix is supposed to leave alone.
     #if compiler(>=6.2)
-    func body(content: Content) -> some View {
+    @ViewBuilder
+    private func glass(_ content: Content) -> some View {
         if !enabled {
             content
         } else if #available(iOS 26.0, *) {
@@ -408,7 +444,8 @@ private struct GlassModifier: ViewModifier {
         }
     }
     #else
-    func body(content: Content) -> some View {
+    @ViewBuilder
+    private func glass(_ content: Content) -> some View {
         if !enabled {
             content
         } else {

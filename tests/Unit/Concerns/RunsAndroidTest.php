@@ -8,6 +8,7 @@ use Laravel\Prompts\Prompt;
 use Mockery;
 use Native\Mobile\Concerns\RunsAndroid;
 use Orchestra\Testbench\TestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class RunsAndroidTest extends TestCase
 {
@@ -163,6 +164,44 @@ class RunsAndroidTest extends TestCase
 
         $contents = File::get($manifestPath);
         $this->assertStringContainsString('android:label="My Test App"', $contents);
+    }
+
+    #[DataProvider('appNamesWithXmlSpecialCharacters')]
+    public function test_update_app_display_name_escapes_xml_special_characters(string $appName)
+    {
+        config(['app.name' => $appName]);
+
+        $manifestPath = $this->testProjectPath.'/nativephp/android/app/src/main/AndroidManifest.xml';
+        File::makeDirectory(dirname($manifestPath), 0755, true);
+        File::put($manifestPath, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="NativePHP">
+        <activity android:label="NativePHP" />
+    </application>
+</manifest>');
+
+        $this->updateAppDisplayName();
+
+        $previous = libxml_use_internal_errors(true);
+        $xml = simplexml_load_string(File::get($manifestPath));
+        libxml_use_internal_errors($previous);
+
+        $this->assertNotFalse($xml, 'AndroidManifest.xml is no longer valid XML');
+
+        $android = 'http://schemas.android.com/apk/res/android';
+        $this->assertSame($appName, (string) $xml->application->attributes($android)->label);
+        $this->assertSame($appName, (string) $xml->application->activity->attributes($android)->label);
+    }
+
+    public static function appNamesWithXmlSpecialCharacters(): array
+    {
+        return [
+            'ampersand' => ['UK Mortgage Calculator & Tools'],
+            'double quotes' => ['The "Best" App'],
+            'apostrophe' => ["Mike's App"],
+            'angle brackets' => ['A <B> C'],
+            'dollar reference' => ['$1 Deals'],
+            'backslash' => ['Back\\Slash \\1'],
+        ];
     }
 
     public function test_update_permissions_adds_and_removes()

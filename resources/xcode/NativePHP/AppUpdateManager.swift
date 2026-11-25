@@ -2,24 +2,62 @@ import Foundation
 import UIKit
 import ZIPFoundation
 
-
+/// Extracts the bundled Laravel app into Documents.
+///
+/// Applying OTA payloads (Documents/updates/pending.zip) is only compiled in
+/// when the mobile-ota plugin is installed: the plugin compiler sets
+/// NATIVEPHP_OTA. Apps without the plugin carry no update-and-run-new-code
+/// path for App Review's scan to find.
 class AppUpdateManager {
     static let shared = AppUpdateManager()
 
     private let documentsPath: String
     private let appPath: String
+    #if NATIVEPHP_OTA
     private let updatesPath: String
+    #endif
     private var appReady = false
 
     private init() {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         documentsPath = documentsURL.path
         appPath = documentsURL.appendingPathComponent("app").path
-        updatesPath = documentsURL.appendingPathComponent("updates").path
 
         // Ensure directories exist
         try? FileManager.default.createDirectory(atPath: appPath, withIntermediateDirectories: true)
+
+        #if NATIVEPHP_OTA
+        updatesPath = documentsURL.appendingPathComponent("updates").path
         try? FileManager.default.createDirectory(atPath: updatesPath, withIntermediateDirectories: true)
+        #endif
+
+        // Also covers installs from before the flag was set at all. Only the
+        // OTA path creates the updates folder, so only it needs excluding.
+        excludeFromBackup(appPath)
+        #if NATIVEPHP_OTA
+        excludeFromBackup(updatesPath)
+        #endif
+    }
+
+    /// Documents/app is unpacked from the app.zip inside the .app bundle, and
+    /// Documents/updates only holds OTA downloads and the previous version, so
+    /// both can always be recreated. Apple's storage guidelines say files like
+    /// that must not go into iCloud or device backups. User data (database,
+    /// storage) lives in Application Support and stays backed up.
+    ///
+    /// The flag belongs to the folder itself, not its path. Anything that
+    /// deletes and recreates the folder, or moves another one into its place,
+    /// has to set it again.
+    private func excludeFromBackup(_ path: String) {
+        var url = URL(fileURLWithPath: path)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+
+        do {
+            try url.setResourceValues(values)
+        } catch {
+            print("⚠️ Could not exclude \(url.lastPathComponent) from backup: \(error)")
+        }
     }
 
     func getAppPath() -> String {
@@ -43,6 +81,7 @@ class AppUpdateManager {
             clearCompiledCaches()
         }
 
+        #if NATIVEPHP_OTA
         // DEBUG is the native:run payload. Always extract it (shouldUpdateFromBundle)
         // and do not apply a leftover pending OTA on top — otherwise developers
         // never see the PHP they just shipped. Versioned builds still apply pending.
@@ -52,6 +91,7 @@ class AppUpdateManager {
             clearCompiledCaches()
             didExtract = true
         }
+        #endif
 
         appReady = true
         print("✅ App is ready (didExtract=\(didExtract))")
@@ -96,6 +136,7 @@ class AppUpdateManager {
 
             // Create the app directory if it doesn't exist
             try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            excludeFromBackup(appPath)
 
             try extractZipParallel(from: sourceURL, to: destinationURL)
             print("✅ Bundled app extracted successfully")
@@ -221,6 +262,7 @@ class AppUpdateManager {
         }
     }
 
+    #if NATIVEPHP_OTA
     func installUpdate(from zipPath: String) -> Bool {
         print("📦 Installing app update from: \(zipPath)")
 
@@ -278,6 +320,7 @@ class AppUpdateManager {
 
             // Move new app into place
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
+            excludeFromBackup(appPath)
 
             // Restore the stashed .env over whatever the zip extracted: the
             // environment belongs to the installed app, not to the payload.
@@ -336,14 +379,6 @@ class AppUpdateManager {
         }
     }
 
-    /// Compiled Blade views and the bootstrap cache live in Application
-    /// Support, which deliberately survives the app directory being replaced —
-    /// that is where the database lives. But they describe the code that was
-    /// there before, so after any extraction they are stale: a template the
-    /// update changed keeps rendering from the old compiled copy.
-    ///
-    /// Cleared here rather than through `artisan view:clear`, because
-    /// extraction happens before the PHP runtime exists.
     /// A payload ships the whole Laravel .env, and it deliberately carries no
     /// app version: which shell this is belongs to the shell. The values are
     /// written back from bundle_meta so the running app reports the version it
@@ -431,7 +466,16 @@ class AppUpdateManager {
 
         try? FileManager.default.removeItem(atPath: pendingManifest)
     }
+    #endif
 
+    /// Compiled Blade views and the bootstrap cache live in Application
+    /// Support, which deliberately survives the app directory being replaced —
+    /// that is where the database lives. But they describe the code that was
+    /// there before, so after any extraction they are stale: a template the
+    /// update changed keeps rendering from the old compiled copy.
+    ///
+    /// Cleared here rather than through `artisan view:clear`, because
+    /// extraction happens before the PHP runtime exists.
     private func clearCompiledCaches() {
         let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -466,6 +510,7 @@ class AppUpdateManager {
         print("🧹 Cleared compiled caches after extraction")
     }
 
+    #if NATIVEPHP_OTA
     private func isValidApp(at path: String) -> Bool {
         let envFile = path + "/.env"
         let vendorDir = path + "/vendor"
@@ -509,6 +554,7 @@ class AppUpdateManager {
             }
         }
     }
+    #endif
 
     /// Returns just the version name (e.g. "1.0.0"). Used for OTA URLs / display.
     /// For the staleness comparison against the bundle, use `getInstalledVersionId()`.
@@ -611,12 +657,14 @@ class AppUpdateManager {
         return id.caseInsensitiveCompare("DEBUG") == .orderedSame
     }
 
+    #if NATIVEPHP_OTA
     private func isDebugBundle() -> Bool {
         if let fast = getBundledAppVersionFast(), isDebugIdentity(fast) {
             return true
         }
         return isDebugIdentity(getBundledAppVersion())
     }
+    #endif
 
     /// Whether the bundled Laravel app should replace the extracted one.
     ///
@@ -703,6 +751,7 @@ class AppUpdateManager {
         return nil
     }
 
+    #if NATIVEPHP_OTA
     func receiveUpdate(data: Data, filename: String) -> Bool {
         let updatePath = updatesPath + "/" + filename
 
@@ -715,11 +764,13 @@ class AppUpdateManager {
             return false
         }
     }
+    #endif
 
     // MARK: - Fast Version Checking
     //
     // OTA check/download lives in the mobile-ota plugin. Core only applies
-    // pending zips from Documents/updates on boot via applyPendingUpdates().
+    // pending zips from Documents/updates on boot via applyPendingUpdates(),
+    // and only when that plugin is installed (NATIVEPHP_OTA).
 
     /// version + version_code out of bundle_meta.json — the one identity file
     /// both platforms write and read. Android has only ever had this; iOS also

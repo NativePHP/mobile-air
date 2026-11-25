@@ -169,3 +169,30 @@ private struct AnimatableSnapshot: Equatable {
     let scale: CGFloat
     let rotate: Double
 }
+
+// MARK: - Layout animation
+
+/// `animate-layout` on a container: animates a frame that adds, removes,
+/// reorders, hides or shows nodes anywhere under it.
+///
+/// An implicit animation keyed on the subtree's `structureSignature`, so it
+/// only runs for a frame that changes the subtree's shape. Everything that
+/// frame changes under the container animates together: children found in
+/// both frames (same id, which `native:key` keeps stable) move and resize to
+/// their new frames, `FlexContainer` and the lazy stacks place them on the
+/// way, and children that come or go take SwiftUI's default opacity
+/// transition. A frame that only changes text or styling keeps the old
+/// signature and isn't animated, as before.
+///
+/// Reduce Motion turns it off: the frame lands at once.
+struct NodeLayoutAnimationModifier: ViewModifier {
+    let signature: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static let animation: Animation = .spring(response: 0.35, dampingFraction: 0.9)
+
+    func body(content: Content) -> some View {
+        content.animation(reduceMotion ? nil : Self.animation, value: signature)
+    }
+}

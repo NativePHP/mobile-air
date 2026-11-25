@@ -33,6 +33,7 @@ object EventType {
     const val SHEET_DISMISS = 14
     const val HOT_RELOAD    = 15
     const val SHUTDOWN      = 16
+    const val FULL_FRAME    = 17
     const val NATIVE        = 20
 }
 

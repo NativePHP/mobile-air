@@ -15,6 +15,7 @@ use Tests\Fixtures\Edge\ValidatingHostScreen;
 
 beforeEach(function () {
     app('view')->addLocation(__DIR__.'/../../Fixtures/views');
+
     ElementRegistry::register('error_probe', ErrorProbeElement::class);
     ComponentRegistry::reset();
     ComponentRegistry::components(['validating-child' => ValidatingChild::class]);

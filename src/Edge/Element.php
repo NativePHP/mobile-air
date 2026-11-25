@@ -743,6 +743,24 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Animate this container's children between frames. Children that are in
+     * both frames (matched by `native:key` / key()) slide to their new place
+     * and size, new ones fade in and removed ones fade out. Mirror of the
+     * `animate-layout` attribute. Off by default, and `false` leaves the prop
+     * off the wire, so a node that never asks renders exactly as before.
+     */
+    public function animateLayout(bool $on = true): static
+    {
+        if ($on) {
+            $this->extraProps['animate_layout'] = true;
+        } else {
+            unset($this->extraProps['animate_layout']);
+        }
+
+        return $this;
+    }
+
     // ── Defaults (override in subclasses) ──────────────
 
     protected function defaults(): array
@@ -1092,7 +1110,14 @@ abstract class Element
         // reacts to. If a future per-field mutation test ever fails to
         // repaint, the missing field is here (§3 Phase 2 pitfalls:
         // "Hash the right things").
+        //
+        // The id is in it too, so a parent's hash covers the ids of its
+        // whole subtree. Without it, a row whose key changes but whose
+        // content doesn't leaves its parent's hash as it was, the parent
+        // goes out as REUSE, and the phone keeps the row under its old id
+        // while PHP records the new one.
         $contentHash = hash('xxh3', serialize([
+            $id,
             $this->type,
             $layout,
             $style,

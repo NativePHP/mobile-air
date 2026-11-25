@@ -7,7 +7,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -123,7 +122,8 @@ class NativeElementBridge private constructor() {
         @Volatile
         private var versionMismatch: Boolean = false
 
-        private val mainHandler = Handler(Looper.getMainLooper())
+        // Lazy so the reader can run in JVM unit tests, where there's no main looper.
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
         private var cachedTypeTable: Array<String>? = null
 
         /** Previous tree for incremental diff — reuse unchanged node references (shadow thread only) */
@@ -150,8 +150,26 @@ class NativeElementBridge private constructor() {
 
         /* ── Shadow Thread ── */
 
-        /** Pending update — AtomicReference for lock-free coalescing */
-        private val pendingUpdate = AtomicReference<ShadowUpdate?>(null)
+        /** Frames waiting to be parsed, oldest first. See PendingFrames. */
+        private val pendingFrames = PendingFrames<ShadowUpdate>(MAX_PENDING_FRAMES)
+
+        /**
+         * Frames that can wait before the reader gives up on them. Parsing is
+         * much cheaper than building a frame in PHP, so this is only reached
+         * when the shadow thread is starved. Dropped frames break the REUSE
+         * chain, so a full frame is asked for then.
+         */
+        private const val MAX_PENDING_FRAMES = 8
+
+        /**
+         * Set when a frame couldn't be built from the previous tree, or
+         * frames were dropped: the screen keeps the last tree that was built,
+         * and frames with REUSE markers are rejected until PHP sends one
+         * without, which it does when it gets EventType.FULL_FRAME. Shadow
+         * thread only.
+         */
+        @Volatile
+        private var awaitingFullFrame = false
 
         /** Shadow thread reference */
         private var shadowThread: Thread? = null
@@ -221,42 +239,29 @@ class NativeElementBridge private constructor() {
                 }
                 val propDirect = nativeGetPropBuffer()
 
-                // Phase 3 — when NPHP_FLAG_DOUBLE_BUFFER is on, skip the
-                // heap copy entirely. The producer alternates between
-                // buffer A and B per publish, so the buffer we're about
-                // to parse is guaranteed to be untouched until the
-                // publish AFTER the next one — plenty of time for the
-                // shadow thread to finish parse, assuming parse < 2×
-                // average publish interval. Re-read runtime_flags here
-                // (not the latched startWatching value) so the toggle
-                // takes effect on the next frame.
-                //
-                // When the flag is off, fall back to the original byte[]
-                // copy — single-buffer + zero-copy is use-after-overwrite
-                // unsafe.
-                val zeroCopy = (nativeGetRuntimeFlags() and 0x04) != 0
-
-                val flatBuf = if (zeroCopy) {
-                    flatDirect.order(ByteOrder.LITTLE_ENDIAN)
-                } else {
-                    val flatBytes = ByteArray(flatDirect.capacity())
-                    flatDirect.get(flatBytes)
-                    ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
-                }
+                // Copy the frame out of PHP's buffers. With NPHP_FLAG_DOUBLE_BUFFER
+                // the producer alternates between two buffers, so a frame read in
+                // place is only safe until the publish after next. The shadow
+                // thread parses every frame in order and can fall behind by more
+                // than that, and a frame that outgrows its buffer reallocates it,
+                // so a frame read in place could be written over or freed while
+                // it's parsed.
+                val flatBytes = ByteArray(flatDirect.capacity())
+                flatDirect.get(flatBytes)
+                val flatBuf = ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
 
                 val propBuf = if (propDirect != null && propDirect.capacity() > 0) {
-                    if (zeroCopy) {
-                        propDirect.order(ByteOrder.LITTLE_ENDIAN)
-                    } else {
-                        val propBytes = ByteArray(propDirect.capacity())
-                        propDirect.get(propBytes)
-                        ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
-                    }
+                    val propBytes = ByteArray(propDirect.capacity())
+                    propDirect.get(propBytes)
+                    ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
                 } else null
 
                 // Snapshot navigation flag on PHP thread (avoid race with next update)
                 val isNav = NativeUIBridge.navigationPending
                 if (isNav) NativeUIBridge.navigationPending = false
+                // Read on the PHP thread with the flag, so the transition is the
+                // one staged for THIS navigation, not one staged after it.
+                val navTransition = if (isNav) NativeUIBridge.pendingTransition.value else null
 
                 val t1 = System.nanoTime()
                 Log.d(TAG, "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread")
@@ -271,9 +276,9 @@ class NativeElementBridge private constructor() {
                     }
                 }
 
-                // Hand off to shadow thread — overwrites any pending update (coalescing)
-                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, t0, t1)
-                pendingUpdate.set(update)
+                // Hand off to shadow thread, behind any frames it hasn't parsed yet
+                val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, navTransition, t0, t1)
+                pendingFrames.add(update)
                 shadowThread?.let { LockSupport.unpark(it) }
             } catch (e: Throwable) {
                 Log.e(TAG, "postTreeUpdate failed: ${e.message}", e)
@@ -282,22 +287,37 @@ class NativeElementBridge private constructor() {
 
         /**
          * Shadow thread main loop. Parks when idle, wakes on signal from
-         * postTreeUpdate(). Grabs the latest pending update (coalescing),
+         * postTreeUpdate(). Takes every frame in the order PHP published it,
          * parses the tree, diffs against previous, posts to main thread.
          */
         private fun shadowThreadLoop() {
             Log.d(TAG, "Shadow thread started")
             while (shadowRunning) {
-                val update = pendingUpdate.getAndSet(null)
-                if (update == null) {
+                val taken = pendingFrames.take()
+                if (taken == null) {
                     LockSupport.park()
                     continue
+                }
+                val (update, droppedBefore) = taken
+
+                if (droppedBefore && !awaitingFullFrame) {
+                    requestFullFrame("the shadow thread fell $MAX_PENDING_FRAMES frames behind and dropped them")
                 }
 
                 try {
                     val tParseStart = System.nanoTime()
-                    val tree = readTreeFromFlatBuffer(update.flatBuf, update.propBuf, update.typeTable, update.nodeCount)
+                    // While a full frame is awaited, a REUSE marker has nothing to splice.
+                    val prevIndex = if (awaitingFullFrame) emptyMap() else buildIdNodeIndex(previousTree)
+                    val tree = try {
+                        readTreeFromFlatBuffer(update.flatBuf, update.propBuf, update.typeTable, update.nodeCount, prevIndex)
+                    } catch (e: MissingReuseException) {
+                        if (!awaitingFullFrame) {
+                            requestFullFrame("REUSE marker for id=${e.id}, which the previous tree doesn't have")
+                        }
+                        continue
+                    }
                     val tParseEnd = System.nanoTime()
+                    if (tree != null) awaitingFullFrame = false
 
                     if (tree != null) {
                         val nc = countNodes(tree.root)
@@ -391,6 +411,7 @@ class NativeElementBridge private constructor() {
                             // animation with a slide overlay.
                             if (isFreshStackMount) NavigationCoordinator.reset()
                             if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
+                            if (isNav) NativeUIBridge.publishNavigation(update.navTransition)
                             NativeUIBridge.publishTree(diffedTree)
                             // First publish after a hot-reload dismisses
                             // the "Reloading…" pill and clears the
@@ -411,6 +432,16 @@ class NativeElementBridge private constructor() {
                 }
             }
             Log.d(TAG, "Shadow thread stopped")
+        }
+
+        /**
+         * Reject frames with REUSE markers until one without arrives, and ask
+         * PHP to send one. The screen keeps the last tree that was built.
+         */
+        private fun requestFullFrame(reason: String) {
+            Log.w(TAG, "Rejecting frames until a full one arrives: $reason")
+            awaitingFullFrame = true
+            nativeElementWriteEvent(EventType.FULL_FRAME, 0, 0, null)
         }
 
         /**
@@ -455,7 +486,8 @@ class NativeElementBridge private constructor() {
             cachedTypeTable = null
             previousTree = null
             nativeChromePrevTrees.clear()
-            pendingUpdate.set(null)
+            pendingFrames.clear()
+            awaitingFullFrame = false
 
             // Start shadow thread
             shadowRunning = true
@@ -485,7 +517,8 @@ class NativeElementBridge private constructor() {
             shadowRunning = false
             shadowThread?.let { LockSupport.unpark(it) }
             shadowThread = null
-            pendingUpdate.set(null)
+            pendingFrames.clear()
+            awaitingFullFrame = false
 
             clearEvents()
             cachedTypeTable = null
@@ -505,11 +538,21 @@ class NativeElementBridge private constructor() {
 
         /* ── Flat Buffer Tree Reader ── */
 
-        private fun readTreeFromFlatBuffer(
+        /**
+         * Build the tree in a frame. [prevIndex] is the previous tree by id,
+         * for REUSE markers to splice from.
+         *
+         * @throws MissingReuseException when a REUSE marker names an id
+         *   [prevIndex] doesn't have. The frame can't be read past it: its
+         *   subtree isn't in the buffer, so what follows would be read as
+         *   children of the wrong parent.
+         */
+        internal fun readTreeFromFlatBuffer(
             flatBuf: ByteBuffer,
             propBuf: ByteBuffer?,
             typeTable: Array<String>,
-            nodeCount: Int
+            nodeCount: Int,
+            prevIndex: Map<Int, NativeUINode>
         ): NativeUITree? {
             if (nodeCount == 0) return null
 
@@ -520,11 +563,6 @@ class NativeElementBridge private constructor() {
             }
 
             if (flatBuf.remaining() < nodeCount * NODE_SIZE) return null
-
-            // Phase 2 — build an id → node index of the previous tree so
-            // REUSE markers in this frame can splice prior subtrees in O(1).
-            // Built lazily / cheaply: a single DFS walk over the prev tree.
-            val prevIndex = buildIdNodeIndex(previousTree)
 
             val root = readNodeDFS(flatBuf, propBuf, typeTable, NODE_SIZE, prevIndex) ?: return null
             return NativeUITree(0, 0, root)
@@ -562,16 +600,7 @@ class NativeElementBridge private constructor() {
             if (flags and NODE_FLAG_REUSE != 0) {
                 val reuseId = buf.int                       // advances by 4
                 buf.position(nodeStart + stride)            // skip the rest of this node
-                val prior = prevIndex[reuseId]
-                if (prior != null) {
-                    return prior
-                }
-                // PHP shouldn't emit REUSE for an id that wasn't in the
-                // previous tree — that's a forceFullFrame oversight. Log
-                // and drop this subtree; renders an empty hole as a
-                // visible "something went wrong" signal.
-                Log.w(TAG, "REUSE flag set for id=$reuseId but no prior node in index — skipping")
-                return null
+                return prevIndex[reuseId] ?: throw MissingReuseException(reuseId)
             }
 
             val id = buf.int
@@ -925,6 +954,14 @@ class NativeElementBridge private constructor() {
          * (reference equality = fast Compose skip).
          */
         private fun diffNodeWithStats(old: NativeUINode, new: NativeUINode, stats: DiffStats): NativeUINode {
+            // A REUSE marker puts the previous tree's node itself in the new
+            // tree, so there's nothing under it to compare. Without this, a
+            // frame that changes one row still walks every row.
+            if (old === new) {
+                stats.reused++
+                return old
+            }
+
             // Structural mismatch — use new node entirely
             if (old.id != new.id || old.type != new.type || old.children.size != new.children.size) {
                 stats.replaced += countNodes(new)
@@ -988,9 +1025,13 @@ private data class ShadowUpdate(
     val typeTable: Array<String>,
     val nodeCount: Int,
     val isNav: Boolean,
+    val navTransition: String?,  // what PHP staged for this navigation; null when not one
     val t0: Long,   // nanoTime at postTreeUpdate entry
     val t1: Long,   // nanoTime after JNI + buffer copy
 )
+
+/** A REUSE marker named a node the previous tree doesn't have. */
+internal class MissingReuseException(val id: Int) : Exception("REUSE marker for id=$id, which the previous tree doesn't have")
 
 /**
  * UI event data class for the event queue.
