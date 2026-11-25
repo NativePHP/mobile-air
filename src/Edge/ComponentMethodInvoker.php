@@ -29,6 +29,13 @@ use ReflectionNamedType;
  */
 class ComponentMethodInvoker extends BoundMethod
 {
+    /**
+     * Traits whose methods no template or remote call may name, by trait.
+     *
+     * @var array<class-string, array{file: string|false, names: list<string>}>
+     */
+    protected static array $reservedTraits = [];
+
     public static function invoke(
         NativeComponent $component,
         string $method,
@@ -58,7 +65,8 @@ class ComponentMethodInvoker extends BoundMethod
     /**
      * Throw unless the method is one a template or the device may name:
      * public, not static, not a lifecycle hook, not declared on
-     * NativeComponent itself, and not render().
+     * NativeComponent itself, not declared by a reserved trait
+     * ({@see reserveTrait()}), and not render().
      */
     public static function assertCallable(NativeComponent $component, string $method): void
     {
@@ -218,9 +226,74 @@ class ComponentMethodInvoker extends BoundMethod
         if (! $reflection->isPublic()
             || $reflection->isStatic()
             || $method === 'render'
-            || $reflection->getDeclaringClass()->getName() === NativeComponent::class) {
+            || $reflection->getDeclaringClass()->getName() === NativeComponent::class
+            // Router plumbing a screen may override; never a template's to call.
+            || strcasecmp($method, 'setRouteContext') === 0
+            || static::isReservedTraitMethod($component, $reflection)) {
             throw new ComponentMethodNotFoundException($method, $component);
         }
+    }
+
+    /**
+     * Keep every method a trait declares out of reach of templates and
+     * remote calls. For a package trait whose public methods are plumbing
+     * the package calls itself, which a template or something outside the
+     * app must never be able to name.
+     *
+     * The trait copies its methods onto the app's class, so the
+     * NativeComponent check in ensureCallable() does not see them. On a
+     * component that uses the trait they are refused by name, whatever
+     * case the caller spelled it in, so an override on the app's class is
+     * refused too. A method the trait
+     * brought in under an alias is refused by the file it comes from.
+     *
+     * @param  class-string  $trait
+     */
+    public static function reserveTrait(string $trait): void
+    {
+        if (! trait_exists($trait)) {
+            throw new \InvalidArgumentException("[{$trait}] is not a trait.");
+        }
+
+        $reflection = new ReflectionClass($trait);
+
+        static::$reservedTraits[$trait] = [
+            'file' => $reflection->getFileName(),
+            'names' => array_map(fn (ReflectionMethod $m) => strtolower($m->getName()), $reflection->getMethods()),
+        ];
+    }
+
+    /** @internal Forget every reserved trait. For tests. */
+    public static function forgetReservedTraits(): void
+    {
+        static::$reservedTraits = [];
+    }
+
+    /**
+     * Whether the method comes from a reserved trait, or shares a name with
+     * one of its methods on a component that uses it.
+     */
+    protected static function isReservedTraitMethod(NativeComponent $component, ReflectionMethod $reflection): bool
+    {
+        if (static::$reservedTraits === []) {
+            return false;
+        }
+
+        $name = strtolower($reflection->getName());
+        $file = $reflection->getFileName();
+        $uses = class_uses_recursive($component);
+
+        foreach (static::$reservedTraits as $trait => $reserved) {
+            if ($file !== false && $file === $reserved['file']) {
+                return true;
+            }
+
+            if (isset($uses[$trait]) && in_array($name, $reserved['names'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected static function getMethodDependencies($container, $callback, array $parameters = [])

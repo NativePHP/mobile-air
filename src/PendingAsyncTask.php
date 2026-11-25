@@ -48,6 +48,8 @@ class PendingAsyncTask
 
     protected ?string $sharedAlias = null;
 
+    protected bool $anyScreen = false;
+
     protected bool $started = false;
 
     /**
@@ -149,6 +151,20 @@ class PendingAsyncTask
     }
 
     /**
+     * Run `finished()` / `failed()` on whichever screen is showing when the
+     * task completes, instead of dropping them once the dispatching screen
+     * has gone. For app-wide work that has no screen of its own (a
+     * background refresh started at launch, say). The callbacks should not
+     * touch `$this`, since it will be whatever screen is on top.
+     */
+    public function anyScreen(): static
+    {
+        $this->anyScreen = true;
+
+        return $this;
+    }
+
+    /**
      * How long the task may run before it's treated as hung, in seconds
      * (default {@see DEFAULT_TIMEOUT}). When the deadline passes with nothing
      * delivered, `->failed()` fires with a timeout {@see AsyncTaskException} so
@@ -185,7 +201,7 @@ class PendingAsyncTask
         }
 
         // Scope this task to the component that dispatched it, unless shared.
-        $origin = $this->sharedAlias === null ? NativeComponent::active() : null;
+        $origin = $this->sharedAlias === null && ! $this->anyScreen ? NativeComponent::active() : null;
         AsyncTaskRegistry::register($this->id, $origin, $this->sharedAlias);
 
         // Register the completion callbacks so they can be resolved when the
