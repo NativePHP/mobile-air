@@ -72,16 +72,67 @@ class BundleExclusions
         'resources/views/native',
     ];
 
-    /** Non-runtime patterns matched only inside vendor packages. */
+    /**
+     * Non-runtime patterns matched only inside vendor packages, by file or
+     * directory name at any depth. An app can ship any of them anyway by
+     * listing the pattern in nativephp.cleanup_keep_vendor_files.
+     */
     public const VENDOR_PATTERNS = [
         '*.md',
-        'LICENSE*',
         'docs',
         '*.yml',
         '*.yaml',
         '*.neon',
         '*.neon.dist',
+
+        // Dependency lock files a package keeps for its own development.
+        // Composer and npm never read them from inside vendor/.
+        'composer.lock',
+        'package-lock.json',
+        'yarn.lock',
+
+        // Native plugin sources and prebuilt libraries. The plugin compilers
+        // read them from the project's own vendor/ at build time and compile
+        // them into the shell. PHP never loads them on the device.
+        '*.swift',
+        '*.kt',
+        '*.kts',
+        '*.java',
+        '*.gradle',
+        '*.m',
+        '*.mm',
+        '*.a',
+        '*.aar',
+        '*.jar',
+        '*.xcframework',
     ];
+
+    /**
+     * Licence and notice files inside vendor packages. They always ship,
+     * even when another vendor pattern (*.md) matches them, because most
+     * package licences ask for their text to travel with the code. Matched
+     * by file or directory name, like VENDOR_PATTERNS.
+     */
+    public const VENDOR_LICENSE_PATTERNS = [
+        'LICENSE*',
+        'LICENCE*',
+        'COPYING*',
+        'NOTICE*',
+    ];
+
+    /**
+     * VENDOR_PATTERNS without the ones the app asked to keep.
+     *
+     * @return array<int, string>
+     */
+    public static function vendorPatterns(): array
+    {
+        $keep = function_exists('app') && app()->bound('config')
+            ? (array) config('nativephp.cleanup_keep_vendor_files', [])
+            : [];
+
+        return array_values(array_diff(self::VENDOR_PATTERNS, $keep));
+    }
 
     /** Specific vendor paths to exclude. */
     public const VENDOR_PATHS = [
