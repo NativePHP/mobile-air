@@ -133,7 +133,7 @@ class CallbackRegistry
         }
 
         if (is_string($this->map[$id])) {
-            $this->map[$id] = self::parse($this->map[$id]);
+            $this->map[$id] = $this->parseExpression($this->map[$id]);
         }
 
         return $this->map[$id];

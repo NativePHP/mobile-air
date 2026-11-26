@@ -605,7 +605,7 @@ it('matches reference FNV-1a 32-bit vectors in Element::fnv1a32', function () {
 });
 
 it('keeps whitespace, entity, and tag normalization identical across textLeaf and textOpen paths', function () {
-    ElementRegistry::register('text', Text::class);
+    ElementRegistry::swap('text', Text::class);
 
     NativeElementCollector::reset();
     NativeElementCollector::textLeaf(['class' => 'text-base', 'text' => "  hello\f\vworld   again\t\n"]);
