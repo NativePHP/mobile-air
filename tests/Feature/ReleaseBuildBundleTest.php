@@ -212,6 +212,40 @@ class ReleaseBuildBundleTest extends TestCase
         $this->assertSame(15, $meta['async_idle_timeout']);
     }
 
+    public function test_ios_bundle_meta_carries_the_opcache_file_cache_setting(): void
+    {
+        $zipPath = $this->testProjectPath.'/nativephp/ios/NativePHP/app.zip';
+        File::ensureDirectoryExists(dirname($zipPath));
+
+        $command = app(BuildIosAppCommand::class);
+        $write = new \ReflectionMethod($command, 'createBundledVersionFile');
+
+        $write->invoke($command, $zipPath);
+        $this->assertTrue(json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true)['opcache_file_cache']);
+
+        config(['nativephp.opcache.file_cache' => false]);
+        $write->invoke($command, $zipPath);
+        $this->assertFalse(json_decode(File::get(dirname($zipPath).'/bundle_meta.json'), true)['opcache_file_cache']);
+    }
+
+    public function test_android_bundle_meta_carries_the_opcache_file_cache_setting(): void
+    {
+        Process::fake([
+            'composer install*' => Process::result(),
+            'composer dump-autoload*' => Process::result(),
+        ]);
+
+        config(['nativephp.opcache.file_cache' => false]);
+
+        $this->createAndroidProjectFixture();
+
+        (new ReleaseBuildTester)->testPrepareLaravelBundle();
+
+        $meta = json_decode(File::get($this->testProjectPath.'/nativephp/android/app/src/main/assets/bundle_meta.json'), true);
+
+        $this->assertFalse($meta['opcache_file_cache']);
+    }
+
     public function test_runtime_storage_dirs_exist_before_composer_install_runs(): void
     {
         // storage/framework is excluded from the copy, but composer install

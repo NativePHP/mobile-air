@@ -446,6 +446,9 @@ trait PreparesBuild
                 'version_code' => (int) $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+                // Read by the shell when it writes php.ini (see PHPIni.swift and
+                // LaravelEnvironment.kt).
+                'opcache_file_cache' => (bool) config('nativephp.opcache.file_cache', true),
                 'entry_mode' => $entryMode,
                 'native_routes' => $nativeRoutes,
                 // How the async task lane sizes itself (see config nativephp.async).
