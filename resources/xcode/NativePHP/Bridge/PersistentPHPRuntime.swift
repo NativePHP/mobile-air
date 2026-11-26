@@ -85,7 +85,7 @@ final class PersistentPHPRuntime {
         setenv("PHPRC", createPhpIni(caPath: caPath), 1)
 
         // APP_KEY from Keychain
-        if let appKey = getAppKey() {
+        if let appKey = NativePHPApp.getOrGenerateAppKey() {
             setenv("APP_KEY", appKey, 1)
         }
 
@@ -245,24 +245,6 @@ final class PersistentPHPRuntime {
         try? phpIni.write(to: iniPath, atomically: true, encoding: .utf8)
 
         return iniPath.path(percentEncoded: false)
-    }
-
-    private func getAppKey() -> String? {
-        let service = Bundle.main.bundleIdentifier ?? "com.nativephp.app"
-        let account = "APP_KEY"
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: account,
-            kSecAttrService as String: service,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess, let data = result as? Data {
-            return String(data: data, encoding: .utf8)
-        }
-        return nil
     }
 }
 

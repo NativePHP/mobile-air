@@ -717,9 +717,21 @@ struct NativePHPApp: App {
         setenv("VIEW_COMPILED_PATH", viewCacheDir, 1)
         setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
 
-        // Set APP_KEY from secure storage (generates on first run)
-        if let appKey = getOrGenerateAppKey() {
+        // Set APP_KEY from secure storage (generates on first run).
+        // If a locked background launch hits an un-migrated WhenUnlocked item
+        // (or a Before-First-Unlock launch), wait for protected data before
+        // booting PHP so Laravel and event signing never start without APP_KEY.
+        switch Self.resolveAppKey() {
+        case .key(let appKey):
             setenv("APP_KEY", appKey, 1)
+        case .locked:
+            Self.waitForProtectedDataAvailable()
+            if case .key(let appKey) = Self.resolveAppKey() {
+                setenv("APP_KEY", appKey, 1)
+                DebugLogger.shared.log("🔑 Recovered APP_KEY after protected data became available")
+            }
+        case .failed:
+            break
         }
 
         // Tell the embedded PHP to enforce signatures on device events. This
@@ -731,16 +743,38 @@ struct NativePHPApp: App {
         setenv("NATIVEPHP_EVENTS_SIGNED", "1", 1)
     }
 
-    /// Retrieves APP_KEY from Keychain or generates a new one on first launch
-    private func getOrGenerateAppKey() -> String? {
+    private enum AppKeyLookupResult {
+        case key(String)
+        case locked
+        case failed
+    }
+
+    private final class ObserverTokenBox: @unchecked Sendable {
+        var token: NSObjectProtocol?
+    }
+
+    /// Retrieves APP_KEY from Keychain or generates a new one on first launch.
+    /// Stored with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so a
+    /// background launch while the screen is locked can still read the key.
+    static func getOrGenerateAppKey() -> String? {
+        if case .key(let appKey) = resolveAppKey() {
+            return appKey
+        }
+        return nil
+    }
+
+    private static func resolveAppKey() -> AppKeyLookupResult {
         let service = Bundle.main.bundleIdentifier ?? "com.nativephp.app"
         let account = "APP_KEY"
+        let targetAccessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
 
-        // Try to retrieve existing APP_KEY from Keychain
+        // Retrieve both data and attributes so we only run SecItemUpdate once
+        // when migrating legacy WhenUnlocked items.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
             kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -749,23 +783,51 @@ struct NativePHPApp: App {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
         if status == errSecSuccess,
-           let data = result as? Data,
+           let item = result as? [String: Any],
+           let data = item[kSecValueData as String] as? Data,
            let existingKey = String(data: data, encoding: .utf8) {
+            let currentAccessibility = item[kSecAttrAccessible as String] as? String
+            if currentAccessibility != targetAccessibility {
+                let matchQuery: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrAccount as String: account,
+                    kSecAttrService as String: service
+                ]
+                let updateAttributes: [String: Any] = [
+                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                ]
+                let updateStatus = SecItemUpdate(matchQuery as CFDictionary, updateAttributes as CFDictionary)
+                if updateStatus != errSecSuccess {
+                    DebugLogger.shared.log("⚠️ Failed to migrate APP_KEY accessibility: \(updateStatus)")
+                }
+            }
             DebugLogger.shared.log("🔑 Retrieved existing APP_KEY from Keychain")
-            return existingKey
+            return .key(existingKey)
+        }
+
+        if status == errSecInteractionNotAllowed {
+            DebugLogger.shared.log("⚠️ Keychain locked while reading APP_KEY (errSecInteractionNotAllowed)")
+            return .locked
+        }
+
+        // Only generate a new key when none exists in the Keychain. Any other
+        // Keychain error must not overwrite or duplicate an existing key.
+        guard status == errSecItemNotFound else {
+            DebugLogger.shared.log("⚠️ Could not read APP_KEY from Keychain (status: \(status))")
+            return .failed
         }
 
         // Generate new APP_KEY if not found
         DebugLogger.shared.log("🔑 Generating new APP_KEY for first launch")
         guard let newKey = generateAppKey() else {
             DebugLogger.shared.log("❌ Failed to generate APP_KEY")
-            return nil
+            return .failed
         }
 
         // Store in Keychain
         guard let keyData = newKey.data(using: .utf8) else {
             DebugLogger.shared.log("❌ Failed to encode APP_KEY")
-            return nil
+            return .failed
         }
 
         let addQuery: [String: Any] = [
@@ -773,22 +835,57 @@ struct NativePHPApp: App {
             kSecAttrAccount as String: account,
             kSecAttrService as String: service,
             kSecValueData as String: keyData,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
 
         if addStatus == errSecSuccess {
             DebugLogger.shared.log("✅ APP_KEY stored securely in Keychain")
-            return newKey
+            return .key(newKey)
+        } else if addStatus == errSecInteractionNotAllowed {
+            DebugLogger.shared.log("⚠️ Keychain locked while storing APP_KEY (errSecInteractionNotAllowed)")
+            return .locked
         } else {
             DebugLogger.shared.log("❌ Failed to store APP_KEY in Keychain: \(addStatus)")
-            return nil
+            return .failed
         }
     }
 
+    /// Blocks the background init thread until iOS reports protected data is
+    /// available. Checking `isProtectedDataAvailable` and registering the
+    /// observer in the same main-queue block avoids missing an unlock between
+    /// the failed Keychain read and observer registration.
+    private static func waitForProtectedDataAvailable() {
+        guard !Thread.isMainThread else { return }
+
+        let semaphore = DispatchSemaphore(value: 0)
+
+        DispatchQueue.main.async {
+            if UIApplication.shared.isProtectedDataAvailable {
+                semaphore.signal()
+                return
+            }
+
+            let box = ObserverTokenBox()
+            box.token = NotificationCenter.default.addObserver(
+                forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                if let token = box.token {
+                    box.token = nil
+                    NotificationCenter.default.removeObserver(token)
+                    semaphore.signal()
+                }
+            }
+        }
+
+        semaphore.wait()
+    }
+
     /// Generates a new Laravel-compatible APP_KEY (base64:...)
-    private func generateAppKey() -> String? {
+    private static func generateAppKey() -> String? {
         var keyData = Data(count: 32)
         let result = keyData.withUnsafeMutableBytes {
             SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!)
