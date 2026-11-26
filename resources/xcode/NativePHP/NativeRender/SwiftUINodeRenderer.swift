@@ -37,6 +37,17 @@ private struct HeroIsOutgoingKey: EnvironmentKey {
 private struct HeroIsFlyingCopyKey: EnvironmentKey {
     static let defaultValue: Bool = false
 }
+/// The navigation-stack level an element is drawn on, inside native chrome:
+/// the level's URI, scoped by its stack. Nil outside native chrome.
+///
+/// A NavigationStack keeps every level below the top mounted, so the screen
+/// you pushed FROM is still reporting frames while the screen you pushed TO
+/// reports its own. Without knowing which level a report came from, the two
+/// halves of a pair would overwrite each other under the same ref. See
+/// `HeroFlightStore`'s chrome section.
+private struct HeroScreenKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
 
 extension EnvironmentValues {
     var nativeSafeAreaTop: CGFloat {
@@ -66,6 +77,10 @@ extension EnvironmentValues {
     var heroIsFlyingCopy: Bool {
         get { self[HeroIsFlyingCopyKey.self] }
         set { self[HeroIsFlyingCopyKey.self] = newValue }
+    }
+    var heroScreen: String? {
+        get { self[HeroScreenKey.self] }
+        set { self[HeroScreenKey.self] = newValue }
     }
 }
 
@@ -334,7 +349,7 @@ private struct KeyboardDismissTap: UIGestureRecognizerRepresentable {
 /// The every-tap half of `dismissesKeyboardOnTap()`. A SwiftUI gesture that
 /// recognises alongside its children stops UIKit-backed ones (text fields
 /// included) from getting their taps, so this is a plain UIKit recognizer on
-/// the window, like `EscapeHatchGesture`: it never cancels or delays a touch
+/// the window: it never cancels or delays a touch
 /// and recognises alongside everything.
 ///
 /// It only acts on taps inside a screen that asked for it: the tapped view
@@ -483,6 +498,15 @@ struct ResolvedNodeView: View, Equatable {
         // nothing else.
         if decorations.isEmpty {
             laidOut
+        } else if decorations.contains(.layoutAnimation) {
+            // Outside every other decoration, so the node's own frame,
+            // background and opacity move with its children. A branch of its
+            // own rather than another `nodeModifier(if:)` step in the chain,
+            // whose type already doubles with every step (see
+            // `NodeDecorationsModifier`).
+            laidOut
+                .modifier(NodeDecorationsModifier(node: node, decorations: decorations))
+                .modifier(NodeLayoutAnimationModifier(signature: node.structureSignature))
         } else {
             laidOut.modifier(NodeDecorationsModifier(node: node, decorations: decorations))
         }
@@ -557,7 +581,7 @@ struct ResolvedNodeView: View, Equatable {
 /// transitions and animation already rebuilt a node when they came or went.
 /// Everything else can't lose anything by being built again.
 struct NodeDecorations: OptionSet {
-    let rawValue: UInt16
+    let rawValue: UInt32
 
     static let fill = NodeDecorations(rawValue: 1 << 0)
     static let clip = NodeDecorations(rawValue: 1 << 1)
@@ -575,12 +599,13 @@ struct NodeDecorations: OptionSet {
     static let hidden = NodeDecorations(rawValue: 1 << 13)
     static let accessibility = NodeDecorations(rawValue: 1 << 14)
     static let ref = NodeDecorations(rawValue: 1 << 15)
+    static let layoutAnimation = NodeDecorations(rawValue: 1 << 16)
 
     /// The layers whose changes never rebuilt a node, kept on every node
     /// that keeps state.
     static let stable: NodeDecorations = [.fill, .border, .shadow, .opacity, .hidden]
 
-    init(rawValue: UInt16) {
+    init(rawValue: UInt32) {
         self.rawValue = rawValue
     }
 
@@ -657,6 +682,9 @@ struct NodeDecorations: OptionSet {
         }
         if !props.getString("ref", default: "").isEmpty {
             insert(.ref)
+        }
+        if props.getBool("animate_layout") {
+            insert(.layoutAnimation)
         }
     }
 }

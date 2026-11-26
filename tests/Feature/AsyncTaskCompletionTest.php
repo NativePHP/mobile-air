@@ -140,6 +140,43 @@ it('drops the callback when the origin screen has been freed and its object id r
         ->and(AsyncTaskRegistry::scope($id))->toBeNull();
 });
 
+it('runs a child component\'s finished() callback against that child, not the screen', function () {
+    $screen = new AsyncScreenDouble;
+    $child = new AsyncScreenDouble;
+    (fn () => $this->nativeChildComponents = ['card' => $child])->call($screen);
+    setActiveComponent($screen);
+
+    $id = 'a2c';
+    AsyncTaskRegistry::register($id, $screen, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, (fn () => function ($result) {
+        $this->result = $result;
+    })->call($child));
+
+    $screen->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($child->result)->toBe('DONE')
+        ->and($screen->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
+it('drops a child component\'s callback once that child has left the screen', function () {
+    $screen = new AsyncScreenDouble;
+    $detached = new AsyncScreenDouble;
+    setActiveComponent($screen);
+
+    $id = 'a2d';
+    AsyncTaskRegistry::register($id, $screen, null);
+    NativeCallbacks::register($id, AsyncTaskFinished::class, (fn () => function ($result) {
+        $this->result = $result;
+    })->call($detached));
+
+    $screen->fireEvent(finishedEvent($id, 'DONE'));
+
+    expect($detached->result)->toBeNull()
+        ->and($screen->result)->toBeNull()
+        ->and(AsyncTaskRegistry::scope($id))->toBeNull();
+});
+
 it('routes a failed() callback an AsyncTaskException with the original message', function () {
     $screen = new AsyncScreenDouble;
     setActiveComponent($screen);
@@ -328,6 +365,26 @@ it('keeps a completion that lands before the new screen has drawn its first fram
     FakeBridge::disable();
 });
 
+it('keeps a device event that lands before the new screen has drawn its first frame', function () {
+    $bridge = FakeBridge::enable();
+    $router = new NativeRouter;
+    (new ReflectionProperty(NativeRouter::class, 'deferredTransition'))->setValue($router, Transition::Fade);
+
+    // A position the new screen asked for in mount(), answered before its first frame, between two taps on the old one.
+    $position = ['type' => 20, 'event' => 'App\\Events\\PositionReceived', 'payload' => ['id' => 'form', 'latitude' => 48.85]];
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 7]);
+    $bridge->queueEvent($position);
+    $bridge->queueEvent(['type' => 1, 'callback_id' => 8]);
+
+    $router->flushDeferredTransition();
+
+    expect($router->takeCarriedEvent())->toBe($position)
+        ->and($router->takeCarriedEvent())->toBeNull()
+        ->and(nativephp_element_wait_event(0))->toBeNull();
+
+    FakeBridge::disable();
+});
+
 it('keeps a completion that lands while the transition is being signalled', function () {
     $bridge = FakeBridge::enable();
     $router = new NativeRouter;
@@ -348,5 +405,32 @@ it('keeps a completion that lands while the transition is being signalled', func
         ->and($router->takeCarriedEvent())->toBeNull()
         ->and($bridge->resetCount)->toBe(1);
 
+    FakeBridge::disable();
+});
+
+it('scopes an anyScreen() task to no screen, so whichever screen is on top runs its callback', function () {
+    config(['app.key' => 'base64:'.base64_encode(Encrypter::generateKey('AES-256-CBC'))]);
+    FakeBridge::enable()->respondTo('AsyncTask.Dispatch', ['success' => true]);
+    $origin = new AsyncScreenDouble;
+    setActiveComponent($origin);
+
+    $pending = AsyncTask::dispatch(static fn () => 'routes')
+        ->anyScreen()
+        ->finished(static function ($result) {
+            $GLOBALS['anyScreenResult'] = $result;
+        });
+    $pending->start();
+    $id = $pending->getId();
+
+    expect(AsyncTaskRegistry::scope($id))->toBe(['origin' => null, 'shared' => null]);
+
+    // The user has moved on; the completion still runs.
+    $current = new AsyncScreenDouble;
+    setActiveComponent($current);
+    $current->fireEvent(finishedEvent($id, 'routes'));
+
+    expect($GLOBALS['anyScreenResult'] ?? null)->toBe('routes');
+
+    unset($GLOBALS['anyScreenResult']);
     FakeBridge::disable();
 });

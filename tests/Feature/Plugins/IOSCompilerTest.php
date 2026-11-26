@@ -197,6 +197,43 @@ let package = Package(
     /**
      * @test
      *
+     * Each generated renderer registration names the plugin that declared the
+     * component, so the registry can refuse one that would take over a type
+     * core or another plugin already holds.
+     */
+    public function it_generates_renderer_registrations_that_name_their_plugin(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'name' => 'acme/widgets',
+            'components' => [
+                [
+                    'type' => 'acme_widget',
+                    'element' => 'Acme\\Elements\\Widget',
+                    'blade' => 'Acme\\Components\\Widget',
+                    'ios_renderer' => 'AcmeWidgetRenderer',
+                    'android_renderer' => 'com.acme.ui.AcmeWidgetRenderer',
+                ],
+            ],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/ios/NativePHP/Bridge/Plugins/PluginRendererRegistration.swift');
+
+        $this->assertStringContainsString(
+            "    // Plugin: acme/widgets\n".
+            '    SwiftUIRendererRegistry.shared.register("acme_widget", owner: "acme/widgets") { AnyView(AcmeWidgetRenderer(node: $0)) }',
+            $content
+        );
+    }
+
+    /**
+     * @test
+     *
      * Should copy Swift source files from plugin to iOS project.
      */
     public function it_copies_swift_source_files(): void
@@ -1472,6 +1509,127 @@ class NestedClass {}');
         $plist = $this->readPlist();
 
         $this->assertSame(['remote-notification', 'location'], $plist->get('UIBackgroundModes'));
+    }
+
+    /**
+     * @test
+     *
+     * Core's OTA apply path is compiled in only for apps with the OTA plugin.
+     */
+    public function it_compiles_the_ota_path_in_when_the_ota_plugin_is_installed(): void
+    {
+        $this->installTemplatePbxproj();
+
+        $this->compileWithPlugins([$this->createTestPlugin(['name' => 'nativephp/mobile-ota'])]);
+
+        $this->assertSame(
+            ['Debug' => 'DEBUG NATIVEPHP_OTA $(inherited)', 'Release' => 'NATIVEPHP_OTA $(inherited)'],
+            $this->projectCompilationConditions()
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Removing the plugin has to compile the code back out, so the conditions
+     * are rewritten on every compile, including one with no plugins at all.
+     */
+    public function it_removes_the_conditions_when_the_plugin_is_removed(): void
+    {
+        $this->installTemplatePbxproj();
+        $template = $this->files->get($this->pbxprojPath());
+
+        $this->compileWithPlugins([$this->createTestPlugin(['name' => 'nativephp/mobile-ota'])]);
+        $this->compileWithPlugins([]);
+
+        $this->assertSame(
+            ['Debug' => 'DEBUG $(inherited)', 'Release' => '$(inherited)'],
+            $this->projectCompilationConditions()
+        );
+
+        // Nothing else in the project moved.
+        $this->assertSame(
+            $template,
+            str_replace("\n\t\t\t\tSWIFT_ACTIVE_COMPILATION_CONDITIONS = \"\$(inherited)\";", '', $this->files->get($this->pbxprojPath()))
+        );
+    }
+
+    /**
+     * @test
+     */
+    public function it_leaves_the_template_alone_without_feature_plugins(): void
+    {
+        $this->installTemplatePbxproj();
+        $template = $this->files->get($this->pbxprojPath());
+
+        $this->compileWithPlugins([$this->createTestPlugin()]);
+
+        $this->assertSame($template, $this->files->get($this->pbxprojPath()));
+    }
+
+    /**
+     * @test
+     */
+    public function it_keeps_compilation_conditions_the_developer_added(): void
+    {
+        $this->installTemplatePbxproj();
+        $this->files->put($this->pbxprojPath(), str_replace(
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";',
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG STAGING $(inherited)";',
+            $this->files->get($this->pbxprojPath())
+        ));
+
+        $plugins = [$this->createTestPlugin(['name' => 'nativephp/mobile-ota'])];
+        $this->compileWithPlugins($plugins);
+        $once = $this->files->get($this->pbxprojPath());
+        $this->compileWithPlugins($plugins);
+
+        $this->assertSame($once, $this->files->get($this->pbxprojPath()));
+        $this->assertSame('DEBUG STAGING NATIVEPHP_OTA $(inherited)', $this->projectCompilationConditions()['Debug']);
+    }
+
+    private function pbxprojPath(): string
+    {
+        return $this->testBasePath.'/ios/NativePHP.xcodeproj/project.pbxproj';
+    }
+
+    private function installTemplatePbxproj(): void
+    {
+        $this->files->ensureDirectoryExists(dirname($this->pbxprojPath()));
+        $this->files->copy(dirname(__DIR__, 3).'/resources/xcode/NativePHP.xcodeproj/project.pbxproj', $this->pbxprojPath());
+    }
+
+    /**
+     * A fresh compiler per call, so one test can compile twice with different
+     * plugins installed.
+     */
+    private function compileWithPlugins(array $plugins): void
+    {
+        $registry = Mockery::mock(PluginRegistry::class);
+        $registry->shouldReceive('detectConflicts')->andReturn([]);
+        $registry->shouldReceive('all')->andReturn(collect($plugins));
+
+        (new IOSPluginCompiler($this->files, $registry, $this->testBasePath))->compile();
+    }
+
+    /**
+     * SWIFT_ACTIVE_COMPILATION_CONDITIONS of the project-level configurations,
+     * keyed by configuration name ('' when unset).
+     *
+     * @return array<string, string>
+     */
+    private function projectCompilationConditions(): array
+    {
+        $pbxproj = $this->files->get($this->pbxprojPath());
+        $conditions = [];
+
+        foreach (['95BD5DE32D178E9E00C72704' => 'Debug', '95BD5DE42D178E9E00C72704' => 'Release'] as $id => $name) {
+            preg_match('/'.$id.' \/\* '.$name.' \*\/ = \{.*?buildSettings = \{(.*?)\n\t\t\t\};/s', $pbxproj, $block);
+            preg_match('/SWIFT_ACTIVE_COMPILATION_CONDITIONS = "([^"]*)";/', $block[1], $value);
+            $conditions[$name] = $value[1] ?? '';
+        }
+
+        return $conditions;
     }
 
     private function readPlist(string $file = 'NativePHP/Info.plist'): PlistDocument

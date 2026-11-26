@@ -24,14 +24,16 @@ class MakeNativeTestCommand extends Command
     public function handle(): int
     {
         $name = str_replace('/', '\\', $this->argument('name'));
+        $isFqcn = class_exists($name);
 
-        // A bare name maps to the native:make convention; a FQCN is used as-is.
-        $componentClass = class_exists($name)
+        // A bare name maps to the native:make convention, folders included; a FQCN is used as-is.
+        $componentClass = $isFqcn
             ? $name
             : 'App\\NativeComponents\\'.$name;
 
         $className = class_basename($componentClass);
-        $testPath = base_path('tests/Feature/'.$className.'Test.php');
+        $testName = $isFqcn ? $className : str_replace('\\', '/', $name);
+        $testPath = base_path('tests/Feature/'.$testName.'Test.php');
 
         if ($this->files->exists($testPath) && ! $this->option('force')) {
             $this->components->error("{$className}Test already exists at {$testPath}. Use --force to overwrite.");
@@ -45,7 +47,7 @@ class MakeNativeTestCommand extends Command
         $this->components->info("Test created: {$testPath}");
 
         if (! class_exists($componentClass)) {
-            $this->components->warn("Note: [{$componentClass}] does not exist yet — create it with `php artisan native:make {$className}`.");
+            $this->components->warn("Note: [{$componentClass}] does not exist yet — create it with `php artisan native:make {$testName}`.");
         }
 
         return self::SUCCESS;

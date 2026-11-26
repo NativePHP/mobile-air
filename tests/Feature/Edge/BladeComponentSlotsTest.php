@@ -31,22 +31,16 @@ beforeEach(function () {
     NativeElementCollector::reset();
     NativeTagPrecompiler::setActive(true);
 
-    // `button` and `text_input` normally come from a UI plugin. Put the
-    // registry back afterwards so later tests see what they did before.
-    $this->elements = ElementRegistry::all();
-    ElementRegistry::register('button', Button::class);
-    ElementRegistry::register('text_input', TextInput::class);
+    // `button` and `text_input` normally come from a UI plugin. TestCase
+    // resets the registry after each test.
+    ElementRegistry::swap('button', Button::class);
+    ElementRegistry::swap('text_input', TextInput::class);
 });
 
 afterEach(function () {
     NativeTagPrecompiler::setActive(false);
     NativeElementCollector::reset();
     ComponentRegistry::reset();
-
-    ElementRegistry::reset();
-    foreach ($this->elements as $type => $class) {
-        ElementRegistry::register($type, $class);
-    }
 });
 
 /**

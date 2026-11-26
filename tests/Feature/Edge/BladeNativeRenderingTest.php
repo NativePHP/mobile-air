@@ -1,6 +1,9 @@
 <?php
 
+use Illuminate\View\ViewException;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\Elements\TextInput;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 
@@ -290,6 +293,40 @@ BLADE);
     expect($card['children'][2]['type'])->toBe('spacer');
     expect($card['children'][3]['props']['text'])->toBe('Content here');
 });
+
+// ── native:model ────────────────────────────────────────────────────
+
+it('reads native:model bindings from the variable and a path into it', function () {
+    ElementRegistry::swap('text_input', TextInput::class);
+
+    file_put_contents(__DIR__.'/views/test-model-read.blade.php', <<<'BLADE'
+<native:column>
+    <native:text-input native:model="name" />
+    <native:text-input native:model.blur="profile.address.city" />
+    <native:text-input @model="account.email" />
+    <native:text-input native:model="profile.nickname" />
+</native:column>
+BLADE);
+
+    NativeElementCollector::reset();
+    view('test-model-read', [
+        'name' => 'Ada',
+        'profile' => ['address' => ['city' => 'London']],
+        'account' => (object) ['email' => 'ada@example.com'],
+    ])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect(array_map(fn ($input) => $input['props']['value'] ?? null, $tree['children']))
+        ->toBe(['Ada', 'London', 'ada@example.com', null]); // a missing key below the root reads as null
+});
+
+it('fails on a native:model binding to a variable the view does not have', function () {
+    ElementRegistry::swap('text_input', TextInput::class);
+
+    file_put_contents(__DIR__.'/views/test-model-typo.blade.php', '<native:text-input native:model="usrname.first" />');
+
+    view('test-model-typo', ['username' => ['first' => 'Ada']])->render();
+})->throws(ViewException::class, 'Undefined variable $usrname');
 
 // ── @nativeError directive tests ────────────────────────────────────
 

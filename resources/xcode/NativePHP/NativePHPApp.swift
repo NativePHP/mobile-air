@@ -47,6 +47,7 @@ struct NativePHPApp: App {
         registerBridgeFunctions()
         ThermalStateMonitor.start()
         AppLifecycleMonitor.start()
+        SystemFunctions.startAppearanceOverride()
 
         DebugLogger.shared.log("📱 NativePHPApp.init() completed (minimal)")
     }
@@ -149,7 +150,8 @@ struct NativePHPApp: App {
 
         // 7. OTA check/download lives in the mobile-ota plugin. Core only
         // applies pending zips from Documents/updates on boot (ensureAppExists
-        // → applyPendingUpdates). Do not re-enable a Bifrost client here.
+        // → applyPendingUpdates), and only when that plugin is installed
+        // (NATIVEPHP_OTA). Do not re-enable a Bifrost client here.
 
         // 8. Defer queue worker boot — start AFTER critical path completes
         //    so it doesn't compete for CPU/memory during first page render
@@ -598,6 +600,7 @@ struct NativePHPApp: App {
         // package's migrations in both runtime modes.
         setenv("NATIVEPHP_RUNNING", "true", 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
+        setenv("NATIVEPHP_OS_VERSION", NativeOSVersion.string, 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("LARAVEL_STORAGE_PATH", storageDir, 1)
         setenv("VIEW_COMPILED_PATH", viewCacheDir, 1)

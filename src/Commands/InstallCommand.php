@@ -12,6 +12,7 @@ use Native\Mobile\Concerns\PlatformFileOperations;
 use Native\Mobile\Concerns\TracksInstallFailures;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\PhpBinaries;
+use Native\Mobile\Support\PhpVersions;
 use Native\Mobile\Support\TransferFailure;
 
 use function Laravel\Prompts\error;
@@ -161,8 +162,9 @@ class InstallCommand extends Command
         $shouldInstallPhp = ! ($this->option('skip-php') && ! $this->forcing);
 
         if ($shouldInstallPhp) {
-            $this->phpVersion = $this->detectPhpVersion();
+            // The manifest first: the minors it lists are the ones on offer.
             $this->fetchVersionsManifest();
+            $this->phpVersion = $this->detectPhpVersion();
             $this->warnIfFormatVersionDiffers();
         }
 
@@ -484,9 +486,16 @@ class InstallCommand extends Command
             .$expected.', or a nativephp/mobile that expects format '.$published.'.');
     }
 
+    /**
+     * The PHP minor to install, out of the ones the manifest has.
+     *
+     * Runs after {@see fetchVersionsManifest()}. When that failed there is
+     * nothing to choose from, and the host's minor stands in so the platform
+     * installers can return quietly on the missing manifest.
+     */
     protected function detectPhpVersion(): string
     {
-        $supported = ['8.5', '8.4', '8.3'];
+        $available = PhpVersions::available($this->versionsManifest);
 
         // Check nativephp.lock first (committed by the user or written by a previous install)
         $lockPath = base_path('nativephp.lock');
@@ -495,27 +504,35 @@ class InstallCommand extends Command
             $lockVersion = $lock['php']['version'] ?? null;
 
             if (is_string($lockVersion)) {
-                $minor = implode('.', array_slice(explode('.', $lockVersion), 0, 2));
-                if (in_array($minor, $supported, true)) {
+                $minor = PhpVersions::minor($lockVersion);
+                if (in_array($minor, $available, true)) {
                     return $minor;
                 }
             }
         }
 
         // Fall back to the host PHP — Composer resolves against it.
-        $minor = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+        $host = $this->hostPhpVersion();
+        $minor = PhpVersions::forHost($host, $available);
 
-        if (in_array($minor, $supported, true)) {
-            return $minor;
+        if ($minor !== $host) {
+            warning(sprintf(
+                'PHP binaries release %s has no PHP %s build, so this installs PHP %s.',
+                PhpBinaries::release(),
+                $host,
+                $minor
+            ));
+            note('It has '.implode(', ', array_reverse($available)).'. '
+                .'Composer resolves your dependencies against your host PHP, so switch to PHP '.$minor.' before you build.');
         }
 
-        foreach ($supported as $version) {
-            if (version_compare($minor, $version, '>=')) {
-                return $version;
-            }
-        }
+        return $minor;
+    }
 
-        return '8.3';
+    /** The host's PHP minor. A seam for tests, which can't change the PHP they run on. */
+    protected function hostPhpVersion(): string
+    {
+        return PhpVersions::host();
     }
 
     protected function writeNativephpLock(string $minor, bool $icu): void

@@ -6,8 +6,6 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Route as IlluminateRoute;
 use Illuminate\Routing\RouteCollection;
 use Illuminate\Support\Facades\Log;
-use Native\Mobile\Events\Async\AsyncTaskFailed;
-use Native\Mobile\Events\Async\AsyncTaskFinished;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -177,6 +175,16 @@ class NativeRouter
     protected static array $routes = [];
 
     /**
+     * Named route tables a package fills at runtime, see setRouteTable().
+     * Matched only after every app route, in the order the tables were
+     * first set, so a table can add a screen and never replace one of the
+     * app's.
+     *
+     * @var array<string, array<string, array{class: string, layout: ?string, route: IlluminateRoute, context: mixed, table: string, pattern: string, parent: null}>>
+     */
+    protected static array $routeTables = [];
+
+    /**
      * Routes whose Route::native() call took over a URI another route was
      * already using. That is normal for a top-level route (a native
      * screen at `/` replacing a website's `/`), but not for a child
@@ -210,7 +218,7 @@ class NativeRouter
     protected ?Transition $deferredTransition = null;
 
     /**
-     * Async completions kept from the reset in flushDeferredTransition(), for
+     * Native events kept from the reset in flushDeferredTransition(), for
      * the runloop of the screen that's showing to handle next.
      *
      * @var list<array<string, mixed>>
@@ -224,10 +232,12 @@ class NativeRouter
      * one is ready.
      *
      * The reset drops every queued event, which is right for taps on the
-     * screen going away. But a task the new screen dispatched from mount()
-     * can finish before that first frame, and its completion would be
-     * dropped with them. Its timeout is disarmed once it finishes, so the
-     * screen would wait for it forever. Those completions are kept.
+     * screen going away. But a task or a bridge call the new screen started
+     * from mount() can answer before that first frame, and its native event
+     * would be dropped with them: an async completion whose timeout is
+     * already disarmed, or a device answer such as a position fix that never
+     * comes again. The screen would wait for it forever. Native events are
+     * kept.
      *
      * They're taken after the transition is signalled, right before the
      * reset. On iOS the signal waits for the main thread, which is busy
@@ -244,13 +254,13 @@ class NativeRouter
 
         static::signalTransition($t);
 
-        $this->carriedEvents = [...$this->carriedEvents, ...static::drainEvents()['completions']];
+        $this->carriedEvents = [...$this->carriedEvents, ...static::drainEvents()['native_events']];
 
         static::resetBuffers();
     }
 
     /**
-     * The next async completion kept from a transition reset, if any.
+     * The next native event kept from a transition reset, if any.
      *
      * @return array<string, mixed>|null
      */
@@ -261,7 +271,7 @@ class NativeRouter
 
     /**
      * Count the system backs queued behind the one that just popped a screen,
-     * carrying any async completions on to the next runloop.
+     * carrying any native events on to the next runloop.
      *
      * Picking an entry from the iOS back button's history menu pops several
      * screens at once, and native navigation posts one system back for each.
@@ -271,24 +281,26 @@ class NativeRouter
      */
     protected function takeQueuedSystemBacks(): int
     {
-        ['completions' => $completions, 'system_backs' => $backs] = static::drainEvents();
+        ['native_events' => $nativeEvents, 'system_backs' => $backs] = static::drainEvents();
 
-        $this->carriedEvents = [...$this->carriedEvents, ...$completions];
+        $this->carriedEvents = [...$this->carriedEvents, ...$nativeEvents];
 
         return $backs;
     }
 
     /**
-     * Drain the event queue, keeping only async task completions and a count
-     * of system backs. Each completion carries its task id, and
-     * NativeComponent checks which screen dispatched it, so handing it to the
-     * next runloop can't wake the wrong screen.
+     * Drain the event queue, keeping native events and a count of system
+     * backs. UI events are dropped: their callback ids belong to the screen
+     * going away. A native event is meant for whichever screen listens: an
+     * async completion carries its task id, and NativeComponent checks which
+     * screen dispatched it, and an #[On] listener filters on the payload, so
+     * handing it to the next runloop is what a moment later would have done.
      *
-     * @return array{completions: list<array<string, mixed>>, system_backs: int}
+     * @return array{native_events: list<array<string, mixed>>, system_backs: int}
      */
     protected static function drainEvents(): array
     {
-        $completions = [];
+        $nativeEvents = [];
         $backs = 0;
 
         while (($event = nativephp_element_wait_event(0)) !== null) {
@@ -298,16 +310,12 @@ class NativeRouter
                 continue;
             }
 
-            $name = (string) ($event['event'] ?? '');
-            $name = str_starts_with($name, 'native:') ? substr($name, 7) : $name;
-
-            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE
-                && ($name === AsyncTaskFinished::class || $name === AsyncTaskFailed::class)) {
-                $completions[] = $event;
+            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE) {
+                $nativeEvents[] = $event;
             }
         }
 
-        return ['completions' => $completions, 'system_backs' => $backs];
+        return ['native_events' => $nativeEvents, 'system_backs' => $backs];
     }
 
     // ── Static registry ─────────────────────────────
@@ -347,6 +355,109 @@ class NativeRouter
             static::$replacedAnotherRoute ??= new \WeakMap;
             static::$replacedAnotherRoute[$route] = true;
         }
+    }
+
+    /**
+     * Replace the named route table with these entries, keyed by URI
+     * pattern: `['/promos/{id}' => ['class' => PromoScreen::class,
+     * 'context' => 'promos.show']]`. An empty list removes the table.
+     *
+     * For a package that learns its screens while the app runs. The
+     * entry's `context` is handed to the screen it opens through
+     * NativeComponent::setRouteContext() before it mounts, so one screen
+     * class can serve many routes. An optional `layout` sets its chrome.
+     *
+     * Tables are matched only after every app route, so a table route
+     * never shadows one of the app's, even a parameterized one. An entry
+     * whose pattern an app route already has, or whose class is not a
+     * NativeComponent, is dropped and logged. Returns how many entries
+     * were kept. clearRoutes() clears every table.
+     *
+     * @param  array<string, array{class: class-string<NativeComponent>, context?: mixed, layout?: ?string}>  $entries
+     */
+    public static function setRouteTable(string $name, array $entries): int
+    {
+        $kept = [];
+
+        foreach ($entries as $uri => $entry) {
+            $class = is_array($entry) ? ($entry['class'] ?? null) : null;
+
+            if (! is_string($uri) || $uri === '' || ! is_string($class) || ! is_subclass_of($class, NativeComponent::class)) {
+                static::debugLog("route table [{$name}]: dropped a malformed entry for ".json_encode($uri));
+
+                continue;
+            }
+
+            $pattern = '/'.ltrim($uri, '/');
+
+            if (isset(static::$routes[$pattern])) {
+                static::debugLog("route table [{$name}]: dropped {$pattern}, the app has a route there");
+
+                continue;
+            }
+
+            $route = new IlluminateRoute(['GET'], ltrim($pattern, '/'), fn () => null);
+
+            if (function_exists('app') && app()->bound('router')) {
+                $route->setRouter(app('router'));
+                $route->setContainer(app());
+            }
+
+            $kept[$pattern] = [
+                'class' => $class,
+                'layout' => $entry['layout'] ?? null,
+                'route' => $route,
+                'context' => $entry['context'] ?? null,
+                'table' => $name,
+                // Same shape as an app route, so resolve() and the bars
+                // treat a table screen as a top-level one.
+                'pattern' => $pattern,
+                'parent' => null,
+            ];
+        }
+
+        if ($kept === []) {
+            unset(static::$routeTables[$name]);
+        } else {
+            static::$routeTables[$name] = $kept;
+        }
+
+        return count($kept);
+    }
+
+    /**
+     * The named route table's entries, keyed by URI pattern.
+     *
+     * @return array<string, array{class: string, context: mixed}>
+     */
+    public static function routeTable(string $name): array
+    {
+        return array_map(
+            fn (array $entry) => ['class' => $entry['class'], 'context' => $entry['context']],
+            static::$routeTables[$name] ?? [],
+        );
+    }
+
+    /**
+     * The route table entry a URI opens, as `['table' => ..., 'class' =>
+     * ..., 'context' => ...]`, or null when it matches an app route or no
+     * route at all. Nothing is bound, so it is safe to ask.
+     *
+     * @return array{table: string, class: string, context: mixed}|null
+     */
+    public static function routeEntryFor(string $uri): ?array
+    {
+        try {
+            $entry = static::matchRoute($uri)['entry'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (! isset($entry['table'])) {
+            return null;
+        }
+
+        return ['table' => $entry['table'], 'class' => $entry['class'], 'context' => $entry['context']];
     }
 
     /**
@@ -805,12 +916,14 @@ class NativeRouter
 
         return [
             'class' => $entry['class'],
-            'layout' => static::layoutFor($entry['pattern']),
+            // layoutFor() walks app routes only, so a table entry keeps its own.
+            'layout' => isset($entry['table']) ? $entry['layout'] : static::layoutFor($entry['pattern']),
             'params' => $route->parametersWithoutNulls(),
             'query' => static::queryOf($uri),
             'route' => $route,
             'pattern' => $entry['pattern'],
             'parent' => $entry['parent'],
+            'context' => $entry['context'] ?? null,
         ];
     }
 
@@ -825,18 +938,26 @@ class NativeRouter
         // from parsing it here, where too many parameters would throw.
         $request = Request::create(static::pathOf($uri), 'GET');
 
-        $literalRoutes = [];
-        $parameterizedRoutes = [];
+        // App routes first, all of them, then each route table in turn: a
+        // table route never shadows an app route, even a parameterized one.
+        $ordered = [];
 
-        foreach (static::$routes as $entry) {
-            if ($entry['route']->parameterNames() === []) {
-                $literalRoutes[] = $entry;
-            } else {
-                $parameterizedRoutes[] = $entry;
+        foreach ([static::$routes, ...array_values(static::$routeTables)] as $table) {
+            $literalRoutes = [];
+            $parameterizedRoutes = [];
+
+            foreach ($table as $entry) {
+                if ($entry['route']->parameterNames() === []) {
+                    $literalRoutes[] = $entry;
+                } else {
+                    $parameterizedRoutes[] = $entry;
+                }
             }
+
+            array_push($ordered, ...$literalRoutes, ...$parameterizedRoutes);
         }
 
-        foreach ([...$literalRoutes, ...$parameterizedRoutes] as $entry) {
+        foreach ($ordered as $entry) {
             $registeredRoute = $entry['route'];
 
             if (function_exists('app') && app()->bound('router')) {
@@ -954,6 +1075,7 @@ class NativeRouter
     {
         static::$routes = [];
         static::$replacedAnotherRoute = null;
+        static::$routeTables = [];
         static::$currentGroupLayout = null;
     }
 
@@ -1038,6 +1160,7 @@ class NativeRouter
                     $resolved['class'],
                     $resolved['params'] ?: ($entry['params'] ?? []),
                     query: $resolved['query'],
+                    context: $resolved['context'],
                 );
                 $this->applyResolvedRoute($component, $resolved);
                 $component->mountComponent();
@@ -1080,11 +1203,16 @@ class NativeRouter
 
         try {
             static::debugLog("start: class=$class uri=$uri");
-            $component = $this->createComponent($class, $params, query: static::queryOf($uri));
+
+            // A route table entry hands its screen a context only the route
+            // knows, so it is looked up before the component is made.
+            $resolved = $uri !== '' ? static::resolve($uri) : null;
+            $context = ($resolved['class'] ?? null) === $class ? ($resolved['context'] ?? null) : null;
+
+            $component = $this->createComponent($class, $params, query: static::queryOf($uri), context: $context);
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
-            $resolved = $uri !== '' ? static::resolve($uri) : null;
             if ($resolved !== null) {
                 $this->applyResolvedRoute($component, $resolved);
             }
@@ -1251,6 +1379,7 @@ class NativeRouter
                         $resolved['params'],
                         $intent->data,
                         $resolved['query'],
+                        $resolved['context'],
                     );
                     $this->applyResolvedRoute($next, $resolved);
                     static::debugLog('NAVIGATE: component created, pushing to stack');
@@ -1316,6 +1445,7 @@ class NativeRouter
                             $resolved['params'],
                             $intent->data,
                             $resolved['query'],
+                            $resolved['context'],
                         );
                         $this->applyResolvedRoute($next, $resolved);
 
@@ -1438,9 +1568,11 @@ class NativeRouter
         $component->setRoutePattern($resolved['pattern'] ?? null, $resolved['parent'] ?? null);
     }
 
-    protected function createComponent(string $class, array $params = [], array $data = [], array $query = []): NativeComponent
+    /** `$context` is the route table entry's context, null for an app route. */
+    protected function createComponent(string $class, array $params = [], array $data = [], array $query = [], mixed $context = null): NativeComponent
     {
         $component = new $class;
+        $component->setRouteContext($context);
         $component->setRouter($this);
         $component->setParams($params);
         $component->setData($data);

@@ -35,6 +35,7 @@ class BottomNav extends Element
             'text-color' => 'textColor',
             'font-name' => 'fontName',
             'minimize-on-scroll' => 'minimizeOnScroll',
+            'edge-blur' => 'edgeBlur',
             'tab-presentation-id' => 'tabPresentationId',
             'tab-presentation-configuration' => 'tabPresentationConfiguration',
         ] as $kebab => $camel) {
@@ -69,6 +70,13 @@ class BottomNav extends Element
 
         if (isset($attrs['minimizeOnScroll'])) {
             $this->props['minimize_on_scroll'] = filter_var($attrs['minimizeOnScroll'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        // iOS 26's scroll edge effect under the bar: soft (the default),
+        // hard or none. Anything else is dropped.
+        $edgeBlur = BottomBar::edgeBlurStyle($attrs['edgeBlur'] ?? null);
+        if ($edgeBlur !== null) {
+            $this->props['edge_blur'] = $edgeBlur;
         }
 
         if (isset($attrs['tabPresentationId'])) {

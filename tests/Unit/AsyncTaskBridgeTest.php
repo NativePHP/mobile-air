@@ -147,6 +147,19 @@ it('gives each task to a free slot, not to the next slot in turn', function () {
         ->and($workerLoop)->toContain('queue.poll(');
 });
 
+it('boots async PHP contexts lazily on first task on both platforms', function () {
+    $ios = asyncBridgeSource('xcode/NativePHP/Bridge/AsyncTaskExecutor.swift');
+    $android = asyncBridgeSource('androidstudio/app/src/main/java/com/nativephp/mobile/bridge/AsyncTaskExecutor.kt');
+
+    $iosStart = substr($ios, strpos($ios, 'func start()'), strpos($ios, 'func dispatch(') - strpos($ios, 'func start()'));
+    $androidStart = substr($android, strpos($android, 'fun start()'), strpos($android, 'fun dispatch(') - strpos($android, 'fun start()'));
+
+    expect($iosStart)->not->toContain('_async_php_boot')
+        ->and($androidStart)->not->toContain('bootAsyncContext')
+        ->and($ios)->toContain('private func bootSlot(')
+        ->and($ios)->toContain('let shouldBoot = (slotHandles.count + bootingSlots) < poolSize');
+});
+
 it('logs a warning when native refuses the outcome of a task', function () {
     Log::spy();
 

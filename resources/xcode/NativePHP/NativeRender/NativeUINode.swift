@@ -28,6 +28,7 @@ enum EventType {
     static let tabChange      = 13
     static let sheetDismiss   = 14
     static let hotReload      = 15
+    static let fullFrame      = 17
     static let native         = 20
 }
 
@@ -211,6 +212,24 @@ final class NativeUINode: Identifiable, Equatable {
         || props.getBool("has_menu")
         || props.getBool("has_context_menu")
         || children.contains { $0.keepsState }
+
+    /// A hash of the ids, types and visibility of this node and everything
+    /// under it, but not their content. It changes when a node is added,
+    /// removed, reordered, hidden or shown anywhere in the subtree, and not
+    /// when only text or styling changes. `animate-layout` animates a frame
+    /// whose signature differs from the last (see `NodeLayoutAnimationModifier`).
+    /// Worked out on first use, on the main thread.
+    lazy var structureSignature: Int = {
+        var hasher = Hasher()
+        hasher.combine(id)
+        hasher.combine(type)
+        hasher.combine(layout?.display ?? 0)
+        hasher.combine(children.count)
+        for child in children {
+            hasher.combine(child.structureSignature)
+        }
+        return hasher.finalize()
+    }()
 
     /// Types whose views hold nothing but what the node says, so building
     /// them again is invisible. Anything else, including every plugin type,

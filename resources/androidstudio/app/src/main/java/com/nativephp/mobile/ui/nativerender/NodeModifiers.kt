@@ -45,13 +45,16 @@ import androidx.compose.ui.unit.dp
  * `gradient_stops` is a comma-joined list of two or three `#AARRGGBB` values.
  * `gradient_dx`/`gradient_dy` are the unit vector the gradient travels toward,
  * in view space where y grows downward — the same convention as iOS.
+ * `dark_gradient_stops`, set when a stop is a theme token, replaces the list
+ * in dark mode, as `dark_bg_color` replaces the flat colour.
  *
  * Compose wants pixel endpoints, and the brush is built before layout size is
  * known, so `Float.POSITIVE_INFINITY` is used as the "far edge" sentinel that
  * Compose resolves against the actual bounds at draw time.
  */
-fun linearGradientBrush(props: GenericProps): Brush? {
-    val raw = props.getString("gradient_stops", "")
+fun linearGradientBrush(props: GenericProps, isDarkMode: Boolean): Brush? {
+    val darkRaw = if (isDarkMode) props.getString("dark_gradient_stops", "") else ""
+    val raw = darkRaw.ifEmpty { props.getString("gradient_stops", "") }
     if (raw.isEmpty()) return null
 
     val colors = raw.split(",")
@@ -215,7 +218,7 @@ fun Modifier.nodeStyle(style: NodeStyle?, props: GenericProps, isDarkMode: Boole
 
     // Background — a linear gradient wins over the flat color when declared,
     // matching CSS where background-image paints over background-color.
-    val gradient = linearGradientBrush(props)
+    val gradient = linearGradientBrush(props, isDarkMode)
 
     if (gradient != null) {
         mod = mod.background(gradient, shape)

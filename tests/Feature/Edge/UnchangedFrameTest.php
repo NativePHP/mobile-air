@@ -250,3 +250,34 @@ it('holds back unchanged frames in the testing harness too', function () {
 
     expect($screen->bridge()->publishes)->toHaveCount(2);
 });
+
+it('redraws the screen in full when the error or dump screen is dismissed with subtree memo on', function (string $method, string $heading) {
+    $screen = new UnchangedFrameScreen;
+    $screen->memo = true;
+
+    $bridge = runScreenOver($screen, [tapEvent($method), ['type' => 8]]);
+
+    // The overlay's positional ids are the screen's own, so a REUSE marker
+    // in the frame after it would splice an overlay node into the screen.
+    expect($bridge->publishes)->toHaveCount(3)
+        ->and(textsInFrame($bridge->publishes[1]))->toContain($heading)
+        ->and($bridge->publishes[2])->toBe($bridge->publishes[0]);
+})->with([
+    'error screen' => ['explode', 'Something went wrong'],
+    'dump screen' => ['dump', 'dd()'],
+]);
+
+it('publishes the frame again in full when the native side asks for one', function () {
+    $screen = new UnchangedFrameScreen;
+    $screen->memo = true;
+
+    $bridge = runScreenOver($screen, [
+        tapEvent('increment'),
+        ['type' => NativeComponent::EVENT_FULL_FRAME],
+    ]);
+
+    expect($bridge->publishes)->toHaveCount(3)
+        ->and(json_encode($bridge->publishes[1]))->toContain('"flags":1')
+        ->and(json_encode($bridge->publishes[2]))->not->toContain('"flags":1')
+        ->and(textsInFrame($bridge->publishes[2]))->toContain('Count 1');
+});

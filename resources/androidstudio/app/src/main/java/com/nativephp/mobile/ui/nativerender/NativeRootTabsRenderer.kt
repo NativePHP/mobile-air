@@ -2,6 +2,8 @@ package com.nativephp.mobile.ui.nativerender
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -83,7 +85,7 @@ import kotlinx.coroutines.delay
  * — same three-kind item dispatch (string / object / element), same
  * static / dynamic filter modes.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val tabs = node.children.filter { it.type == "bottom_nav_item" }
@@ -237,6 +239,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     val searchMode = node.props.getString("nav_search_mode", "static")
     val searchDebounceMs = node.props.getInt("nav_search_debounce_ms", 250)
     val searchOnQueryCb = node.props.getCallbackId("nav_search_on_query")
+    val searchOnSubmitCb = node.props.getCallbackId("nav_search_on_submit")
 
     val shouldShowSearchTab = searchMode == "dynamic"
         || searchItemNodes.isNotEmpty()
@@ -534,6 +537,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 itemNodes = searchItemNodes,
                 mode = searchMode,
                 onQueryCallbackId = searchOnQueryCb,
+                onSubmitCallbackId = searchOnSubmitCb,
                 debounceMs = searchDebounceMs,
                 modifier = Modifier.fillMaxSize().padding(padding),
             )
@@ -562,65 +566,96 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // snap to the destination's content before the slide/fade ran —
         // the "new page flashes, then the transition kicks in" stutter.
         val paneNodes = remember { HashMap<String, Pair<NativeUINode?, NativeUINode?>>() }
-        AnimatedContent(
-            targetState = targetKey,
-            transitionSpec = {
-                val initialIdx = initialState.substringBefore('|')
-                val targetIdx = targetState.substringBefore('|')
-                if (initialIdx != targetIdx) {
-                    fadeIn(tween(180)) togetherWith fadeOut(tween(180))
-                } else {
-                    transitionFor(pendingTransition)
-                }
-            },
-            label = "tab-content",
-            modifier = Modifier.fillMaxSize()
-        ) { key ->
-            DisposableEffect(key) {
-                onDispose {
-                    paneNodes.remove(key)
-                    screenPaddings.remove(key)
-                }
-            }
-            val screenPadding = if (key == targetKey) {
-                screenPaddings[key] = padding
-                padding
-            } else {
-                screenPaddings[key] ?: padding
-            }
-            val (paneScreen, paneBottomBar) = if (key == targetKey) {
-                Pair(screenContent, bottomBarNode).also { paneNodes[key] = it }
-            } else {
-                paneNodes[key] ?: Pair(screenContent, bottomBarNode)
-            }
-            // The bar's nested-scroll connection wraps the screen content
-            // directly, inside AnimatedContent, for the same reason as the
-            // stack renderer: outside it, the list's scroll deltas never reach
-            // the bar. Only the entering pane drives the bar.
-            val drivesBar = barReactsToScroll && key == targetKey
-            val scrollModifier = if (drivesBar) {
-                Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-            } else {
-                Modifier
-            }
-            CompositionLocalProvider(
-                LocalChromeScrollController provides if (drivesBar) chromeScrollController else null
-            ) {
-                Box(modifier = scrollModifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
-                    if (paneBottomBar != null) {
-                        // Screen content fills the space above the pinned bar; the
-                        // bar sits at the bottom. Root `imePadding` shrinks this
-                        // column when the keyboard opens so the bar rides above it.
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                                if (paneScreen != null) NodeView(node = paneScreen)
-                            }
-                            paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
-                        }
-                    } else if (paneScreen != null) {
-                        NodeView(node = paneScreen)
+        // A `morph` push within one tab cross-fades the two screens while
+        // every `ref` they share flies between its old and new bounds, the
+        // same as the full-screen morph. The tracker remembers which screens
+        // arrived by morph so that back (which PHP stages as a plain
+        // slide_from_left) morphs them back out. See ChromeMorphTracker.
+        val morphTracker = remember { ChromeMorphTracker() }
+        val morphing = morphTracker.settle(
+            key = targetKey,
+            depth = node.props.getInt("stack_depth", 0),
+            nav = ChromeMorphTracker.NavStamp(
+                NativeUIBridge.navigationSerial.longValue,
+                NativeUIBridge.navigationTransition.value,
+            ),
+            canMorph = { from -> from.substringBefore('|') == targetKey.substringBefore('|') },
+            honourStagedPop = true,
+        )
+        SharedTransitionLayout(modifier = Modifier.fillMaxSize()) {
+            AnimatedContent(
+                targetState = rememberChromeTransitionKey(targetKey, morphing),
+                transitionSpec = {
+                    val initialIdx = initialState.substringBefore('|')
+                    val targetIdx = targetState.substringBefore('|')
+                    if (initialIdx != targetIdx) {
+                        fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                    } else if (morphing) {
+                        // Cross-fade, not the push slide: a screen sliding past
+                        // an element that is flying across it reads as two
+                        // competing motions. iOS's morph holds the screens still
+                        // for the same reason.
+                        transitionFor("morph")
                     } else {
-                        Box(modifier = Modifier.fillMaxSize())
+                        transitionFor(pendingTransition)
+                    }
+                },
+                label = "tab-content",
+                modifier = Modifier.fillMaxSize()
+            ) { key ->
+                ChromeMorphPane(
+                    sharedScope = this@SharedTransitionLayout,
+                    paneScope = this@AnimatedContent,
+                    morphing = morphing,
+                    held = key != targetKey,
+                ) {
+                    DisposableEffect(key) {
+                        onDispose {
+                            paneNodes.remove(key)
+                            screenPaddings.remove(key)
+                        }
+                    }
+                    val screenPadding = if (key == targetKey) {
+                        screenPaddings[key] = padding
+                        padding
+                    } else {
+                        screenPaddings[key] ?: padding
+                    }
+                    val (paneScreen, paneBottomBar) = if (key == targetKey) {
+                        Pair(screenContent, bottomBarNode).also { paneNodes[key] = it }
+                    } else {
+                        paneNodes[key] ?: Pair(screenContent, bottomBarNode)
+                    }
+                    // The bar's nested-scroll connection wraps the screen content
+                    // directly, inside AnimatedContent, for the same reason as the
+                    // stack renderer: outside it, the list's scroll deltas never reach
+                    // the bar. Only the entering pane drives the bar.
+                    val drivesBar = barReactsToScroll && key == targetKey
+                    val scrollModifier = if (drivesBar) {
+                        Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
+                    } else {
+                        Modifier
+                    }
+                    CompositionLocalProvider(
+                        LocalChromeScrollController provides if (drivesBar) chromeScrollController else null
+                    ) {
+                        Box(modifier = scrollModifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
+                            if (paneBottomBar != null) {
+                                // Screen content fills the space above the pinned bar; the
+                                // bar sits at the bottom. Root `imePadding` shrinks this
+                                // column when the keyboard opens so the bar rides above it.
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                        if (paneScreen != null) NodeView(node = paneScreen)
+                                    }
+                                    paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
+                                }
+                            } else if (paneScreen != null) {
+                                NodeView(node = paneScreen)
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize())
+                            }
+                        }
                     }
                 }
             }
@@ -643,7 +678,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
  * `mode = "static"` filters locally against the typed query (string/
  * object items only — element items always pass through). `mode =
  * "dynamic"` fires a debounced TEXT_CHANGE to PHP's `onSearchQuery($q)`
- * which republishes new `search_item` children.
+ * which republishes new `search_item` children. The keyboard's Search
+ * action sends the query to PHP's `onSearchSubmit($q)` as a SUBMIT event,
+ * when the screen defines one.
  */
 @Composable
 private fun AndroidSearchTabRoot(
@@ -651,6 +688,7 @@ private fun AndroidSearchTabRoot(
     itemNodes: List<NativeUINode>,
     mode: String,
     onQueryCallbackId: Int,
+    onSubmitCallbackId: Int,
     debounceMs: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -685,6 +723,11 @@ private fun AndroidSearchTabRoot(
             placeholder = placeholder,
             value = query,
             onValueChange = { query = it },
+            onSubmit = {
+                if (onSubmitCallbackId != 0) {
+                    NativeUIBridge.sendSubmitEvent(onSubmitCallbackId, 0, query)
+                }
+            },
         )
         HorizontalDivider()
 
@@ -748,6 +791,7 @@ private fun SearchHeaderField(
     placeholder: String,
     value: String,
     onValueChange: (String) -> Unit,
+    onSubmit: () -> Unit = {},
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -775,7 +819,7 @@ private fun SearchHeaderField(
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { /* IME submits via debounce */ }),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
                 decorationBox = { inner ->
                     if (value.isEmpty() && placeholder.isNotEmpty()) {
                         Text(

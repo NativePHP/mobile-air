@@ -743,6 +743,24 @@ abstract class Element
         return $this;
     }
 
+    /**
+     * Animate this container's children between frames. Children that are in
+     * both frames (matched by `native:key` / key()) slide to their new place
+     * and size, new ones fade in and removed ones fade out. Mirror of the
+     * `animate-layout` attribute. Off by default, and `false` leaves the prop
+     * off the wire, so a node that never asks renders exactly as before.
+     */
+    public function animateLayout(bool $on = true): static
+    {
+        if ($on) {
+            $this->extraProps['animate_layout'] = true;
+        } else {
+            unset($this->extraProps['animate_layout']);
+        }
+
+        return $this;
+    }
+
     // ── Defaults (override in subclasses) ──────────────
 
     protected function defaults(): array
@@ -763,6 +781,23 @@ abstract class Element
     // ── Streaming getters ────────────────────────────
 
     public function getType(): string
+    {
+        return $this->type;
+    }
+
+    /**
+     * The type name this element is sent to the device as.
+     *
+     * Almost always the same as getType(). It differs for an element that
+     * exists only on the PHP side and should reach the renderers as one
+     * they already know, such as a package's own container that paints
+     * as a plain `column`. getType() stays the PHP identity, so hoisting,
+     * validation and anything else that asks "what is this?" still sees
+     * the real type. Every path that hands a type name to
+     * native (toArray() for the flat buffer and Jump, and the streaming
+     * collector) reads this instead.
+     */
+    public function wireType(): string
     {
         return $this->type;
     }
@@ -978,7 +1013,7 @@ abstract class Element
 
             return [
                 'id' => $last['id'],
-                'type' => $this->type,
+                'type' => $this->wireType(),
                 'flags' => 1, // NPHP_NODE_FLAG_REUSE
                 '_hash' => $last['hash'],
             ];
@@ -1092,7 +1127,14 @@ abstract class Element
         // reacts to. If a future per-field mutation test ever fails to
         // repaint, the missing field is here (§3 Phase 2 pitfalls:
         // "Hash the right things").
+        //
+        // The id is in it too, so a parent's hash covers the ids of its
+        // whole subtree. Without it, a row whose key changes but whose
+        // content doesn't leaves its parent's hash as it was, the parent
+        // goes out as REUSE, and the phone keeps the row under its old id
+        // while PHP records the new one.
         $contentHash = hash('xxh3', serialize([
+            $id,
             $this->type,
             $layout,
             $style,
@@ -1113,7 +1155,7 @@ abstract class Element
         if ($prior !== null && $prior === $contentHash) {
             return [
                 'id' => $id,
-                'type' => $this->type, // kept for native-side debug logging
+                'type' => $this->wireType(), // kept for native-side debug logging
                 'flags' => 1,          // NPHP_NODE_FLAG_REUSE
                 '_hash' => $contentHash,
             ];
@@ -1125,7 +1167,7 @@ abstract class Element
 
         $node = [
             'id' => $id,
-            'type' => $this->type,
+            'type' => $this->wireType(),
             '_hash' => $contentHash,
         ];
 

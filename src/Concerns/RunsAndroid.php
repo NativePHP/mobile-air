@@ -108,7 +108,7 @@ trait RunsAndroid
         }
 
         // Start Vite dev server early if watching, so hot file is present during build
-        if ($this->option('watch') && $this->shouldRunVite()) {
+        if ($this->watching() && $this->shouldRunVite()) {
             $this->startViteDevServer('android');
         }
 
@@ -125,7 +125,8 @@ trait RunsAndroid
             }
             $this->logToFile('ADB is available');
 
-            $target = $this->argument('udid') ?? $this->promptForAndroidTarget();
+            $target = ($this->hasArgument('udid') ? $this->input->getArgument('udid') : null)
+                ?? $this->promptForAndroidTarget();
             $this->logToFile('Target device: '.$target);
         }
 
@@ -151,7 +152,7 @@ trait RunsAndroid
             return false;
         }
 
-        if ($this->option('watch')) {
+        if ($this->watching()) {
             $this->logToFile('Starting hot reload...');
             $this->startAndroidHotReload();
         }
@@ -228,7 +229,13 @@ trait RunsAndroid
             return;
         }
 
-        $this->replaceFileContentsRegex($manifestPath, '/android:label=".*?"/', 'android:label="'.$newName.'"');
+        // The name goes into an XML attribute, so &, quotes and < must be
+        // escaped. It is also a preg_replace replacement, so \ and $ must be
+        // escaped too, or "$1" style text in the name is lost.
+        $label = htmlspecialchars((string) $newName, ENT_QUOTES | ENT_XML1, 'UTF-8');
+        $label = str_replace(['\\', '$'], ['\\\\', '\\$'], $label);
+
+        $this->replaceFileContentsRegex($manifestPath, '/android:label=".*?"/', 'android:label="'.$label.'"');
     }
 
     private function updatePermissions(): void
@@ -1250,5 +1257,14 @@ XML;
         );
 
         $hookRunner->runPostBuildHooks();
+    }
+
+    /**
+     * Whether the command was asked to watch. native:package shares this
+     * trait but has no --watch option, so ask before reading it.
+     */
+    protected function watching(): bool
+    {
+        return $this->hasOption('watch') && (bool) $this->input->getOption('watch');
     }
 }

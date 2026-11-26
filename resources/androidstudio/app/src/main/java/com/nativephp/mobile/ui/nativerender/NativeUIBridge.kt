@@ -45,6 +45,25 @@ class NativeUIBridge private constructor() {
         /** Pending transition type (slide_forward, slide_back, crossfade) */
         val pendingTransition = mutableStateOf<String?>(null)
 
+        /**
+         * The transition PHP staged for the latest navigation publish, and a
+         * counter that moves on with every one.
+         *
+         * `pendingTransition` is never cleared, so on its own it can't say
+         * whether a change on screen came from the navigation that staged it
+         * or from something later (a redirect, a local pop). Native-chrome
+         * renderers compare this counter with the one they last consumed to
+         * know the staged value is fresh. See ChromeMorphTracker.
+         */
+        val navigationSerial = mutableLongStateOf(0L)
+        val navigationTransition = mutableStateOf<String?>(null)
+
+        /** Main thread: records a navigation publish, just before its tree. */
+        internal fun publishNavigation(transition: String?) {
+            navigationTransition.value = transition
+            navigationSerial.longValue++
+        }
+
         /** Flag set by UI.SetTransition bridge function, consumed by element bridge */
         @Volatile
         internal var navigationPending = false

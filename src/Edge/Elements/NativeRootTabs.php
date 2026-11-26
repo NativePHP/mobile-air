@@ -42,6 +42,14 @@ class NativeRootTabs extends Element
      */
     private ?string $navSearchOnQueryMethod = null;
 
+    /**
+     * Method name on the active screen that handles the search field's
+     * submit (the keyboard's Search key), with the field's text. Set by
+     * `wrapWithNativeChrome` when the active component overrides
+     * `onSearchSubmit`. A plain callback: its return is discarded.
+     */
+    private ?string $navSearchOnSubmitMethod = null;
+
     public static function make(): static
     {
         return new static;
@@ -70,6 +78,10 @@ class NativeRootTabs extends Element
         }
         if (isset($attrs['minimizeOnScroll'])) {
             $this->props['minimize_on_scroll'] = (bool) $attrs['minimizeOnScroll'];
+        }
+        $edgeBlur = BottomBar::edgeBlurStyle($attrs['edgeBlur'] ?? null);
+        if ($edgeBlur !== null) {
+            $this->props['edge_blur'] = $edgeBlur;
         }
         if (isset($attrs['tabPresentationId'])) {
             $this->props['tab_presentation_id'] = $attrs['tabPresentationId'];
@@ -118,6 +130,13 @@ class NativeRootTabs extends Element
         if (isset($attrs['stackDepth'])) {
             $this->props['stack_depth'] = (int) $attrs['stackDepth'];
         }
+        // The URI of every screen on the router stack, bottom first, one per
+        // line (props carry strings, not lists). iOS finds the owning tab's
+        // root in it, so a tab root it never drew can't leave the tab's stack
+        // padded with copies of the screen on top.
+        if (isset($attrs['stackUris'])) {
+            $this->props['stack_uris'] = implode("\n", array_map('strval', (array) $attrs['stackUris']));
+        }
 
         // Per-screen tab-bar overrides folded in by `wrapWithNativeChrome`.
         // `hide_tab_bar` is the explicit signal renderers use to hide the
@@ -154,6 +173,10 @@ class NativeRootTabs extends Element
         if (isset($attrs['navSearchOnQueryMethod'])) {
             $this->navSearchOnQueryMethod = $attrs['navSearchOnQueryMethod'];
         }
+
+        if (isset($attrs['navSearchOnSubmitMethod'])) {
+            $this->navSearchOnSubmitMethod = $attrs['navSearchOnSubmitMethod'];
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
@@ -166,6 +189,11 @@ class NativeRootTabs extends Element
                 $this->navSearchOnQueryMethod,
                 kind: 'search_query'
             );
+        }
+
+        // The submit handler is fire-and-forget: it typically navigates.
+        if ($this->navSearchOnSubmitMethod !== null) {
+            $this->props['nav_search_on_submit'] = $registry->register($this->navSearchOnSubmitMethod);
         }
 
         // Hoist the search-role tab's config up to the root and adopt
