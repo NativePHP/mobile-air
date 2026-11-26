@@ -323,6 +323,8 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
             if (hasSearch && (hasTitle || titleNode != null)) {
                 // M3 "search bar below a title" pattern: a full-width filled
                 // pill (https://m3.material.io/components/search/guidelines).
+                // Takes the bar's side insets so in landscape it stays clear
+                // of the 3-button navigation bar and the cutout, like the bar.
                 InlineNavSearchField(
                     placeholder = searchPlaceholder,
                     callbackId = searchOnQueryCb,
@@ -332,6 +334,7 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     level = searchLevel,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .windowInsetsPadding(TopAppBarDefaults.windowInsets.only(WindowInsetsSides.Horizontal))
                         .padding(horizontal = 16.dp, vertical = 8.dp)
                         .clip(RoundedCornerShape(28.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
