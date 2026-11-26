@@ -625,7 +625,13 @@ private struct PerTabContent: View {
         // (back to the launcher / wherever the user came from).
         // Pushed levels get NavigationStack's automatic system chevron
         // which pops the path natively.
-        let layoutShowBack = root.props.getBool("nav_back") || fallbackShowBack
+        // Read this level's OWN `nav_back` only. `fallbackShowBack` is
+        // the currently published screen's value, and child screens now
+        // default to `nav_back = true` — OR-ing it in would paint a
+        // manual chevron on the cached tab root sitting underneath the
+        // pushed child. The fallback still serves the uncached
+        // placeholder in `levelView`.
+        let layoutShowBack = root.props.getBool("nav_back")
         let manualBack = layoutShowBack && isRoot
         let textArgb = root.props.getColor("nav_text_color", default: fallbackTextArgb)
         let bgArgb = root.props.getColor("nav_background_color", default: fallbackBgArgb)

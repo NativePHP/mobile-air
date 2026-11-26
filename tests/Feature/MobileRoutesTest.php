@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Route;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\NativeServiceProvider;
 use Tests\Fixtures\Edge\CounterScreen;
+use Tests\Fixtures\Edge\DetailScreen;
 use Tests\TestCase;
 
 /**
@@ -193,6 +194,82 @@ class MobileRoutesTest extends TestCase
 
             $this->assertSame(CounterScreen::class, NativeRouter::registeredRoutes()['/']['class'] ?? null, "boot {$boot}");
             $this->assertArrayHasKey('/', $this->app['router']->getRoutes()->getRoutesByMethod()['GET'], "boot {$boot}");
+        }
+    }
+
+    public function test_it_serves_child_routes_declared_with_relative_paths(): void
+    {
+        $this->bootWithRoutes(
+            web: <<<'PHP'
+                <?php
+
+                use Illuminate\Support\Facades\Route;
+
+                Route::get('/about', fn () => 'website about')->name('about');
+                PHP,
+            mobile: <<<'PHP'
+                <?php
+
+                use Illuminate\Support\Facades\Route;
+                use Tests\Fixtures\Edge\ChromeScreen;
+                use Tests\Fixtures\Edge\CounterScreen;
+                use Tests\Fixtures\Edge\DetailScreen;
+                use Tests\Fixtures\Edge\RouteTabsLayout;
+
+                Route::nativeGroup(RouteTabsLayout::class, function () {
+                    Route::native('/chats', ChromeScreen::class)
+                        ->name('chats')
+                        ->children(
+                            Route::native('{id}', DetailScreen::class)->name('chats.show'),
+                        );
+
+                    Route::native('/posts', ChromeScreen::class)
+                        ->name('posts')
+                        ->children(
+                            Route::native('{id}', CounterScreen::class)->name('posts.show'),
+                        );
+                });
+                PHP,
+        );
+
+        // Twice, because an app's test suite boots many apps in one
+        // process and the native registry is static.
+        foreach ([1, 2] as $boot) {
+            if ($boot > 1) {
+                NativeRouter::clearRoutes();
+                $this->refreshApplication();
+            }
+
+            $this->assertSame(
+                ['/chats', '/chats/{id}', '/posts', '/posts/{id}'],
+                array_keys(NativeRouter::registeredRoutes()),
+                "boot {$boot}"
+            );
+
+            // Each child is in Laravel's router under its full URI, kept the
+            // file's middleware, and can be found by name. The framework
+            // adds routes of its own (storage/{path}), so only ours count.
+            $routes = $this->app['router']->getRoutes();
+            $this->assertSame(
+                ['about', 'chats', 'chats/{id}', 'posts', 'posts/{id}'],
+                array_values(array_intersect(
+                    array_keys($routes->getRoutesByMethod()['GET']),
+                    ['about', 'chats', 'chats/{id}', 'posts', 'posts/{id}', '{id}'],
+                )),
+                "boot {$boot}"
+            );
+            $this->assertContains('web', $routes->getByName('chats.show')->gatherMiddleware());
+            $this->assertSame('/posts/5', route('posts.show', ['id' => 5], false));
+
+            // A real request reaches the right screen: this is how a start
+            // URL, a deep link or a hot-reload redirect gets there.
+            $this->get('/chats/5')->assertOk()->assertSee(DetailScreen::class);
+            $this->get('/posts/5')->assertOk()->assertSee(CounterScreen::class);
+            $this->get('/5')->assertNotFound();
+
+            // The website's own routes came through the re-index untouched.
+            $this->get('/about')->assertOk()->assertSee('website about');
+            $this->assertSame('/about', route('about', [], false));
         }
     }
 

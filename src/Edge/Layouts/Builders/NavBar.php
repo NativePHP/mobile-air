@@ -8,6 +8,7 @@ use Native\Mobile\Edge\Elements\Image;
 use Native\Mobile\Edge\Elements\TopBar;
 use Native\Mobile\Edge\Elements\TopBarAction;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\NativeComponent;
 
 /**
  * Fluent builder for the top navigation bar.
@@ -22,6 +23,19 @@ use Native\Mobile\Edge\Elements\TopBarTitle;
  *   }
  *
  * The framework converts this to an Elements\TopBar before publishing.
+ *
+ * Leave the back button unset and the bar decides from the screen it is
+ * drawn on (see {@see forScreen()}): it shows on a child route
+ * (`Route::native(...)->children(...)`) and nowhere else. Who decides,
+ * from strongest to weakest:
+ *
+ *  1. The screen's own say, where it has always applied: its
+ *     `navigationOptions()->back(...)` and `setNavBar(['back' => ...])`.
+ *     The framework merges those onto a layout's bar. An inline
+ *     `<native:top-bar>` has never taken them, and still does not.
+ *  2. This bar's explicit value: `->back(true|false)`, or a `back` /
+ *     `show-navigation-icon` attribute on an inline `<native:top-bar>`.
+ *  3. The bar's default from the screen's route: shown on a child route.
  */
 class NavBar
 {
@@ -39,7 +53,14 @@ class NavBar
      */
     private Element|View|null $titleView = null;
 
-    private bool $back = false;
+    /**
+     * The back button when something set it on purpose, or null to let
+     * the screen's route decide. See the class docblock.
+     */
+    private ?bool $back = null;
+
+    /** Whether the screen this bar is drawn on is a child route. Set by {@see forScreen()}. */
+    private bool $onChildRoute = false;
 
     private ?string $backgroundColor = null;
 
@@ -118,7 +139,12 @@ class NavBar
 
         $bar->title = $props['title'] ?? null;
         $bar->subtitle = $props['subtitle'] ?? null;
-        $bar->back = (bool) ($props['show_navigation_icon'] ?? false);
+        // TopBar only holds this prop when the blade carried a `back` /
+        // `show-navigation-icon` attribute (or toElement() had an explicit
+        // value), so a missing prop stays unset and the route decides.
+        $bar->back = array_key_exists('show_navigation_icon', $props)
+            ? (bool) $props['show_navigation_icon']
+            : null;
         $bar->backgroundColor = $props['background_color'] ?? null;
         $bar->textColor = $props['text_color'] ?? null;
         $bar->font = $props['font_name'] ?? null;
@@ -193,11 +219,42 @@ class NavBar
         return $this;
     }
 
+    /**
+     * Show or hide the back button on purpose. This beats the default the
+     * bar takes from the screen's route, so `->back(false)` keeps it off
+     * on a child screen. The screen's own `navigationOptions()` and
+     * `setNavBar()` still beat it on a layout's bar.
+     */
     public function back(bool $show = true): self
     {
         $this->back = $show;
 
         return $this;
+    }
+
+    /**
+     * Tell the bar which screen it is drawn on. The bar takes its default
+     * back button from the screen's route: shown on a child route (see
+     * `Route::native(...)->children(...)`), hidden elsewhere. A back
+     * button set on purpose is left alone.
+     *
+     * The framework calls this for every bar it draws, the layout's and an
+     * inline `<native:top-bar>` alike, after merging the screen's options.
+     */
+    public function forScreen(NativeComponent $screen): self
+    {
+        $this->onChildRoute = $screen->isChildScreen();
+
+        return $this;
+    }
+
+    /**
+     * Whether the back button shows: the value set on purpose, or else the
+     * default from the screen's route (see {@see forScreen()}).
+     */
+    public function showsBack(): bool
+    {
+        return $this->back ?? $this->onChildRoute;
     }
 
     public function backgroundColor(string $color): self
@@ -407,7 +464,7 @@ class NavBar
      */
     public function toRootProps(): array
     {
-        $attrs = ['back' => $this->back];
+        $attrs = ['back' => $this->showsBack()];
         if ($this->title !== null) {
             $attrs['title'] = $this->title;
         }
@@ -486,11 +543,23 @@ class NavBar
         return $this->titleView;
     }
 
+    /**
+     * The bar as a drawn `top_bar` element. A back button set on purpose
+     * goes across as the element's `show_navigation_icon` attribute, so
+     * fromElement() reads it back as set. An unset one stays unset on the
+     * element and only its drawn value is filled in from the route
+     * default, because a drawn bar has to say one way or the other.
+     */
     public function toElement(): TopBar
     {
         $bar = TopBar::make();
 
-        $attrs = ['showNavigationIcon' => $this->back];
+        $attrs = [];
+        if ($this->back !== null) {
+            $attrs['showNavigationIcon'] = $this->back;
+        } else {
+            $bar->defaultBack($this->showsBack());
+        }
         if ($this->title !== null) {
             $attrs['title'] = $this->title;
         }

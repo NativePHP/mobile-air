@@ -191,6 +191,12 @@ abstract class NativeComponent
     /** Layout class for this screen (set by router from route metadata). */
     protected ?string $nativeLayout = null;
 
+    /** Pattern of the route that resolved to this screen, e.g. `/chats/{id}` (set by router). */
+    protected ?string $nativeRoutePattern = null;
+
+    /** Pattern of that route's parent, when it was registered with ->children() (set by router). */
+    protected ?string $nativeParentRoutePattern = null;
+
     /** Imperative navbar overrides — merged onto layout's NavBar at render time. */
     protected array $nativePendingNavBarState = [];
 
@@ -637,6 +643,12 @@ abstract class NativeComponent
      *   screen's navigationOptions() and pendingNavBarState, and wraps
      *   via native chrome or the custom Column path per
      *   `NativeLayout::usesNativeChrome()`.
+     * - Each bar is told which screen it is on (`forScreen()`) and takes
+     *   its own defaults from that: a TabBar hides and a NavBar shows its
+     *   back button on a child route. The rules live on the bars; this
+     *   method only hands them the screen. The tab bar also gets the
+     *   screen's ancestor routes, so a child screen keeps its parent's
+     *   tab highlighted.
      */
     protected function wrapWithChrome(Element $content): Element
     {
@@ -702,35 +714,43 @@ abstract class NativeComponent
                 $navBar->defaultFont($layout->chromeFont());
             }
         }
+        // The bar takes its own defaults from the screen it is on (see
+        // NavBar::forScreen()). After the screen's options and state are
+        // merged, which beat those defaults.
+        $navBar?->forScreen($this);
 
         $tabBar = null;
         if ($inlineBottomNav !== null) {
-            $tabBar = TabBar::fromElement($inlineBottomNav);
+            $tabBar = TabBar::fromElement($inlineBottomNav)->forScreen($this);
             $tabBar->defaultFont($layout?->chromeFont());
-            // Auto-highlight the tab owning the current URI — unless the
+            // Auto-highlight the tab owning this screen (its own URL, a
+            // parent route's tab, or the longest URL prefix) — unless the
             // blade marked one `active` explicitly (highlight() respects
             // explicit choices on inline items).
             $currentUri = $this->nativeRouter?->currentUri();
             if ($currentUri !== null) {
-                $tabBar->highlight($currentUri);
+                $tabBar->highlight($currentUri, $this->ancestorRoutes());
             }
         } elseif (! $hasCustomBottomNav && $layout !== null) {
-            $tabBar = $layout->tabBar($this);
-            // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
-            // builder), mirroring the NavBar handling above. On the
-            // custom-Column path hiding is identical to the layout
-            // returning null — dropping the bar also hands the bottom
-            // safe-area edge back to the wrapper in buildChromeColumn().
-            // The native-chrome path instead keeps the config and folds a
-            // `hide_tab_bar` prop onto the sentinel, so the TabView
-            // survives for tab switching.
-            if ($tabBar !== null && ! $usesNativeChrome && $this->shouldHideTabBar()) {
+            // The bar takes its own defaults, and the screen's say about
+            // it, from the screen it is on (see TabBar::forScreen()).
+            $tabBar = $layout->tabBar($this)?->forScreen($this);
+            // Hiding is the bar's call (TabBar::isHidden(): the screen's
+            // $hidesTabBar / tabBarOptions(), then the bar's own value,
+            // then its route default). On the custom-Column path hiding
+            // is identical to the layout returning null — dropping the
+            // bar also hands the bottom safe-area edge back to the
+            // wrapper in buildChromeColumn(). The native-chrome path
+            // instead keeps the config and folds a `hide_tab_bar` prop
+            // onto the sentinel, so the TabView survives for tab
+            // switching.
+            if ($tabBar !== null && ! $usesNativeChrome && $tabBar->isHidden()) {
                 $tabBar = null;
             }
             if ($tabBar !== null) {
                 $currentUri = $this->nativeRouter?->currentUri();
                 if ($currentUri !== null) {
-                    $tabBar->highlight($currentUri);
+                    $tabBar->highlight($currentUri, $this->ancestorRoutes());
                 }
                 $tabBar->defaultFont($layout->chromeFont());
             }
@@ -1050,13 +1070,12 @@ abstract class NativeComponent
             // stack it finds its root and the screens above it in any frame.
             $attrs['stackUris'] = array_column($this->nativeRouter?->getStackEntries() ?? [], 'uri');
 
-            // Per-screen tab-bar overrides ($hidesTabBar shortcut +
-            // tabBarOptions() builder). Folded onto the chrome sentinel
-            // as flat props so the iOS / Android renderers don't need to
-            // re-derive visibility from URI matching or `nav_back`.
-            if ($this->shouldHideTabBar()) {
-                $attrs['hideTabBar'] = true;
-            }
+            // Whether the tab bar hides on this screen comes with the
+            // bar's own props (`hideTabBar`, see TabBar::isHidden(): the
+            // screen's $hidesTabBar / tabBarOptions(), then the bar, then
+            // the route). A flat prop, so the iOS / Android renderers
+            // don't need to re-derive visibility from URI matching or
+            // `nav_back`.
             // Per-screen nav-bar opt-out, same shape as `hideTabBar` — the
             // renderers hide the toolbar for this destination only.
             if ($navBar !== null && $this->shouldHideNavBar()) {
@@ -1543,6 +1562,47 @@ abstract class NativeComponent
     public function setLayout(?string $layoutClass): void
     {
         $this->nativeLayout = $layoutClass;
+    }
+
+    /**
+     * Set by the router alongside setLayout(): the pattern of the route
+     * that resolved to this screen, and the pattern of its parent route
+     * when it was registered with `->children()`.
+     */
+    public function setRoutePattern(?string $pattern, ?string $parentPattern): void
+    {
+        $this->nativeRoutePattern = $pattern;
+        $this->nativeParentRoutePattern = $parentPattern;
+    }
+
+    /**
+     * True when this screen's route was declared a child of another:
+     *
+     *     Route::native('/chats', Chats::class)->children(
+     *         Route::native('{id}', ChatDetail::class), // /chats/{id}
+     *     );
+     *
+     * This is a fact about the screen, not a rule. The bars read it and
+     * apply their own defaults: TabBar hides on a child route and NavBar
+     * shows its back button (see their `forScreen()`), and a `hidden` /
+     * `back` set on the bar wins over those defaults.
+     */
+    public function isChildScreen(): bool
+    {
+        return $this->nativeParentRoutePattern !== null;
+    }
+
+    /**
+     * Patterns of this screen's ancestor routes, nearest first. Empty for
+     * a screen with no parent or no route (e.g. mounted directly in a test).
+     *
+     * @return list<string>
+     */
+    private function ancestorRoutes(): array
+    {
+        return $this->nativeRoutePattern !== null
+            ? NativeRouter::ancestorsOf($this->nativeRoutePattern)
+            : [];
     }
 
     /**

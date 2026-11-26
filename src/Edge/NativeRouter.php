@@ -4,6 +4,7 @@ namespace Native\Mobile\Edge;
 
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as IlluminateRoute;
+use Illuminate\Routing\RouteCollection;
 use Illuminate\Support\Facades\Log;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
@@ -165,7 +166,11 @@ class NativeRouter
      * Each entry retains the actual Illuminate route so native navigation and
      * HTTP routing share matching, constraints, decoding, and route binders.
      *
-     * @var array<string, array{class: string, layout: ?string, route: IlluminateRoute}>
+     * `parent` is the pattern of the route this one was declared a child of
+     * with `->children()`, or null. `layout` is only what the route itself
+     * was given; a child with none inherits one at lookup time (layoutFor()).
+     *
+     * @var array<string, array{class: string, layout: ?string, route: IlluminateRoute, pattern: string, parent: ?string}>
      */
     protected static array $routes = [];
 
@@ -175,9 +180,21 @@ class NativeRouter
      * first set, so a table can add a screen and never replace one of the
      * app's.
      *
-     * @var array<string, array<string, array{class: string, layout: ?string, route: IlluminateRoute, context: mixed, table: string}>>
+     * @var array<string, array<string, array{class: string, layout: ?string, route: IlluminateRoute, context: mixed, table: string, pattern: string, parent: null}>>
      */
     protected static array $routeTables = [];
+
+    /**
+     * Routes whose Route::native() call took over a URI another route was
+     * already using. That is normal for a top-level route (a native
+     * screen at `/` replacing a website's `/`), but not for a child
+     * declared with a relative path: see attachChildren().
+     *
+     * A WeakMap so a route that is itself replaced later simply drops out.
+     *
+     * @var \WeakMap<IlluminateRoute, true>|null
+     */
+    protected static ?\WeakMap $replacedAnotherRoute = null;
 
     /**
      * Layout class active during a Route::nativeGroup(layout: ..., ...) closure.
@@ -303,7 +320,12 @@ class NativeRouter
 
     // ── Static registry ─────────────────────────────
 
-    public static function register(string|IlluminateRoute $uri, string $class, ?string $layout = null): void
+    /**
+     * `$replacedAnotherRoute` says that adding this route to Laravel's
+     * router replaced one already there on the same URI. Route::native()
+     * works that out; nothing else needs to pass it.
+     */
+    public static function register(string|IlluminateRoute $uri, string $class, ?string $layout = null, bool $replacedAnotherRoute = false): void
     {
         if ($uri instanceof IlluminateRoute) {
             // Held as the live instance, not a copy: `->middleware()` chains
@@ -325,7 +347,14 @@ class NativeRouter
             'class' => $class,
             'layout' => $layout ?? static::$currentGroupLayout,
             'route' => $route,
+            'pattern' => $pattern,
+            'parent' => null,
         ];
+
+        if ($replacedAnotherRoute) {
+            static::$replacedAnotherRoute ??= new \WeakMap;
+            static::$replacedAnotherRoute[$route] = true;
+        }
     }
 
     /**
@@ -380,6 +409,10 @@ class NativeRouter
                 'route' => $route,
                 'context' => $entry['context'] ?? null,
                 'table' => $name,
+                // Same shape as an app route, so resolve() and the bars
+                // treat a table screen as a top-level one.
+                'pattern' => $pattern,
+                'parent' => null,
             ];
         }
 
@@ -429,13 +462,387 @@ class NativeRouter
 
     /**
      * Every registered native route, keyed by URI pattern — each value a
-     * ['class' => ..., 'layout' => ...] pair. Powers app-wide test sweeps
-     * (smoke tests, accessibility audits) that should cover new screens
-     * automatically as they are registered.
+     * ['class' => ..., 'layout' => ...] pair, plus 'route', 'pattern' and
+     * 'parent'. Powers app-wide test sweeps (smoke tests, accessibility
+     * audits) that should cover new screens automatically as they are
+     * registered.
+     *
+     * 'layout' is the layout the screen actually renders with, so a child
+     * route that inherits its parent's layout reports that layout here.
      */
     public static function registeredRoutes(): array
     {
-        return static::$routes;
+        $routes = [];
+
+        foreach (static::$routes as $pattern => $entry) {
+            $entry['layout'] = static::layoutFor($pattern);
+            $routes[$pattern] = $entry;
+        }
+
+        return $routes;
+    }
+
+    /**
+     * Make the given native routes children of `$parent`. This is what
+     * Route::native(...)->children(...) calls.
+     *
+     * A child screen is one you reach from its parent and go back from.
+     * Its bars default to that: the top bar shows a back button and the
+     * tab bar hides (each bar decides, see NavBar and TabBar), and its
+     * parent's tab stays highlighted. It also inherits the parent's
+     * layout unless it has one of its own.
+     *
+     * A child's path is relative to its parent, like a route inside a
+     * group prefix: `{id}` under `/chats` becomes `/chats/{id}`. A child
+     * whose URI already starts with the parent's (`/chats/{id}`) is left
+     * as it is, so the long form works too. (That also means a relative
+     * path cannot itself begin with the parent's URI.)
+     *
+     * Write every level of a nested declaration the same way. A full-path
+     * grandchild under a relative child is read as relative, because its
+     * parent still has its short URI when the inner children() runs.
+     *
+     * PHP runs the child's Route::native() call before children(), so by
+     * now the child is registered under its short URI, here and in
+     * Laravel's router. It is moved after the fact, together with any
+     * children of its own: nested calls run inside-out, so a grandchild
+     * may already sit under the child's short URI.
+     *
+     * Known limit: until children() runs, a relative child really is
+     * registered at its short URI. If that URI is already taken (a
+     * top-level `/{id}`, or a website's `/settings`), the child replaces
+     * that route, exactly as two routes with the same URI always do in
+     * Laravel. That cannot be undone here, so it is refused with an
+     * exception that says to write the child's full path.
+     *
+     * Throws when a route is not a native route, when the link would make
+     * a loop, and when a relative child replaced an existing route.
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function attachChildren(IlluminateRoute $parent, IlluminateRoute ...$children): void
+    {
+        $moved = false;
+
+        try {
+            foreach ($children as $child) {
+                $moved = static::attachChild($parent, $child) || $moved;
+            }
+        } finally {
+            // Laravel indexed each route under the URI it had when it was
+            // added. Rebuild that index once the URIs have settled.
+            if ($moved) {
+                static::reindexLaravelRoutes();
+            }
+        }
+    }
+
+    /**
+     * Link one child to its parent, moving it under the parent's URI
+     * first if its path is relative. Returns whether the child moved.
+     */
+    protected static function attachChild(IlluminateRoute $parent, IlluminateRoute $child): bool
+    {
+        $parentPattern = static::registeredPatternOf($parent);
+        $childPattern = static::registeredPatternOf($child);
+
+        static::assertCanBeParent($childPattern, $parentPattern);
+
+        $target = static::uriUnderParent($parent, $child);
+        $moved = $target !== $childPattern;
+
+        if ($moved) {
+            if (isset(static::$replacedAnotherRoute[$child])) {
+                throw new \InvalidArgumentException(
+                    "Child route [{$childPattern}] of [{$parentPattern}] has the same URI as a route that was already registered, and replaced it. Write the child's full path instead: [{$target}]."
+                );
+            }
+
+            static::moveRoute($childPattern, $target, $parentPattern);
+        }
+
+        static::$routes[$target]['parent'] = $parentPattern;
+
+        return $moved;
+    }
+
+    /**
+     * Declare one registered native route the child of another, by
+     * pattern. This only records the link: neither URI changes, so the
+     * child can live anywhere (`/conversation/{id}` under `/chats`).
+     * Route::native(...)->children(...) goes through attachChildren(),
+     * which also makes the child's path relative to its parent.
+     *
+     * Throws when either route is not a native route, or the link would
+     * make a loop.
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function setParent(string $childUri, string $parentUri): void
+    {
+        $child = '/'.ltrim($childUri, '/');
+        $parent = '/'.ltrim($parentUri, '/');
+
+        static::assertCanBeParent($child, $parent);
+
+        static::$routes[$child]['parent'] = $parent;
+    }
+
+    /**
+     * The registry pattern of a route registered with Route::native().
+     * The registry has to hold that very route object: an entry under
+     * the same URI may belong to another route.
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected static function registeredPatternOf(IlluminateRoute $route): string
+    {
+        $pattern = '/'.ltrim($route->uri(), '/');
+
+        if (! isset(static::$routes[$pattern])) {
+            throw new \InvalidArgumentException(
+                "Route [{$pattern}] is not a native route. children() only works between routes registered with Route::native()."
+            );
+        }
+
+        if (static::$routes[$pattern]['route'] !== $route) {
+            throw new \InvalidArgumentException(
+                "Route [{$pattern}] is not a native route, or another native route with the same URI has replaced it. children() only works between routes registered with Route::native()."
+            );
+        }
+
+        return $pattern;
+    }
+
+    /**
+     * Both patterns must be registered, and the link must not make a
+     * route its own ancestor.
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected static function assertCanBeParent(string $child, string $parent): void
+    {
+        foreach ([$parent, $child] as $pattern) {
+            if (! isset(static::$routes[$pattern])) {
+                throw new \InvalidArgumentException(
+                    "Route [{$pattern}] is not a native route. children() only works between routes registered with Route::native()."
+                );
+            }
+        }
+
+        if ($child === $parent || in_array($child, static::ancestorsOf($parent), true)) {
+            throw new \InvalidArgumentException(
+                "Native route [{$child}] cannot be a child of [{$parent}]: that would make it its own ancestor."
+            );
+        }
+    }
+
+    /**
+     * Where a child belongs once its path is read relative to its parent,
+     * as a registry pattern.
+     *
+     * A route declared inside Route::prefix('app') already carries that
+     * prefix, and so does its parent, so the prefix is taken off the
+     * child before the parent's URI goes on: `app/{id}` under `app/chats`
+     * is `/app/chats/{id}`, not `/app/chats/app/{id}`.
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected static function uriUnderParent(IlluminateRoute $parent, IlluminateRoute $child): string
+    {
+        $base = trim($parent->uri(), '/');
+        $path = trim($child->uri(), '/');
+
+        // Under the root route everything is already in place, and the
+        // long form is already under its parent.
+        if ($base === '' || str_starts_with($path.'/', $base.'/')) {
+            return '/'.$path;
+        }
+
+        $prefix = trim((string) $child->getPrefix(), '/');
+        if ($prefix !== '' && str_starts_with($path.'/', $prefix.'/')) {
+            $path = trim(substr($path, strlen($prefix)), '/');
+        }
+
+        if ($path === '') {
+            throw new \InvalidArgumentException(
+                "A child of native route [/{$base}] needs a path of its own."
+            );
+        }
+
+        return '/'.$base.'/'.$path;
+    }
+
+    /**
+     * Move a registered route to a new URI: update the Illuminate route,
+     * re-key the registry entry in place (registration order decides
+     * which of two matching routes wins), repoint children at the new
+     * key, and take those children along.
+     *
+     * `$prefix` is what the route's URI is now prefixed with. It is
+     * recorded on the route the way a group prefix is.
+     */
+    protected static function moveRoute(string $from, string $to, string $prefix): void
+    {
+        $route = static::$routes[$from]['route'];
+
+        // setUri() re-parses the URI and forgets `{user:slug}` binding
+        // fields, which only the original string carried.
+        $bindingFields = $route->bindingFields();
+        $route->setUri(ltrim($to, '/') ?: '/');
+        $route->setBindingFields($bindingFields);
+        $route->action['prefix'] = trim($prefix, '/');
+
+        // Both are caches of the old URI. Left alone, the route would
+        // keep matching (and binding) the URI it used to have.
+        $route->compiled = null;
+        $route->parameterNames = null;
+
+        $children = [];
+        $routes = [];
+
+        foreach (static::$routes as $pattern => $entry) {
+            if ($pattern === $to) {
+                // A route already registered at the destination loses to
+                // this one, as any earlier route on the same URI does.
+                continue;
+            }
+
+            if ($pattern === $from) {
+                $entry['pattern'] = $to;
+                $routes[$to] = $entry;
+
+                continue;
+            }
+
+            if ($entry['parent'] === $from) {
+                $entry['parent'] = $to;
+                $children[] = $pattern;
+            }
+
+            $routes[$pattern] = $entry;
+        }
+
+        static::$routes = $routes;
+
+        foreach ($children as $child) {
+            // A child linked by setParent() may live outside its parent's
+            // URI. It has nothing to follow, so it stays where it is.
+            if (($moved = static::rebase($child, $from, $to)) !== null) {
+                $childPrefix = static::rebase('/'.trim((string) static::$routes[$child]['route']->getPrefix(), '/'), $from, $to) ?? $to;
+
+                static::moveRoute($child, $moved, $childPrefix);
+            }
+        }
+    }
+
+    /**
+     * Swap the leading `$from` of a path for `$to`: `/{id}/info` moved
+     * from `/{id}` to `/chats/{id}` is `/chats/{id}/info`. Null when the
+     * path is not under `$from`.
+     */
+    protected static function rebase(string $path, string $from, string $to): ?string
+    {
+        $from = rtrim($from, '/');
+
+        if ($from !== '' && $path !== $from && ! str_starts_with($path, $from.'/')) {
+            return null;
+        }
+
+        return rtrim(rtrim($to, '/').substr($path, strlen($from)), '/') ?: '/';
+    }
+
+    /**
+     * Rebuild Laravel's route collection after routes changed URI.
+     *
+     * The collection keys every route by method and URI when the route is
+     * added, and nothing re-keys it. A moved child would stay findable
+     * only under its short URI: a real request for `/chats/5` (start URL,
+     * deep link, hot-reload redirect) would miss it, and the next route
+     * declared with the same short URI would replace it outright. Adding
+     * every route to a fresh collection re-keys them all and rebuilds the
+     * name lookups, so route('chats.show', 5) works as well.
+     */
+    protected static function reindexLaravelRoutes(): void
+    {
+        if (! function_exists('app') || ! app()->bound('router')) {
+            return;
+        }
+
+        $router = app('router');
+        $current = $router->getRoutes();
+
+        // A cached (compiled) collection is never built from route files,
+        // so children() cannot have run against one.
+        if (! $current instanceof RouteCollection) {
+            return;
+        }
+
+        $fresh = new RouteCollection;
+
+        foreach ($current->getRoutes() as $route) {
+            $fresh->add($route);
+        }
+
+        $router->setRoutes($fresh);
+
+        // The URL generator keeps its own reference to the collection.
+        // Laravel normally re-points it after a swap, but hand the new one
+        // over directly so a replaced generator (this package installs its
+        // own on iOS) can never be left looking up names in the old one.
+        if (app()->resolved('url') && method_exists(app('url'), 'setRoutes')) {
+            app('url')->setRoutes($fresh);
+        }
+    }
+
+    /**
+     * The pattern of the route this one is a child of, or null when it has
+     * no parent (or is not registered).
+     */
+    public static function parentOf(string $pattern): ?string
+    {
+        return static::$routes['/'.ltrim($pattern, '/')]['parent'] ?? null;
+    }
+
+    /**
+     * Every ancestor of a route, nearest first: its parent, then that
+     * route's parent, and so on.
+     *
+     * @return list<string>
+     */
+    public static function ancestorsOf(string $pattern): array
+    {
+        $ancestors = [];
+        $seen = ['/'.ltrim($pattern, '/') => true];
+        $current = static::parentOf($pattern);
+
+        // $seen stops the walk if the chain ever loops back on itself.
+        while ($current !== null && ! isset($seen[$current])) {
+            $ancestors[] = $current;
+            $seen[$current] = true;
+            $current = static::parentOf($current);
+        }
+
+        return $ancestors;
+    }
+
+    /**
+     * The layout a route renders with: its own, or the nearest ancestor's
+     * that has one. Worked out on every lookup rather than copied at
+     * registration, so it does not matter whether ->layout() or
+     * ->children() was called first.
+     */
+    protected static function layoutFor(string $pattern): ?string
+    {
+        foreach ([$pattern, ...static::ancestorsOf($pattern)] as $candidate) {
+            $layout = static::$routes[$candidate]['layout'] ?? null;
+
+            if ($layout !== null) {
+                return $layout;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -509,10 +916,13 @@ class NativeRouter
 
         return [
             'class' => $entry['class'],
-            'layout' => $entry['layout'] ?? null,
+            // layoutFor() walks app routes only, so a table entry keeps its own.
+            'layout' => isset($entry['table']) ? $entry['layout'] : static::layoutFor($entry['pattern']),
             'params' => $route->parametersWithoutNulls(),
             'query' => static::queryOf($uri),
             'route' => $route,
+            'pattern' => $entry['pattern'],
+            'parent' => $entry['parent'],
             'context' => $entry['context'] ?? null,
         ];
     }
@@ -600,6 +1010,21 @@ class NativeRouter
     }
 
     /**
+     * The registered pattern that serves a concrete URI (`/chats/5` →
+     * `/chats/{id}`), or null when no native route matches. Like
+     * isNativeRoute(), this only matches: it binds nothing and cannot
+     * trigger model lookups.
+     */
+    public static function patternFor(string $uri): ?string
+    {
+        try {
+            return static::matchRoute($uri)['entry']['pattern'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
      * Consume a screen change requested from the `native:watch` terminal UI.
      * Returns the target URI, or null when nothing usable is waiting.
      *
@@ -649,6 +1074,7 @@ class NativeRouter
     public static function clearRoutes(): void
     {
         static::$routes = [];
+        static::$replacedAnotherRoute = null;
         static::$routeTables = [];
         static::$currentGroupLayout = null;
     }
@@ -736,9 +1162,7 @@ class NativeRouter
                     query: $resolved['query'],
                     context: $resolved['context'],
                 );
-                if (! empty($resolved['layout'])) {
-                    $component->setLayout($resolved['layout']);
-                }
+                $this->applyResolvedRoute($component, $resolved);
                 $component->mountComponent();
             } catch (\Throwable $e) {
                 static::debugLog("preloadStack: skipped $uri — ".$e->getMessage());
@@ -789,8 +1213,8 @@ class NativeRouter
 
             // Hydrate layout from the registered route entry so the
             // component knows its chrome before mount() runs.
-            if ($resolved !== null && ! empty($resolved['layout'])) {
-                $component->setLayout($resolved['layout']);
+            if ($resolved !== null) {
+                $this->applyResolvedRoute($component, $resolved);
             }
 
             // The launch screen has always been recorded by its path, and the
@@ -957,9 +1381,7 @@ class NativeRouter
                         $resolved['query'],
                         $resolved['context'],
                     );
-                    if (! empty($resolved['layout'])) {
-                        $next->setLayout($resolved['layout']);
-                    }
+                    $this->applyResolvedRoute($next, $resolved);
                     static::debugLog('NAVIGATE: component created, pushing to stack');
 
                     $this->stack[] = [
@@ -1025,9 +1447,7 @@ class NativeRouter
                             $resolved['query'],
                             $resolved['context'],
                         );
-                        if (! empty($resolved['layout'])) {
-                            $next->setLayout($resolved['layout']);
-                        }
+                        $this->applyResolvedRoute($next, $resolved);
 
                         $this->stack[] = [
                             'component' => $next,
@@ -1129,6 +1549,23 @@ class NativeRouter
         } catch (\Throwable $e) {
             static::debugLog('lifecycle event failed: '.$e->getMessage());
         }
+    }
+
+    /**
+     * Tell a freshly created component what its resolved route says about
+     * it: which layout wraps it, and where its route sits in the
+     * ->children() tree. Runs before mount() so the first frame already
+     * has the right chrome.
+     *
+     * @param  array{layout: ?string, pattern: string, parent: ?string}  $resolved
+     */
+    protected function applyResolvedRoute(NativeComponent $component, array $resolved): void
+    {
+        if (! empty($resolved['layout'])) {
+            $component->setLayout($resolved['layout']);
+        }
+
+        $component->setRoutePattern($resolved['pattern'] ?? null, $resolved['parent'] ?? null);
     }
 
     /** `$context` is the route table entry's context, null for an app route. */

@@ -115,6 +115,57 @@ class NativeElementCollector
     protected static array $textFrames = [];
 
     /**
+     * Open slot captures, innermost last — see beginComponent().
+     *
+     * Each frame: ['level' => int, 'state' => [stack, roots, textFrames]].
+     * `level` is the output-buffer depth its endSlot() runs at, which is
+     * how a compiled endSlot() tells its own capture from someone else's.
+     */
+    protected static array $slotFrames = [];
+
+    /**
+     * Blade components between their opening tag and the end of their
+     * render, innermost last.
+     *
+     * Each entry: ['level' => int, 'slots' => list<int>, 'rendering' => bool].
+     * `level` is the buffer depth of the component's default slot, `slots`
+     * the ids it captured, and `rendering` flips once its own view starts.
+     */
+    protected static array $slotComponents = [];
+
+    /**
+     * Captured slot elements by marker id, waiting to be placed where the
+     * component echoes the slot. An entry empties once placed and goes
+     * away when its component finishes.
+     *
+     * @var array<int, list<Element>>
+     */
+    protected static array $slots = [];
+
+    /**
+     * Ids of unplaced slots whose component view is rendering, so their
+     * marker may be sitting in an output buffer. Buffers are only scanned
+     * while this is non-empty, so a render without slots pays nothing.
+     *
+     * @var array<int, true>
+     */
+    protected static array $echoableSlots = [];
+
+    /** Last marker id handed out in this render. */
+    protected static int $slotSequence = 0;
+
+    /**
+     * A slot marker is these two control bytes around an id. Nobody types
+     * them, and they survive trim() and e(), so Blade's own slot plumbing
+     * carries the marker to wherever the component echoes the slot.
+     */
+    protected const SLOT_MARKER_OPEN = "\x02nphp-slot:";
+
+    protected const SLOT_MARKER_CLOSE = "\x03";
+
+    protected const SLOT_MARKER_PATTERN = '/\x02nphp-slot:(\d+)\x03/';
+
+    /**
      * Plugin-registered attribute capture.
      *
      * Lets a package ship a custom Blade attribute that works on ANY
@@ -269,6 +320,8 @@ class NativeElementCollector
             );
         }
 
+        static::flushSlots();
+
         if (empty(static::$stack)) {
             static::$roots[] = $element;
         } else {
@@ -303,12 +356,22 @@ class NativeElementCollector
         static::$textFrames = [];
         static::$keyPathStack = [];
 
+        // Slot captures belong to the tree they were opened in. The
+        // detached render gets a clean set, and a render that throws
+        // half way through a slot leaves nothing behind in the parent's.
+        $savedSlots = [static::$slotFrames, static::$slotComponents, static::$slots, static::$echoableSlots];
+        static::$slotFrames = [];
+        static::$slotComponents = [];
+        static::$slots = [];
+        static::$echoableSlots = [];
+
         try {
             $render();
 
             return array_values(static::$roots);
         } finally {
             [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack] = $saved;
+            [static::$slotFrames, static::$slotComponents, static::$slots, static::$echoableSlots] = $savedSlots;
         }
     }
 
@@ -1280,6 +1343,7 @@ class NativeElementCollector
 
     public static function open(string $type, array $attrs): void
     {
+        static::flushSlots();
         $attrs = static::extractPoll($attrs);
 
         // A registered child-component tag: push a marker frame; the
@@ -1352,6 +1416,8 @@ class NativeElementCollector
 
     public static function close(): void
     {
+        static::flushSlots();
+
         // The matching open() pushed a component frame — mount the child
         // here, at the position the tag occupies in the parent's tree.
         if (end(static::$stack) instanceof ComponentTagFrame) {
@@ -1378,6 +1444,7 @@ class NativeElementCollector
 
     public static function leaf(string $type, array $attrs): void
     {
+        static::flushSlots();
         $attrs = static::extractPoll($attrs);
 
         // Self-closing child-component tag — mount immediately in place.
@@ -1422,6 +1489,8 @@ class NativeElementCollector
      */
     public static function textOpen(array $attrs): void
     {
+        static::flushSlots();
+
         $inherited = null;
 
         if (! empty(static::$textFrames)) {
@@ -1450,7 +1519,7 @@ class NativeElementCollector
      */
     public static function textClose(): void
     {
-        $buffer = ob_get_clean();
+        $buffer = static::takeText();
         $frame = array_pop(static::$textFrames);
         $isNested = ! empty(static::$textFrames);
         $mode = $frame['whitespace'];
@@ -1609,7 +1678,7 @@ class NativeElementCollector
     protected static function captureRawRunIntoTopFrame(): void
     {
         $top = count(static::$textFrames) - 1;
-        $text = static::normalizeRunText(ob_get_clean(), static::$textFrames[$top]['whitespace']);
+        $text = static::normalizeRunText(static::takeText(), static::$textFrames[$top]['whitespace']);
         if ($text !== '') {
             static::$textFrames[$top]['children'][] = ['attrs' => ['text' => $text], 'children' => null];
         }
@@ -1675,6 +1744,224 @@ class NativeElementCollector
         static::close();
     }
 
+    // ── Blade component slots ────────────────────────
+
+    /**
+     * Blade renders a component's slot content first and the component's
+     * own view second, so elements written inside `<x-card>…</x-card>`
+     * are collected before the card's wrapper exists. To put them where
+     * the card echoes `{{ $slot }}`, the precompiler brackets every Blade
+     * component and slot with the calls below:
+     *
+     *   - the slot content is collected into a frame of its own rather
+     *     than into the live tree;
+     *   - endSlot() parks those elements under an id and echoes a marker,
+     *     which becomes the ComponentSlot's content and travels through
+     *     Blade like any other slot text;
+     *   - when the component's view echoes the slot, the marker lands in
+     *     an output buffer. The next collector call finds it there and
+     *     attaches the parked elements at the current tree position.
+     *
+     * Slot text with no elements in it is left alone and stays text.
+     *
+     * Streaming writes nodes straight to the C buffer and cannot move
+     * them afterwards, so none of this runs there: no frames are pushed
+     * and every call below falls through.
+     *
+     * Runs after a component tag's opening code, once Blade has started
+     * buffering its default slot. A legacy `<x-native-*>` component has
+     * already opened its element in withAttributes() by then, so that
+     * element stays on the live stack and takes the slot back as children.
+     */
+    public static function beginComponent(): void
+    {
+        if (static::$streaming) {
+            return;
+        }
+
+        $level = ob_get_level();
+
+        static::$slotComponents[] = ['level' => $level, 'slots' => [], 'rendering' => false];
+        static::pushSlotFrame($level);
+    }
+
+    /**
+     * Start capturing a named slot. Runs just before Blade's `@slot`
+     * opens the slot's buffer, hence the level one deeper than here.
+     */
+    public static function beginSlot(): void
+    {
+        $component = end(static::$slotComponents);
+
+        // Only a slot written directly in the body of a component this
+        // collector is tracking has somewhere to be placed later. Anything
+        // else (streaming, a hand-written @component) collects in place.
+        if ($component === false || $component['rendering'] || $component['level'] !== ob_get_level()) {
+            return;
+        }
+
+        static::pushSlotFrame(ob_get_level() + 1);
+    }
+
+    /**
+     * Finish the innermost slot capture and return its marker for the
+     * compiled view to echo into the slot's buffer. Returns '' when the
+     * slot held no elements, which leaves a text-only slot untouched.
+     */
+    public static function endSlot(): string
+    {
+        $frame = end(static::$slotFrames);
+
+        // No capture is open at this buffer depth: streaming, a component
+        // that chose not to render, or a hand-written @endslot.
+        if ($frame === false || $frame['level'] !== ob_get_level()) {
+            return '';
+        }
+
+        // A slot handed on into this one (`<x-card>{{ $slot }}</x-card>`)
+        // left its marker in this buffer. Its elements join this capture.
+        static::flushSlots();
+
+        array_pop(static::$slotFrames);
+        $captured = static::$roots;
+        [static::$stack, static::$roots, static::$textFrames] = $frame['state'];
+
+        $component = array_key_last(static::$slotComponents);
+        $marker = '';
+
+        if ($captured !== []) {
+            $id = ++static::$slotSequence;
+            static::$slots[$id] = $captured;
+            static::$slotComponents[$component]['slots'][] = $id;
+            $marker = static::SLOT_MARKER_OPEN.$id.static::SLOT_MARKER_CLOSE;
+        }
+
+        // The default slot closes last, right before the component's own
+        // view renders. From here on its slots can be echoed.
+        if ($frame['level'] === static::$slotComponents[$component]['level']) {
+            static::$slotComponents[$component]['rendering'] = true;
+
+            foreach (static::$slotComponents[$component]['slots'] as $id) {
+                static::$echoableSlots[$id] = true;
+            }
+        }
+
+        return $marker;
+    }
+
+    /**
+     * Runs after a Blade component has rendered. Its output was just
+     * echoed into the current buffer, so a slot echoed as the last thing
+     * in its view is placed here. Slots it never echoed are dropped.
+     */
+    public static function endComponent(): void
+    {
+        $component = end(static::$slotComponents);
+
+        // Not ours to finish: the tag never began (streaming, or the
+        // component's shouldRender() said no).
+        if ($component === false || $component['level'] !== ob_get_level() + 1) {
+            return;
+        }
+
+        static::flushSlots();
+        array_pop(static::$slotComponents);
+
+        foreach ($component['slots'] as $id) {
+            unset(static::$slots[$id], static::$echoableSlots[$id]);
+        }
+    }
+
+    /**
+     * Place every slot whose marker has been echoed into the current
+     * output buffer, in order, at the current tree position, and take the
+     * markers back out of the buffer. Every collector entry point calls
+     * this first so slot elements land ahead of whatever comes next. The
+     * precompiler also calls it before anything that opens a new buffer
+     * (a nested component, an @include), where a marker left behind in
+     * this one could no longer be seen.
+     */
+    public static function flushSlots(): void
+    {
+        if (static::$echoableSlots === [] || ob_get_level() === 0) {
+            return;
+        }
+
+        $buffer = (string) ob_get_contents();
+
+        if (! str_contains($buffer, static::SLOT_MARKER_OPEN)) {
+            return;
+        }
+
+        $rest = static::placeSlotMarkers($buffer);
+
+        ob_clean();
+        echo $rest;
+    }
+
+    /**
+     * Close the current text capture buffer and return its text. A slot
+     * echoed inside a `<text>` or `<button>` cannot become part of the
+     * string, so its elements are placed at the current tree position
+     * (ahead of the text element) and its marker never reaches the text.
+     */
+    public static function takeText(): string
+    {
+        $text = (string) ob_get_clean();
+
+        if (static::$slotSequence === 0 || ! str_contains($text, static::SLOT_MARKER_OPEN)) {
+            return $text;
+        }
+
+        return static::placeSlotMarkers($text);
+    }
+
+    protected static function pushSlotFrame(int $level): void
+    {
+        static::$slotFrames[] = [
+            'level' => $level,
+            'state' => [static::$stack, static::$roots, static::$textFrames],
+        ];
+
+        static::$stack = [];
+        static::$roots = [];
+        static::$textFrames = [];
+    }
+
+    /** Place the slot behind each marker in $content and strip the markers. */
+    protected static function placeSlotMarkers(string $content): string
+    {
+        return preg_replace_callback(static::SLOT_MARKER_PATTERN, function (array $match) {
+            static::placeSlot((int) $match[1]);
+
+            return '';
+        }, $content);
+    }
+
+    protected static function placeSlot(int $id): void
+    {
+        $elements = static::$slots[$id] ?? [];
+
+        // Echoed a second time (or not a slot of this render): the
+        // elements already have their place, so only the marker goes.
+        if ($elements === []) {
+            return;
+        }
+
+        static::$slots[$id] = [];
+        unset(static::$echoableSlots[$id]);
+
+        foreach ($elements as $element) {
+            static::guardAgainstComponentSlot($element->getType());
+
+            if (empty(static::$stack)) {
+                static::$roots[] = $element;
+            } else {
+                static::$stack[count(static::$stack) - 1]->addChild($element);
+            }
+        }
+    }
+
     public static function collect(): Element
     {
         $roots = static::$roots;
@@ -1712,6 +1999,12 @@ class NativeElementCollector
         static::$streaming = false;
         static::$pollIntervals = [];
         static::$textFrames = [];
+        // Slot captures left open by a render that threw part way through.
+        static::$slotFrames = [];
+        static::$slotComponents = [];
+        static::$slots = [];
+        static::$echoableSlots = [];
+        static::$slotSequence = 0;
         // Phase 1 — clear any leftover key-path entries between frames
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
