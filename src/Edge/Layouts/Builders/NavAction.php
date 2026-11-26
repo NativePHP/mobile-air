@@ -117,6 +117,8 @@ class NavAction
         }
 
         $this->imageShape = $shape;
+
+        return $this;
     }
 
     /**
