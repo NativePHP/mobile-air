@@ -299,7 +299,7 @@ BLADE);
 // ── native:model ────────────────────────────────────────────────────
 
 it('reads native:model bindings from the variable and a path into it', function () {
-    ElementRegistry::register('text_input', TextInput::class);
+    ElementRegistry::swap('text_input', TextInput::class);
 
     file_put_contents(__DIR__.'/views/test-model-read.blade.php', <<<'BLADE'
 <native:column>
@@ -323,7 +323,7 @@ BLADE);
 });
 
 it('fails on a native:model binding to a variable the view does not have', function () {
-    ElementRegistry::register('text_input', TextInput::class);
+    ElementRegistry::swap('text_input', TextInput::class);
 
     file_put_contents(__DIR__.'/views/test-model-typo.blade.php', '<native:text-input native:model="usrname.first" />');
 

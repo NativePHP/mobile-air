@@ -77,14 +77,20 @@ struct NativeRootTabsRenderer: View {
         let tabs = node.children.filter { $0.type == "bottom_nav_item" }
         let accessory = node.children.first { $0.type == "tab_accessory" }
         let currentUri = node.props.getString("current_uri", default: "")
-        // Determine which tab "owns" the current URI via longest URL
+        let tabHighlight = node.props.getString("tab_highlight", default: "")
+        let highlightedIdx: Int? = tabHighlight.isEmpty
+            ? nil
+            : tabs.firstIndex { $0.props.getString("id", default: "") == tabHighlight }
+        // Determine which tab "owns" the current URI via an explicit
+        // `TabBarOptions::highlight()` override first, then longest URL
         // prefix match against tab URLs. This is what lets a pushed
         // sub-route (e.g. `/syncup-native/chat/123` under a
         // `/syncup-native` Chats tab) render INSIDE the Chats tab's
         // NavigationStack rather than full-screen-replacing the layout.
         // Falls back to `BottomNavItem.active` (TabBar::highlight set
         // the same way) so non-prefix tab layouts still pick correctly.
-        let owningIdx = owningTabIndex(for: currentUri, tabs: tabs)
+        let owningIdx = highlightedIdx
+            ?? owningTabIndex(for: currentUri, tabs: tabs)
             ?? (tabs.firstIndex { $0.props.getBool("active") } ?? 0)
         let owningId = owningIdx < tabs.count
             ? tabs[owningIdx].props.getString("id", default: "")
@@ -97,10 +103,13 @@ struct NativeRootTabsRenderer: View {
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
             let stackDepth = node.props.getInt("stack_depth", default: 0)
+            let stackUris = node.props.getString("stack_uris", default: "")
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
-                coord.receive(uri: currentUri, depth: stackDepth, rootNode: node)
+                coord.receive(uri: currentUri, depth: stackDepth, stack: stackUris, rootNode: node)
             }
         }
 
@@ -108,6 +117,10 @@ struct NativeRootTabsRenderer: View {
         let activeColor: Color = activeArgb != 0 ? Color(argb: activeArgb) : .accentColor
         let bgArgb = node.props.getColor("background_color", default: 0)
         let isDark = node.props.getBool("dark")
+        // iOS 26's scroll edge effect under the bar, for each tab's root
+        // level: "soft" (default), "hard" or "none". See
+        // `TabBarEdgeBlurModifier`.
+        let edgeBlur = node.props.getString("edge_blur", default: "soft")
 
         // `TabBar::labelVisibility('labeled'|'selected'|'unlabeled')`.
         // Defaults to "labeled" — matches Apple's TabView default.
@@ -304,6 +317,7 @@ struct NativeRootTabsRenderer: View {
                         fallbackShowBack: navBack,
                         fallbackTextArgb: navTextArgb,
                         fallbackBgArgb: navBgArgb,
+                        edgeBlur: edgeBlur,
                         isSelected: tabId == selection,
                         onPushVisibilityChange: { hidden in
                             if customPresentationHiddenForPush != hidden {
@@ -527,6 +541,7 @@ private struct PerTabContent: View {
     let fallbackShowBack: Bool
     let fallbackTextArgb: Int
     let fallbackBgArgb: Int
+    let edgeBlur: String
     let isSelected: Bool
     let onPushVisibilityChange: (Bool) -> Void
 
@@ -710,6 +725,14 @@ private struct PerTabContent: View {
             // tab bar *used to be* — visually mid-screen.
             .modifier(HideTabBarOnPushModifier(isRoot: isRoot, forceHide: forceHideTabBar))
             .modifier(BottomBarInsetModifier(bottomBar: bottomBar))
+            // Outside the bottom bar, so a root-level bar's own edge blur
+            // wins for its region. Only where the tab bar shows. Soft draws
+            // our own progressive blur band over the level, under the tab
+            // bar (see `TabBarProgressiveBlur`).
+            .modifier(TabBarEdgeBlurModifier(
+                style: isRoot && !forceHideTabBar ? edgeBlur : "",
+                hasBottomBar: bottomBar != nil
+            ))
     }
 
     @ViewBuilder
@@ -968,6 +991,13 @@ private struct TabsActionView: View {
 /// its own visible chrome (bg color or glass class), except that a
 /// `bottom_bar` carrying `glass` gets soft glass behind the whole bar
 /// (see `BottomBarSoftGlass`).
+///
+/// A bar that opts into the scroll edge effect (`edge-blur="soft"` or
+/// `"hard"`, sent as `edge_blur`) is placed with
+/// `.safeAreaBar(.bottom)` on iOS 26+ instead, so the system draws its
+/// scroll edge effect on the scroll view under the bar, and the soft glass
+/// is left out there (see `BottomBarScrollEdge`). Before iOS 26 the bar is
+/// placed and drawn as without it.
 private struct BottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -984,22 +1014,47 @@ private struct BottomBarInsetModifier: ViewModifier {
         // height, and a FlexContainer fills any finite proposal, so a bar
         // whose root has no explicit height inflated to the proposal —
         // `.safeAreaBar` was never at fault. `.fixedSize(vertical:)` pins
-        // the bar to its intrinsic height either way; re-enabling
-        // `.safeAreaBar` for the floating-glass treatment is now viable
-        // but a separate, visual decision.
+        // the bar to its intrinsic height either way. `.safeAreaBar` is
+        // only taken for a bar that asks for the scroll edge effect, so a
+        // bar that doesn't keeps exactly the placement it had.
         if let bottomBar, let inner = bottomBar.children.first {
-            content.safeAreaInset(edge: .bottom, spacing: 0) {
-                NodeView(node: inner)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity)
-                    .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
-                    .background(alignment: .top) {
-                        BottomBarSoftGlass(flags: bottomBar.props.getInt("glass", default: 0))
+            let edgeBlur = bottomBar.props.getString("edge_blur", default: "")
+            #if compiler(>=6.2)
+            if !edgeBlur.isEmpty, #available(iOS 26.0, *) {
+                content
+                    .safeAreaBar(edge: .bottom) {
+                        barContent(inner, bottomBar, softGlass: false)
                     }
+                    .bottomBarScrollEdgeStyle(edgeBlur)
+            } else {
+                inset(content, inner, bottomBar)
             }
+            #else
+            inset(content, inner, bottomBar)
+            #endif
         } else {
             content
         }
+    }
+
+    private func inset(_ content: Content, _ inner: NativeUINode, _ bottomBar: NativeUINode) -> some View {
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            barContent(inner, bottomBar, softGlass: true)
+        }
+    }
+
+    @ViewBuilder
+    private func barContent(_ inner: NativeUINode, _ bottomBar: NativeUINode, softGlass: Bool) -> some View {
+        NodeView(node: inner)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
+            .background(alignment: .top) {
+                BottomBarSoftGlass(
+                    flags: softGlass ? bottomBar.props.getInt("glass", default: 0) : 0,
+                    opacity: CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
+                )
+            }
     }
 
     /// The bar root's resolved background color for the active appearance,
@@ -1559,6 +1614,30 @@ private struct ObjectResultRow: View {
     }
 }
 
+/// The scroll edge effect a `bottom_bar` asks for with `edge-blur="soft"`
+/// or `edge-blur="hard"` (sent as `edge_blur`). On iOS 26+ both renderers
+/// place such a bar with `.safeAreaBar(.bottom)`, which is what makes the
+/// system draw its scroll edge effect on a scroll view running under the
+/// bar: a progressive blur (soft) or an opaque fade (hard), as under the
+/// system's own toolbars. `.safeAreaInset` draws none. The effect stands in
+/// for the bar's soft glass, so a bar carrying both (`class="glass/80"
+/// edge-blur="soft"`) gets the edge effect on iOS 26+ and the glass before.
+/// Elements inside the bar draw as they always do, so a bar that tints or
+/// fades its own rows covers the effect where it does.
+#if compiler(>=6.2)
+extension View {
+    @available(iOS 26.0, *)
+    @ViewBuilder
+    func bottomBarScrollEdgeStyle(_ edgeBlur: String) -> some View {
+        if edgeBlur == "hard" {
+            scrollEdgeEffectStyle(.hard, for: .bottom)
+        } else {
+            scrollEdgeEffectStyle(.soft, for: .bottom)
+        }
+    }
+}
+#endif
+
 /// Liquid Glass behind a bottom bar whose `bottom_bar` element carries the
 /// `glass` class (`<native:bottom-bar class="glass">`). The glass runs on
 /// through the bottom safe area, under the home indicator, and fades in over
@@ -1566,10 +1645,13 @@ private struct ObjectResultRow: View {
 /// without the hard top edge (rim and lensing) a plain `glass` surface has.
 /// The bar's own content draws on top; give it a translucent fill to tint
 /// the glass. `glass:clear` takes the clear variant. Before iOS 26 it's
-/// `.regularMaterial`, faded the same way. Shared with the stack renderer's
-/// `StackBottomBarInsetModifier`.
+/// `.regularMaterial`, faded the same way. `opacity` (`glass/80` on the bar
+/// sends `glass_opacity` 0.8) is how opaque the glass gets once it has
+/// faded in, so an app can let more of what's under the bar show through.
+/// Shared with the stack renderer's `StackBottomBarInsetModifier`.
 struct BottomBarSoftGlass: View {
     let flags: Int
+    var opacity: CGFloat = 1
     var fade: CGFloat = 28
 
     var body: some View {
@@ -1577,7 +1659,10 @@ struct BottomBarSoftGlass: View {
             GeometryReader { geo in
                 glass.mask(
                     LinearGradient(
-                        stops: Self.fadeIn(until: min(1, fade / max(geo.size.height, 1))),
+                        stops: Self.fadeIn(
+                            until: min(1, fade / max(geo.size.height, 1)),
+                            to: min(1, max(0, opacity))
+                        ),
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -1590,12 +1675,13 @@ struct BottomBarSoftGlass: View {
         }
     }
 
-    /// Clear to opaque on an ease-in-out curve, which leaves no line where
-    /// a straight ramp would stop.
-    static func fadeIn(until end: CGFloat) -> [Gradient.Stop] {
+    /// Clear to `peak` opacity on an ease-in-out curve, which leaves no line
+    /// where a straight ramp would stop. The last stop holds `peak` down the
+    /// rest of the bar.
+    static func fadeIn(until end: CGFloat, to peak: CGFloat = 1) -> [Gradient.Stop] {
         (0...8).map { step in
             let t = CGFloat(step) / 8
-            return .init(color: .black.opacity(t * t * (3 - 2 * t)), location: t * end)
+            return .init(color: .black.opacity(peak * t * t * (3 - 2 * t)), location: t * end)
         }
     }
 

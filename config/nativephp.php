@@ -263,6 +263,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Async Tasks
+    |--------------------------------------------------------------------------
+    |
+    | AsyncTask::dispatch() runs work on background PHP interpreters, each a
+    | full Laravel boot with its own memory. None boot at launch: the first
+    | task boots one, and more boot only while tasks are waiting for a free
+    | one, up to max_slots (4 at most). An interpreter with no work for
+    | idle_timeout seconds shuts down and frees its memory (0 keeps it).
+    |
+    | These are read by the native app at build time, so changing them needs
+    | a new native build, not just an updated app bundle.
+    |
+    */
+
+    'async' => [
+        'max_slots' => (int) env('NATIVEPHP_ASYNC_MAX_SLOTS', 2),
+        'idle_timeout' => (int) env('NATIVEPHP_ASYNC_IDLE_TIMEOUT', 60),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |

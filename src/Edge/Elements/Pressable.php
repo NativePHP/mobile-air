@@ -65,6 +65,10 @@ class Pressable extends Element
      */
     public function applyAttributes(array $attrs): void
     {
+        if (! isset($attrs['menu']) && ! isset($attrs['context-menu']) && ! isset($attrs['contextMenu'])) {
+            return;
+        }
+
         $menu = $this->menuItems($attrs['menu'] ?? null);
         $contextMenu = $this->menuItems($attrs['context-menu'] ?? $attrs['contextMenu'] ?? null);
 

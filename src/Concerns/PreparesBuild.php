@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Icon\Svg\SvgConversionException;
+use Native\Mobile\Support\AsyncPoolConfig;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleExclusions;
@@ -447,6 +448,9 @@ trait PreparesBuild
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
                 'entry_mode' => $entryMode,
                 'native_routes' => $nativeRoutes,
+                // How the async task lane sizes itself (see config nativephp.async).
+                'async_max_slots' => AsyncPoolConfig::maxSlots(),
+                'async_idle_timeout' => AsyncPoolConfig::idleTimeout(),
                 // What this shell ships with, so a lane cannot offer it a release
                 // that predates its own code. Written here because .env is
                 // replaced wholesale by a payload and this has to outlive one.

@@ -67,7 +67,7 @@ it('keeps the reboot flag up from before the old worker stops until the new one 
     $flagged = strpos($reboot, 'rebootingRuntime = true');
     $stopped = strpos($reboot, 'worker?.stop()');
     $shutdown = strpos($reboot, 'phpBridge.shutdownPersistentRuntime()');
-    $started = strpos($reboot, 'queueWorker = PHPQueueWorker(phpBridge)');
+    $started = strpos($reboot, 'queueWorker = PHPQueueWorker(phpBridge');
     $cleared = strpos($reboot, 'rebootingRuntime = false');
 
     expect($flagged)->not->toBeFalse()
