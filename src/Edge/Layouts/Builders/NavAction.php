@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Edge\Layouts\Builders;
 
+use InvalidArgumentException;
 use Native\Mobile\Concerns\HasPlatformIcon;
 use Native\Mobile\Edge\Elements\TopBarAction;
 
@@ -29,6 +30,8 @@ class NavAction
 
     private ?string $image = null;
 
+    private ?string $imageShape = null;
+
     private ?string $subtitle = null;
 
     private ?string $event = null;
@@ -38,6 +41,8 @@ class NavAction
     private bool $destructive = false;
 
     private bool $disabled = false;
+
+    private bool $checked = false;
 
     /**
      * Marks this action as a visual divider rather than a tappable row.
@@ -85,10 +90,33 @@ class NavAction
      * circle instead of the icon. The icon still shows while the image
      * loads and if it fails, so set one too. Empty strings are ignored, so
      * `->image($user->avatarUrl ?? '')` falls back to the icon cleanly.
+     * `imageShape('rounded')` cuts it to a rounded square instead.
      */
     public function image(?string $url): self
     {
         $this->image = ($url === null || trim($url) === '') ? null : $url;
+
+        return $this;
+    }
+
+    /**
+     * The shape an `image()` is cut to: `circle` (the default) or
+     * `rounded`, a square with rounded corners, for things like an
+     * organisation's logo that shouldn't be cropped to a circle.
+     *
+     *   NavAction::make('acme')->label('Acme')->icon('building')
+     *       ->image($org->logoUrl)->imageShape('rounded');
+     *
+     * mobile-ui's `:menu`, `:context-menu` and `:trailing-menu` rows draw
+     * it; the top bar's own buttons and menus don't yet.
+     */
+    public function imageShape(string $shape): self
+    {
+        if (! in_array($shape, ['circle', 'rounded'], true)) {
+            throw new InvalidArgumentException("Image shape must be 'circle' or 'rounded', not '{$shape}'.");
+        }
+
+        $this->imageShape = $shape;
 
         return $this;
     }
@@ -172,6 +200,24 @@ class NavAction
     }
 
     /**
+     * Show a tick beside a menu item, for the option a menu has picked or
+     * a setting that is on. Attributes are reactive, so
+     * `->checked($this->postAs === 'acme')` follows the screen's state.
+     *
+     *   NavAction::make('show_done')->label('Show completed')
+     *       ->checked($this->showDone)->press('toggleDone');
+     *
+     * mobile-ui's `:menu`, `:context-menu` and `:trailing-menu` rows draw
+     * it; the top bar's own menus don't yet.
+     */
+    public function checked(bool $value = true): self
+    {
+        $this->checked = $value;
+
+        return $this;
+    }
+
+    /**
      * Attach sub-items so this action renders as a pull-down menu instead
      * of a plain button. Tapping the bar's icon reveals a SwiftUI `Menu`
      * (iOS) / Compose `DropdownMenu` (Android) of these items. Each
@@ -227,6 +273,9 @@ class NavAction
         if ($this->image !== null) {
             $attrs['image'] = $this->image;
         }
+        if ($this->imageShape !== null) {
+            $attrs['image_shape'] = $this->imageShape;
+        }
         if ($this->subtitle !== null) {
             $attrs['subtitle'] = $this->subtitle;
         }
@@ -238,6 +287,9 @@ class NavAction
         }
         if ($this->disabled) {
             $attrs['disabled'] = true;
+        }
+        if ($this->checked) {
+            $attrs['checked'] = true;
         }
 
         $action->applyAttributes($attrs);
