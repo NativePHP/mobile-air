@@ -57,27 +57,11 @@ it('strips but does not capture empty string values', function () {
 // streamView() writes nodes straight to the C buffer through nphp_node_*.
 // The extension isn't loaded under test, so these stand-ins record what
 // the streaming path would have sent.
-if (! function_exists('nphp_node_leaf')) {
-    function nphp_node_leaf(string $type, ?array $layout, ?array $style, ?array $props, int $onPress, int $onLongPress, int $nodeId = 0): void
-    {
-        $GLOBALS['streamedNodes'][] = ['type' => $type, 'props' => $props ?? []];
-    }
-}
-
-if (! function_exists('nphp_node_open')) {
-    function nphp_node_open(string $type, ?array $layout, ?array $style, ?array $props, int $onPress, int $onLongPress, int $nodeId = 0): void
-    {
-        $GLOBALS['streamedNodes'][] = ['type' => $type, 'props' => $props ?? []];
-    }
-}
-
-if (! function_exists('nphp_node_close')) {
-    function nphp_node_close(): void {}
-}
+require_once __DIR__.'/../../Support/global-streaming-stubs.php';
 
 function streamedProps(string $type, array $attrs, bool $open = false): array
 {
-    $GLOBALS['streamedNodes'] = [];
+    $GLOBALS['nphpStreamed'] = [];
     NativeElementCollector::setCallbacks(new CallbackRegistry);
     NativeElementCollector::setStreaming(true);
 
@@ -92,7 +76,7 @@ function streamedProps(string $type, array $attrs, bool $open = false): array
         NativeElementCollector::setStreaming(false);
     }
 
-    return $GLOBALS['streamedNodes'][0]['props'];
+    return $GLOBALS['nphpStreamed'][0][3];
 }
 
 it('lifts a registered attribute into a prop on a streamed plugin element', function () {

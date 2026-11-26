@@ -208,22 +208,7 @@ function childIdsOf(string $view, array $data): array
     return ['tree' => array_column($tree['children'] ?? [], 'id'), 'streamed' => $streamed];
 }
 
-if (! function_exists('nphp_node_open')) {
-    function nphp_node_open(string $type, ?array $layout, ?array $style, ?array $props, int $onPress, int $onLongPress, int $id): void
-    {
-        $GLOBALS['nphpStreamed'][] = ['open', $id];
-    }
-
-    function nphp_node_leaf(string $type, ?array $layout, ?array $style, ?array $props, int $onPress, int $onLongPress, int $id): void
-    {
-        $GLOBALS['nphpStreamed'][] = ['leaf', $id];
-    }
-
-    function nphp_node_close(): void
-    {
-        $GLOBALS['nphpStreamed'][] = ['close', 0];
-    }
-}
+require_once __DIR__.'/../../Support/global-streaming-stubs.php';
 
 it('keeps the ids of elements after an @if when the @if stops rendering', function () {
     // #647: with ids counted across the screen, removing the banner gave
