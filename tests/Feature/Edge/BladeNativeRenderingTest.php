@@ -341,6 +341,44 @@ BLADE);
         ->and($loading[1])->toBe($done[1]);
 });
 
+it('finds the end of directive arguments past comments holding quotes and brackets', function () {
+    // A quote or bracket inside a comment isn't PHP. Counting it ended the
+    // block marker after the directive's name, and Blade then compiled
+    // `$__env->make(, ...)`.
+    file_put_contents(__DIR__.'/views/commented-row.blade.php', '<native:text>{{ $label }}</native:text>');
+    file_put_contents(__DIR__.'/views/test-directive-comments.blade.php', <<<'BLADE'
+<native:column>
+    @include('commented-row', [
+        // the partial's own label
+        'label' => 'Included',
+        # a "quoted" word (and an open bracket
+        /* it's closed ) here */
+    ])
+    @if(
+        $show // don't render it when "hidden"
+        && true /* the 'rest' ( */
+    )
+        <native:text>Shown</native:text>
+    @endif
+    <native:text>Footer</native:text>
+</native:column>
+BLADE);
+
+    NativeElementCollector::reset();
+    view('test-directive-comments', ['show' => true])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect(array_map(fn ($child) => $child['props']['text'], $tree['children']))
+        ->toBe(['Included', 'Shown', 'Footer']);
+
+    // The @if is still a block of its own, so Footer keeps its id when it
+    // stops rendering.
+    $shown = childIdsOf('test-directive-comments', ['show' => true])['tree'];
+    $hidden = childIdsOf('test-directive-comments', ['show' => false])['tree'];
+
+    expect($hidden)->toBe([$shown[0], $shown[2]]);
+});
+
 it('renders all core self-closing element types', function () {
     $viewPath = __DIR__.'/views/test-all-leaf.blade.php';
     file_put_contents($viewPath, <<<'BLADE'
