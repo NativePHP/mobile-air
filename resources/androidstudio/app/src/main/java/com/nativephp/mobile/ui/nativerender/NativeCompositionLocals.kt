@@ -64,7 +64,12 @@ val LocalChromeMorphScopes = compositionLocalOf<ChromeMorphScopes?> { null }
 
 /**
  * The same scopes, provided under every pane of a native-chrome renderer
- * whether or not it takes part in a morph, for the inert registration that
- * `Modifier.heroMorph` keeps at the front of each ref'd node in chrome.
+ * while the renderer's `morphing` holds (from a level change that morphs
+ * until the next one that doesn't), whether or not that pane takes part in
+ * the morph, for the inert registration that `Modifier.heroMorph` keeps at
+ * the front of each ref'd node in chrome. Null otherwise: provided on every
+ * pane, the inert registration made ref'd lazy lists and pagers crash in the
+ * lookahead pass, and leaving it off panes reached without a morph stops
+ * that (#753).
  */
 val LocalInertChromeScopes = compositionLocalOf<ChromeMorphScopes?> { null }
