@@ -22,7 +22,7 @@ enum PHPIni {
         do {
             try contents(caPath: caPath, fileCache: fileCache).write(to: iniPath, atomically: true, encoding: .utf8)
         } catch {
-            print("Couldn't create php.ini: \(error)")
+            NativeLog.error("Couldn't create php.ini: \(error)")
         }
 
         return iniPath.path(percentEncoded: false)
@@ -128,9 +128,9 @@ enum PHPIni {
 
         do {
             try FileManager.default.removeItem(at: dir)
-            print("🧹 Cleared the opcache file cache")
+            NativeLog.debug("🧹 Cleared the opcache file cache")
         } catch {
-            print("❌ Could not clear the opcache file cache: \(error)")
+            NativeLog.error("❌ Could not clear the opcache file cache: \(error)")
         }
 
         _ = prepareFileCacheDirectory()
@@ -145,7 +145,7 @@ enum PHPIni {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             return dir
         } catch {
-            print("❌ Could not create the opcache file cache directory: \(error)")
+            NativeLog.error("❌ Could not create the opcache file cache directory: \(error)")
             return nil
         }
     }
