@@ -14,7 +14,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,7 +24,6 @@ import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -237,31 +235,18 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         val pressOpacityProp = node.props.getFloat("press-opacity", 0f)
         val pressTy = node.props.getFloat("press-translate-y", 0f)
         val hasPressFeedback = hasPress && (pressScale > 0f || pressOpacityProp > 0f || pressTy != 0f)
-        val interactionSource = if (hasPressFeedback) remember { MutableInteractionSource() } else null
-
-        var pressAnimScale = 1f
-        var pressAnimAlpha = 1f
-        var pressAnimTy = 0f
-
-        if (hasPressFeedback && interactionSource != null) {
-            val isPressed by interactionSource.collectIsPressedAsState()
-            val springSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
-
-            val targetScale = if (isPressed && pressScale > 0f) pressScale else 1f
-            val targetOpacity = if (isPressed && pressOpacityProp > 0f) pressOpacityProp else 1f
-            val targetTy = if (isPressed) pressTy else 0f
-
-            pressAnimScale = animateFloatAsState(targetScale, springSpec, label = "press_scale").value
-            pressAnimAlpha = animateFloatAsState(targetOpacity, springSpec, label = "press_opacity").value
-            pressAnimTy = animateFloatAsState(targetTy, springSpec, label = "press_ty").value
-        }
+        // Remembered whether or not the node has feedback: a remember that
+        // only runs on some renders moves every remembered value after it
+        // when the node gains or loses feedback, and the next one read
+        // crashed with a ClassCastException.
+        val interactionSource = remember { MutableInteractionSource() }
 
         // ── Modifier chain ───────────────────────────────────────────
         // Outer to inner:
         //   base (sizing)
         //   → heroMorph                     (shared-element bounds; must wrap
         //                                    the background, not sit inside it)
-        //   → press feedback graphicsLayer  (wraps everything for visual scale/alpha on press)
+        //   → pressFeedback                 (wraps everything for visual scale/alpha on press)
         //   → animation graphicsLayer       (wraps bg too so translate/alpha affect the box, not just inner content)
         //   → nodeStyle                     (background + border)
         //   → clip (rounded pressable)
@@ -285,13 +270,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         modifier = modifier.heroMorph(node)
 
         if (hasPressFeedback) {
-            modifier = modifier.graphicsLayer {
-                scaleX = pressAnimScale
-                scaleY = pressAnimScale
-                alpha = pressAnimAlpha
-                // dp → px to match iOS's point-based offset.
-                translationY = pressAnimTy.dp.toPx()
-            }
+            modifier = modifier.pressFeedback(interactionSource, pressScale, pressOpacityProp, pressTy)
         }
 
         if (needsAnimLayer) {
@@ -317,7 +296,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         if (hasPress && (radius > 0f || node.props.has("radius_tl"))) {
             modifier = modifier.clip(nodeShape(radius, node.props))
         }
-        modifier = modifier.nodeGestures(node, interactionSource)
+        modifier = modifier.nodeGestures(node, interactionSource.takeIf { hasPressFeedback })
 
         // `ref` is both the test-targeting handle (Maestro / Compose UI tests)
         // AND the shared-element identity: two screens naming an element the

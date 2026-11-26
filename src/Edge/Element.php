@@ -25,13 +25,17 @@ abstract class Element
      * positional index *within their keyed parent* so they stay stable
      * as long as the parent is keyed and order doesn't change.
      *
-     * Without a key, ids fall back to the legacy positional
-     * `$nextId++` — fine for static screens but breaks identity when
-     * lists reorder or insert at the head. (See REFACTOR-native-ui-
+     * Without a key, a node's path step is its position among its
+     * parent's children (see $treePosition), which is fine for static
+     * screens but follows the position, not the item, when a list
+     * reorders or inserts at the head. (See REFACTOR-native-ui-
      * performance.md Phase 1 — "index-as-key is a trap": prefer a
      * stable domain id (e.g. `$todo->id`), not the loop index.)
      */
     protected ?string $key = null;
+
+    /** Set by placeAt(); null means the index among the parent's children. */
+    protected ?string $treePosition = null;
 
     /**
      * The element's name, set via `->ref('save-btn')` or a Blade
@@ -107,10 +111,10 @@ abstract class Element
 
     /**
      * What toArray() last produced for this subtree, when reusedAsBuilt: where it
-     * was walked (registry, next positional id, key path, index), the root's id
-     * and content hash, every id the walk emitted, and the next positional id after it.
+     * was walked (registry and key path), the root's id and content hash, and
+     * every id the walk emitted.
      *
-     * @var array{at: string, id: int, hash: string, ids: array<int, true>, nextId: int}|null
+     * @var array{at: string, id: int, hash: string, ids: array<int, true>}|null
      */
     private ?array $lastWalk = null;
 
@@ -922,6 +926,22 @@ abstract class Element
     }
 
     /**
+     * Where the collector placed this element among its parent's children,
+     * when that isn't just its index: a Blade `@if`, `@foreach` or
+     * `@switch` block takes one position however many elements it emits,
+     * and the elements inside it are numbered within the block. See
+     * NativeElementCollector::openBlock().
+     *
+     * @internal Set by NativeElementCollector.
+     */
+    public function placeAt(?string $position): static
+    {
+        $this->treePosition = $position;
+
+        return $this;
+    }
+
+    /**
      * FNV-1a 32-bit hash. Used to derive stable node ids from key-paths.
      * Uses PHP's built-in `hash('fnv1a32', ...)` C implementation — `toArray()`
      * calls this per keyed node, which can be thousands per frame.
@@ -944,13 +964,17 @@ abstract class Element
     }
 
     /**
-     * Resolve a key-path to a unique u32 id. On hash collision (rare;
-     * 1 in ~2^32) perturb the path with a salt and rehash. Logs once
-     * per collision so a real id storm doesn't go silent. Never returns
-     * a duplicate within the current `$emittedIds` set — that would
-     * break the native diff and Compose/SwiftUI `key()` semantics.
+     * Resolve a key-path to a unique u32 id. On hash collision (every
+     * node is hashed, so a screen of 1,000 nodes has about a 1 in 9,000
+     * chance of one) perturb the path with a salt and rehash. The salt
+     * depends only on the paths emitted before it, so a colliding node
+     * keeps its id from frame to frame. Never returns a duplicate within
+     * the current `$emittedIds` set — that would break the native diff
+     * and Compose/SwiftUI `key()` semantics.
+     *
+     * @internal Shared with the streaming path in NativeElementCollector.
      */
-    private static function deriveNodeIdFromKeyPath(string $keyPath, array &$emittedIds): int
+    public static function deriveNodeIdFromKeyPath(string $keyPath, array &$emittedIds): int
     {
         $id = self::fnv1a32($keyPath);
         if (! isset($emittedIds[$id])) {
@@ -965,7 +989,6 @@ abstract class Element
         for ($salt = 1; $salt < 64; $salt++) {
             $id = self::fnv1a32($keyPath."\x00".$salt);
             if (! isset($emittedIds[$id])) {
-                error_log("Element::toArray — key collision at '{$keyPath}', resolved with salt={$salt}");
                 $emittedIds[$id] = true;
 
                 return $id;
@@ -985,6 +1008,10 @@ abstract class Element
 
     // ── Legacy tree serialization ───────────────────
 
+    /**
+     * @param  int  $nextId  Unused: ids no longer come from a counter. Kept so
+     *                       existing callers keep working.
+     */
     public function toArray(
         CallbackRegistry $registry,
         int &$nextId = 1,
@@ -994,16 +1021,16 @@ abstract class Element
         array &$lastNodeHashes = []
     ): array {
         if (! $this->reusedAsBuilt) {
-            return $this->walk($registry, $nextId, $parentKeyPath, $indexInParent, $emittedIds, $lastNodeHashes);
+            return $this->walk($registry, $parentKeyPath, $indexInParent, $emittedIds, $lastNodeHashes);
         }
 
         // A #[Memo] child's root, unchanged since it was built. Put back in
-        // the same place (same registry, positional id, key path and index),
-        // its walk gives the same ids and hashes as last time; when the native
-        // side still holds that subtree (its hash is what we recorded for it
-        // last frame) and none of its ids is taken, answer with the REUSE
-        // marker the walk would end in, without walking it.
-        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F{$nextId}\x1F{$parentKeyPath}\x1F{$indexInParent}";
+        // the same place (same registry and key path), its walk gives the
+        // same ids and hashes as last time; when the native side still holds
+        // that subtree (its hash is what we recorded for it last frame) and
+        // none of its ids is taken, answer with the REUSE marker the walk
+        // would end in, without walking it.
+        $at = spl_object_id($this->ownedCallbacks ?? $registry)."\x1F".$this->keyPathIn($parentKeyPath, $indexInParent);
         $last = $this->lastWalk;
 
         if ($last !== null
@@ -1011,7 +1038,6 @@ abstract class Element
             && ($lastNodeHashes[$last['id']] ?? null) === $last['hash']
             && array_intersect_key($last['ids'], $emittedIds) === []) {
             $emittedIds += $last['ids'];
-            $nextId = $last['nextId'];
 
             return [
                 'id' => $last['id'],
@@ -1022,17 +1048,44 @@ abstract class Element
         }
 
         $emittedBefore = count($emittedIds);
-        $node = $this->walk($registry, $nextId, $parentKeyPath, $indexInParent, $emittedIds, $lastNodeHashes);
+        $node = $this->walk($registry, $parentKeyPath, $indexInParent, $emittedIds, $lastNodeHashes);
 
         $this->lastWalk = [
             'at' => $at,
             'id' => $node['id'],
             'hash' => $node['_hash'],
             'ids' => array_slice($emittedIds, $emittedBefore, null, true),
-            'nextId' => $nextId,
         ];
 
         return $node;
+    }
+
+    private function keyPathIn(string $parentKeyPath, int $indexInParent): string
+    {
+        return self::childKeyPath($parentKeyPath, $this->key, $this->treePosition ?? (string) $indexInParent);
+    }
+
+    /**
+     * A node's key path, whose hash is its id, so a node keeps its id while
+     * its path stays the same.
+     *
+     * A keyed node's path is its key under its nearest keyed ancestor's path,
+     * or under the root when it has none. An unkeyed node's path is its
+     * position (see placeAt()) under its parent's. Unkeyed nodes outside any
+     * keyed subtree have paths starting with `#`, so they never collide with
+     * a key path, and a key inside them is still read from the root.
+     *
+     * @internal Shared with the streaming path in NativeElementCollector.
+     */
+    public static function childKeyPath(string $parentKeyPath, ?string $key, string $position): string
+    {
+        $unscoped = $parentKeyPath === '' || $parentKeyPath[0] === '#';
+
+        if ($key !== null) {
+            return ($unscoped ? '' : $parentKeyPath).'/'.$key;
+        }
+
+        return ($unscoped ? '#'.ltrim($parentKeyPath, '#') : $parentKeyPath).'/'.$position;
     }
 
     /**
@@ -1046,7 +1099,6 @@ abstract class Element
      */
     private function walk(
         CallbackRegistry $registry,
-        int &$nextId,
         string $parentKeyPath,
         int $indexInParent,
         array &$emittedIds,
@@ -1059,29 +1111,14 @@ abstract class Element
         // each carries its own pin when it needs one.
         $registry = $this->ownedCallbacks ?? $registry;
 
-        // Id precedence:
-        //   1. Explicit `$this->nodeId` (caller set it directly — respect it).
-        //   2. `$this->key` non-null → hash `parentKeyPath . '/' . key`.
-        //   3. Inside a keyed subtree (parentKeyPath != '') → fall back to
-        //      positional index *within the keyed parent* so unkeyed
-        //      siblings stay stable as long as their parent is keyed.
-        //   4. Otherwise → legacy `$nextId++` (pre-Phase-1 behavior).
-        $myKeyPath = '';
+        // An explicit `$this->nodeId` wins; otherwise the id is the hash of
+        // the node's key path, so it only changes when the node moves.
+        $myKeyPath = $this->keyPathIn($parentKeyPath, $indexInParent);
         if ($this->nodeId !== null) {
             $id = $this->nodeId;
             $emittedIds[$id] = true;
-            $myKeyPath = $parentKeyPath !== '' || $this->key !== null
-                ? $parentKeyPath.'/'.($this->key ?? $indexInParent)
-                : '';
-        } elseif ($this->key !== null) {
-            $myKeyPath = $parentKeyPath.'/'.$this->key;
-            $id = self::deriveNodeIdFromKeyPath($myKeyPath, $emittedIds);
-        } elseif ($parentKeyPath !== '') {
-            $myKeyPath = $parentKeyPath.'/'.$indexInParent;
-            $id = self::deriveNodeIdFromKeyPath($myKeyPath, $emittedIds);
         } else {
-            $id = $nextId++;
-            $emittedIds[$id] = true;
+            $id = self::deriveNodeIdFromKeyPath($myKeyPath, $emittedIds);
         }
 
         // Resolve fields once. We need them either to assemble the FULL
@@ -1111,10 +1148,11 @@ abstract class Element
         if (! empty($this->children)) {
             $childParentPath = $myKeyPath;
             $childIdx = 0;
+            $unusedNextId = 1;
             foreach ($this->children as $child) {
                 $cn = $child->toArray(
                     $registry,
-                    $nextId,
+                    $unusedNextId,
                     $childParentPath,
                     $childIdx++,
                     $emittedIds,
