@@ -111,6 +111,24 @@ struct NativeRootStackRenderer: View {
         // `hide_nav_bar`. Applied per destination below.
         let hideNavBar = root.props.getBool("hide_nav_bar")
         let actions = root.children.filter { $0.type == "top_bar_action" }
+        // Actions that asked for `placement="bottom"` join the bottom
+        // toolbar, where iOS 26 puts the search field on iPhone. Everywhere
+        // else (iPad, older iOS) the search field is at the top, so they
+        // stay in the top bar with the others.
+        let bottomActions = Self.hasBottomToolbar
+            ? actions.filter { $0.props.getString("placement", default: "") == "bottom" }
+            : []
+        let topActions = bottomActions.isEmpty
+            ? actions
+            : actions.filter { $0.props.getString("placement", default: "") != "bottom" }
+        // `collapse` / `pinned` keep the search field in the nav-bar drawer
+        // (see SearchableNavBarModifier below), so it is not in the bottom
+        // toolbar for an action to sit beside.
+        let searchIsPinnedToTop = ["collapse", "pinned"].contains(
+            root.props.getString("scroll_behavior", default: "")
+        )
+        let searchSharesBottomToolbar = !searchIsPinnedToTop
+            && !root.props.getString("search_placeholder", default: "").isEmpty
         // Custom principal-slot content (logo / titleView) — replaces the
         // string title when present.
         let titleNode = root.children.first { $0.type == "top_bar_title" }
@@ -243,10 +261,15 @@ struct NativeRootStackRenderer: View {
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    ForEach(actions) { action in
+                    ForEach(topActions) { action in
                         actionView(action, textColor: textColor)
                     }
                 }
+                #if compiler(>=6.2)
+                if #available(iOS 26.0, *), !bottomActions.isEmpty {
+                    bottomToolbar(bottomActions, besideSearch: searchSharesBottomToolbar)
+                }
+                #endif
             }
             .toolbarColorScheme(toolbarScheme, for: .navigationBar)
             .modifier(HideNavBarModifier(hidden: hideNavBar))
@@ -304,6 +327,46 @@ struct NativeRootStackRenderer: View {
         // same modifier.
         .modifier(WindowBackgroundModifier())
     }
+
+    /// Whether this device has the bottom toolbar that `placement="bottom"`
+    /// actions go into: iPhone on iOS 26+. iPad keeps its search field in
+    /// the top bar, and a bottom item there would float alone under the
+    /// list.
+    private static var hasBottomToolbar: Bool {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            return UIDevice.current.userInterfaceIdiom == .phone
+        }
+        #endif
+        return false
+    }
+
+    #if compiler(>=6.2)
+    /// The `placement="bottom"` actions, at the trailing end of the bottom
+    /// toolbar. Beside a search field this is Mail's layout: the field
+    /// takes the row and the actions sit to its right. Declaring the
+    /// search item is what keeps the field at the bottom — without it, any
+    /// bottom toolbar item sends the field back up under the nav bar.
+    ///
+    /// The actions float on glass over the screen's content, not over the
+    /// nav bar, so they take the system label color rather than the bar's
+    /// `text_color`.
+    @available(iOS 26.0, *)
+    @ToolbarContentBuilder
+    private func bottomToolbar(_ actions: [NativeUINode], besideSearch: Bool) -> some ToolbarContent {
+        if besideSearch {
+            DefaultToolbarItem(kind: .search, placement: .bottomBar)
+            ToolbarSpacer(.fixed, placement: .bottomBar)
+        } else {
+            ToolbarSpacer(.flexible, placement: .bottomBar)
+        }
+        ToolbarItemGroup(placement: .bottomBar) {
+            ForEach(actions) { action in
+                actionView(action, textColor: .primary)
+            }
+        }
+    }
+    #endif
 
     /// Renders one trailing action — plain Button when the action has
     /// no sub-items, SwiftUI `Menu` of sub-items when `NavAction.items()`

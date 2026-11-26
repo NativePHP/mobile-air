@@ -67,6 +67,12 @@ class TopBarAction extends Element
         if (isset($attrs['divider'])) {
             $this->props['divider'] = (bool) $attrs['divider'];
         }
+        // `placement="bottom"` moves the action into the bottom toolbar on
+        // iPhone (iOS 26+), beside the system search field when the screen
+        // has one. Anything else keeps the action in the top bar.
+        if (($attrs['placement'] ?? null) === 'bottom') {
+            $this->props['placement'] = 'bottom';
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

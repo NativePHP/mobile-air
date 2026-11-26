@@ -39,6 +39,8 @@ class NavAction
 
     private bool $disabled = false;
 
+    private ?string $placement = null;
+
     /**
      * Marks this action as a visual divider rather than a tappable row.
      * Use [divider] to construct one — when set, the renderer emits a
@@ -172,6 +174,23 @@ class NavAction
     }
 
     /**
+     * Where the action sits. `'bottom'` moves it into the bottom toolbar
+     * on iPhone (iOS 26+): to the right of the system search field when
+     * the screen has a search bar, at the trailing edge otherwise — the
+     * layout of Mail's compose button. iPad, older iOS versions and
+     * Android keep it in the top bar, where their search field already is.
+     *
+     *   NavAction::make('compose')->icon('square.and.pencil')
+     *       ->placement('bottom')->press('compose');
+     */
+    public function placement(string $placement): self
+    {
+        $this->placement = $placement;
+
+        return $this;
+    }
+
+    /**
      * Attach sub-items so this action renders as a pull-down menu instead
      * of a plain button. Tapping the bar's icon reveals a SwiftUI `Menu`
      * (iOS) / Compose `DropdownMenu` (Android) of these items. Each
@@ -238,6 +257,9 @@ class NavAction
         }
         if ($this->disabled) {
             $attrs['disabled'] = true;
+        }
+        if ($this->placement !== null) {
+            $attrs['placement'] = $this->placement;
         }
 
         $action->applyAttributes($attrs);
