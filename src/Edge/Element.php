@@ -894,6 +894,25 @@ abstract class Element
         return $this;
     }
 
+    public function getKey(): ?string
+    {
+        return $this->key;
+    }
+
+    /**
+     * What a walk records for partial updates (see
+     * NativeComponent::insertChildren()), or null when nothing is listening.
+     * `keys` maps each keyed node's key to its key paths and ids,
+     * `children` maps a node id to its children's ids and `parents` each
+     * child's id to its parent's. Only walked nodes are
+     * recorded, so a REUSE'd subtree keeps what an earlier walk wrote.
+     *
+     * @internal
+     *
+     * @var array{keys: array<string, array<string, int>>, children: array<int, list<int>>, parents: array<int, int>}|null
+     */
+    public static ?array $opsIndex = null;
+
     /**
      * FNV-1a 32-bit hash. Used to derive stable node ids from key-paths.
      * Inline implementation (no `hash()` / extension call per node) —
@@ -1107,6 +1126,23 @@ abstract class Element
                 );
                 $childNodes[] = $cn;
                 $childHashes[] = $cn['_hash'] ?? '';
+            }
+        }
+
+        if (self::$opsIndex !== null) {
+            if ($this->key !== null) {
+                self::$opsIndex['keys'][$this->key][$myKeyPath] = $id;
+            }
+
+            if ($childNodes !== []) {
+                $childIds = array_column($childNodes, 'id');
+                self::$opsIndex['children'][$id] = $childIds;
+
+                foreach ($childIds as $childId) {
+                    self::$opsIndex['parents'][$childId] = $id;
+                }
+            } else {
+                unset(self::$opsIndex['children'][$id]);
             }
         }
 

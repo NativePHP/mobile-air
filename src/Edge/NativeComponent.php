@@ -330,7 +330,12 @@ abstract class NativeComponent
             // correctness while the keyed/positional REUSE desync is unsolved.
             $throwaway = [];
 
-            $tree = $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+            $recording = $this->beginOpsRecording();
+            try {
+                $tree = $element->toArray($this->nativeCallbacks, $nextId, '', 0, $emitted, $throwaway);
+            } finally {
+                $this->endOpsRecording($recording, $emitted);
+            }
             $fingerprint = self::frameFingerprint($tree, $emitted);
 
             return $tree;
@@ -362,14 +367,19 @@ abstract class NativeComponent
             $this->publishedFrame = null;
         }
 
-        $tree = $element->toArray(
-            $this->nativeCallbacks,
-            $nextId,
-            '',
-            0,
-            $emitted,
-            $this->lastNodeHashes,
-        );
+        $recording = $this->beginOpsRecording();
+        try {
+            $tree = $element->toArray(
+                $this->nativeCallbacks,
+                $nextId,
+                '',
+                0,
+                $emitted,
+                $this->lastNodeHashes,
+            );
+        } finally {
+            $this->endOpsRecording($recording, $emitted);
+        }
 
         // Prune hashes for ids absent from this frame. When a conditional
         // subtree unmounts (e.g. `@if(count($photos))` going empty), the
@@ -440,6 +450,474 @@ abstract class NativeComponent
         $this->publishedFrameEpoch = $epoch;
 
         return true;
+    }
+
+    // ── Partial updates (ops) ────────────────────────────────────────
+
+    /**
+     * Ops queued by insertChildren() and removeChildren() since the last
+     * frame, oldest first. A turn whose only change is these sends them as
+     * one ops frame instead of rendering the screen (see publishOpsTurn()).
+     *
+     * @var list<array{0: string, 1: string, 2: mixed, 3?: list<Element>}>
+     */
+    private array $nativeOps = [];
+
+    /** Counts ops frames, so two identical ones in a row still both go out. */
+    private int $nativeOpsSequence = 0;
+
+    /**
+     * Set the first time something queues an op. From then on each full
+     * walk records what ops need to find their way (see $nativeOpsIndex).
+     * Screens that never use ops never pay for the recording.
+     */
+    private bool $nativeOpsWanted = false;
+
+    /**
+     * Where each keyed node is and which ids sit under which node, as of what
+     * native holds: the last full frame plus every ops frame since. Null when
+     * no recorded full frame backs it, and then ops can't be sent.
+     *
+     * @var array{keys: array<string, array<string, int>>, children: array<int, list<int>>, parents: array<int, int>}|null
+     */
+    private ?array $nativeOpsIndex = null;
+
+    /**
+     * The ids native holds, as of the same point as $nativeOpsIndex.
+     *
+     * @var array<int, true>
+     */
+    private array $nativeOpsLiveIds = [];
+
+    /** The force_full_frame epoch the index was recorded under. */
+    private int $nativeOpsEpoch = -1;
+
+    /**
+     * Something other than ops changed since the last frame, so the next one
+     * has to be a full render. See renderInFull().
+     */
+    private bool $nativeOpsTurnDirty = false;
+
+    /**
+     * Tell native to insert $children into a node, starting at $index,
+     * without rendering the screen.
+     *
+     * `$parent` is the parent node's key, or its key path when it starts
+     * with `/` (a key used by more than one live node can't be told apart).
+     * The children must be keyed, so their ids come out as a full render
+     * would make them, and they render with the registry they own or this
+     * component's.
+     *
+     * The caller promises the screen's state already holds the change, so
+     * the next full render draws the tree native ends up with. When ops
+     * can't be sent (anything else changed this turn, the parent can't be
+     * found, no full frame has been recorded yet, Jump), the turn renders
+     * in full instead, which is always correct.
+     */
+    public function insertChildren(string $parent, int $index, Element ...$children): void
+    {
+        $root = $this->rootScreen();
+        if ($root !== $this) {
+            $root->insertChildren($parent, $index, ...$children);
+
+            return;
+        }
+
+        $this->nativeOpsWanted = true;
+
+        foreach ($children as $child) {
+            if ($child->getKey() === null) {
+                NativeRouter::debugLog('insertChildren(): a child has no key, rendering in full instead');
+                $this->renderInFull();
+
+                return;
+            }
+        }
+
+        $this->nativeOps[] = ['insert', $parent, max(0, $index), array_values($children)];
+    }
+
+    /**
+     * Tell native to drop the children with these keys from a node, without
+     * rendering the screen. `$parent` is as insertChildren() takes it.
+     */
+    public function removeChildren(string $parent, string ...$keys): void
+    {
+        $root = $this->rootScreen();
+        if ($root !== $this) {
+            $root->removeChildren($parent, ...$keys);
+
+            return;
+        }
+
+        $this->nativeOpsWanted = true;
+        $this->nativeOps[] = ['remove', $parent, array_values($keys)];
+    }
+
+    /**
+     * Render the next frame in full even if ops are queued. For a turn that
+     * queues ops and also changes something else.
+     */
+    public function renderInFull(): void
+    {
+        $root = $this->rootScreen();
+        if ($root !== $this) {
+            $root->renderInFull();
+
+            return;
+        }
+
+        $this->nativeOpsTurnDirty = true;
+    }
+
+    /**
+     * Start recording what ops need with each full frame, before the first
+     * op is queued, so the first one can already be sent as ops. Without it
+     * the first insertChildren() or removeChildren() turns recording on and
+     * its own turn renders in full.
+     */
+    public function useOps(): void
+    {
+        $this->rootScreen()->nativeOpsWanted = true;
+    }
+
+    /**
+     * The screen this component draws into: itself, or the screen a child
+     * component is nested in. Ops always go through the screen.
+     */
+    public function nativeRoot(): NativeComponent
+    {
+        return $this->rootScreen();
+    }
+
+    /**
+     * The live key paths of the nodes with this key, as the last full frame
+     * and any ops since left them. Empty until ops are in use (see useOps())
+     * and a full frame has been recorded since.
+     *
+     * @return list<string>
+     */
+    public function nativeKeyPaths(string $key): array
+    {
+        $root = $this->rootScreen();
+        if ($root !== $this) {
+            return $root->nativeKeyPaths($key);
+        }
+
+        $paths = [];
+
+        foreach ($this->nativeOpsIndex['keys'][$key] ?? [] as $path => $id) {
+            if (isset($this->nativeOpsLiveIds[$id])) {
+                $paths[] = (string) $path;
+            }
+        }
+
+        return $paths;
+    }
+
+    /** Whether ops are queued for the next frame. */
+    public function hasPendingOps(): bool
+    {
+        return $this->nativeOps !== [];
+    }
+
+    /**
+     * Forget everything ops rely on. The next full walk records it again
+     * from scratch. For when native shows something the index doesn't
+     * describe: an error screen, a streamed frame, a reset.
+     */
+    private function forgetOpsIndex(): void
+    {
+        $this->nativeOps = [];
+        $this->nativeOpsIndex = null;
+        $this->nativeOpsLiveIds = [];
+    }
+
+    /**
+     * Start recording what ops need, around a full walk. Returns whether it
+     * did, for endOpsRecording(). A first recording needs the whole tree
+     * walked, so it drops the memo hashes: a REUSE'd subtree isn't walked
+     * and would record nothing.
+     */
+    private function beginOpsRecording(): bool
+    {
+        if (! $this->nativeOpsWanted) {
+            return false;
+        }
+
+        if ($this->nativeOpsIndex === null) {
+            $this->lastNodeHashes = [];
+        }
+
+        Element::$opsIndex = $this->nativeOpsIndex ?? ['keys' => [], 'children' => [], 'parents' => []];
+        $this->nativeOpsIndex = null;
+
+        return true;
+    }
+
+    /**
+     * Keep what a full walk recorded, pruned to the ids it emitted.
+     *
+     * @param  array<int, true>  $emitted
+     */
+    private function endOpsRecording(bool $recording, array $emitted): void
+    {
+        if (! $recording) {
+            return;
+        }
+
+        $index = Element::$opsIndex;
+        Element::$opsIndex = null;
+
+        $index['children'] = array_intersect_key($index['children'], $emitted);
+        $index['parents'] = array_intersect_key($index['parents'], $emitted);
+
+        foreach ($index['keys'] as $key => $paths) {
+            foreach ($paths as $path => $id) {
+                if (! isset($emitted[$id])) {
+                    unset($index['keys'][$key][$path]);
+                }
+            }
+
+            if ($index['keys'][$key] === []) {
+                unset($index['keys'][$key]);
+            }
+        }
+
+        $this->nativeOpsIndex = $index;
+        $this->nativeOpsLiveIds = $emitted;
+        $this->nativeOpsEpoch = nativephp_force_full_frame_epoch();
+    }
+
+    /**
+     * At the top of a turn that would render: send the queued ops instead,
+     * when they are all that changed. Returns whether it did, in which case
+     * the turn draws nothing else. Otherwise the ops are dropped and the
+     * turn renders in full, which shows the same change.
+     */
+    private function publishOpsTurn(): bool
+    {
+        $dirty = $this->nativeOpsTurnDirty;
+        $this->nativeOpsTurnDirty = false;
+
+        if ($this->nativeOps === []) {
+            return false;
+        }
+
+        $ops = $this->nativeOps;
+        $this->nativeOps = [];
+
+        if ($dirty
+            || $this->nativeHasError
+            || $this->nativeOpsIndex === null
+            || $this->nativeOpsEpoch !== nativephp_force_full_frame_epoch()
+            || System::runningInJump()
+            // The Android reader doesn't know ops frames yet.
+            || getenv('NATIVEPHP_PLATFORM') === 'android') {
+            return false;
+        }
+
+        $t0 = hrtime(true);
+        $frame = $this->buildOpsFrame($ops);
+
+        if ($frame === null) {
+            // The index no longer matches what was sent. Start it again.
+            $this->forgetOpsIndex();
+            $this->lastNodeHashes = [];
+
+            return false;
+        }
+
+        $t1 = hrtime(true);
+        nativephp_element_publish($frame);
+
+        // Native no longer holds the last full frame, so its fingerprint
+        // must not hold the next one back as unchanged.
+        $this->publishedFrame = null;
+
+        if (NativeRouter::debugLoggingEnabled()) {
+            NativeRouter::debugLog(sprintf(
+                'PERF [%s] ops=%d build=%.2fms publish=%.2fms',
+                static::class, count($ops), ($t1 - $t0) / 1e6, (hrtime(true) - $t1) / 1e6
+            ));
+        }
+
+        return true;
+    }
+
+    /**
+     * The wire frame for a list of ops, updating the index, live ids and memo
+     * hashes as it goes, or null when an op can't be placed.
+     *
+     * The frame is a `__ops` root whose children are `__op_insert` (props
+     * `parent`, `index`; its children are the new nodes) and `__op_remove`
+     * (props `parent`, `ids`). Node ids go as decimal strings because an
+     * fnv1a32 id doesn't fit the wire's signed int props.
+     *
+     * @param  list<array{0: string, 1: string, 2: mixed, 3?: list<Element>}>  $ops
+     * @return array<string, mixed>|null
+     */
+    private function buildOpsFrame(array $ops): ?array
+    {
+        Element::$opsIndex = $this->nativeOpsIndex;
+        $this->nativeOpsIndex = null;
+
+        try {
+            $nodes = [];
+            $opId = 1;
+
+            foreach ($ops as $op) {
+                $parent = $this->resolveOpsParent($op[1]);
+
+                if ($parent === null) {
+                    NativeRouter::debugLog("ops: no single live node for [{$op[1]}], rendering in full");
+
+                    return null;
+                }
+
+                [$path, $parentId] = $parent;
+                $siblings = Element::$opsIndex['children'][$parentId] ?? [];
+
+                // The parent and every node above it now hold something
+                // else, so none of their hashes may stand for them: a state
+                // that went back to an older one would REUSE a node native
+                // has changed since.
+                for ($at = $parentId; $at !== null; $at = Element::$opsIndex['parents'][$at] ?? null) {
+                    unset($this->lastNodeHashes[$at]);
+                }
+
+                if ($op[0] === 'insert') {
+                    $index = min($op[2], count($siblings));
+                    $wire = [];
+                    $insertedIds = [];
+
+                    foreach ($op[3] as $i => $child) {
+                        // A key the parent already shows moves: what it had
+                        // under it goes, and the walk records it afresh.
+                        $existing = $this->opsChildId($path, (string) $child->getKey());
+                        if (isset($this->nativeOpsLiveIds[$existing])) {
+                            $this->pruneOpsSubtree($existing);
+                        }
+
+                        $emitted = [];
+                        $throwaway = [];
+                        $nextId = 1;
+                        $wire[] = $node = $child->toArray(
+                            $this->nativeCallbacks, $nextId, $path, $index + $i, $emitted, $throwaway
+                        );
+                        $insertedIds[] = $node['id'];
+                        Element::$opsIndex['parents'][$node['id']] = $parentId;
+
+                        // New to native, so the next full frame sends them
+                        // in full: no hash may stand for an older version.
+                        foreach ($emitted as $id => $_) {
+                            unset($this->lastNodeHashes[$id]);
+                            $this->nativeOpsLiveIds[$id] = true;
+                        }
+                    }
+
+                    $siblings = array_values(array_diff($siblings, $insertedIds));
+                    array_splice($siblings, min($index, count($siblings)), 0, $insertedIds);
+                    Element::$opsIndex['children'][$parentId] = $siblings;
+
+                    $nodes[] = [
+                        'id' => $opId++,
+                        'type' => '__op_insert',
+                        'props' => ['parent' => (string) $parentId, 'index' => $index],
+                        'children' => $wire,
+                    ];
+
+                    continue;
+                }
+
+                $ids = [];
+                foreach ($op[2] as $key) {
+                    $id = $this->opsChildId($path, (string) $key);
+                    $ids[] = $id;
+                    $this->pruneOpsSubtree($id);
+                }
+
+                Element::$opsIndex['children'][$parentId] = array_values(array_diff($siblings, $ids));
+
+                $nodes[] = [
+                    'id' => $opId++,
+                    'type' => '__op_remove',
+                    'props' => ['parent' => (string) $parentId, 'ids' => implode(',', $ids)],
+                ];
+            }
+
+            return [
+                'id' => $opId,
+                'type' => '__ops',
+                'props' => ['seq' => ++$this->nativeOpsSequence],
+                'children' => $nodes,
+            ];
+        } finally {
+            $this->nativeOpsIndex = Element::$opsIndex;
+            Element::$opsIndex = null;
+        }
+    }
+
+    /**
+     * The key path and id of the one live node `$parent` names (a key, or a
+     * key path starting with `/`), or null.
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    private function resolveOpsParent(string $parent): ?array
+    {
+        if (str_starts_with($parent, '/')) {
+            $key = substr($parent, strrpos($parent, '/') + 1);
+            $id = Element::$opsIndex['keys'][$key][$parent] ?? Element::fnv1a32($parent);
+
+            return isset($this->nativeOpsLiveIds[$id]) ? [$parent, $id] : null;
+        }
+
+        $found = null;
+
+        foreach (Element::$opsIndex['keys'][$parent] ?? [] as $path => $id) {
+            if (! isset($this->nativeOpsLiveIds[$id])) {
+                continue;
+            }
+
+            if ($found !== null) {
+                return null;
+            }
+
+            $found = [(string) $path, $id];
+        }
+
+        return $found;
+    }
+
+    /** The id of the child keyed `$key` under the node at `$path`. */
+    private function opsChildId(string $path, string $key): int
+    {
+        $childPath = $path.'/'.$key;
+
+        return Element::$opsIndex['keys'][$key][$childPath] ?? Element::fnv1a32($childPath);
+    }
+
+    /**
+     * Forget a node native drops and everything under it: its memo hashes,
+     * so a node that comes back is sent in full rather than as a REUSE of an
+     * id native no longer has, its live ids and its child lists. Only that
+     * subtree: the rest of the screen keeps its hashes.
+     */
+    private function pruneOpsSubtree(int $id): void
+    {
+        $stack = [$id];
+
+        while ($stack !== []) {
+            $at = array_pop($stack);
+            unset($this->lastNodeHashes[$at], $this->nativeOpsLiveIds[$at], Element::$opsIndex['parents'][$at]);
+
+            foreach (Element::$opsIndex['children'][$at] ?? [] as $child) {
+                $stack[] = $child;
+            }
+
+            unset(Element::$opsIndex['children'][$at]);
+        }
     }
 
     /**
@@ -2170,6 +2648,19 @@ abstract class NativeComponent
         $payload = $event['payload'] ?? [];
         $this->nativeEventUnheard = false;
 
+        // Native could not apply an ops frame: its tree is not the one PHP
+        // assumed (a hot reload or reset dropped it, say). Forget the ops,
+        // the index and every memo hash; the turn renders in full and that
+        // frame repairs it.
+        if ($eventName === '__edge_full_frame') {
+            $this->forgetOpsIndex();
+            $this->lastNodeHashes = [];
+            $this->publishedFrame = null;
+            $this->renderInFull();
+
+            return;
+        }
+
         // Deep link / universal link arriving while the app is already running.
         // The native shell (DeepLinkRouter) posts this to wake the blocked event
         // loop — a warm php:// load can't route because this loop owns the PHP
@@ -3211,6 +3702,7 @@ abstract class NativeComponent
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
         $this->publishedFrame = null;
+        $this->forgetOpsIndex();
 
         nativephp_element_init();
 
@@ -3244,6 +3736,7 @@ abstract class NativeComponent
             // when the turn before this one kept the frame.
             if ($this->deliverGlobalEvents()) {
                 $skipRender = false;
+                $this->renderInFull();
             }
 
             // A handler that navigated ends the loop, as any interaction does.
@@ -3255,16 +3748,29 @@ abstract class NativeComponent
             // while the loop slept, work that finished without an event.
             if ($this->tickExtensions()) {
                 $skipRender = false;
+                $this->renderInFull();
             }
 
             if (! $this->nativeRunning) {
                 break;
             }
 
+            if ($this->nativePendingComponentEvents !== []) {
+                $this->renderInFull();
+            }
+
             $this->runGuardedInteraction(
                 'flushDispatchedEvents()',
                 fn () => $this->flushDispatchedEvents(),
             );
+
+            // A turn whose only change was queued as ops (insertChildren(),
+            // removeChildren()) sends them instead of rendering the screen.
+            // The callback registry and computed cache stay as they are: the
+            // ids native holds are still the ones in use.
+            if (! $skipRender && $this->publishOpsTurn()) {
+                $skipRender = true;
+            }
 
             // A native event that went unheard leaves the frame on screen
             // as it is. Its callback ids and computed values are still
@@ -3278,6 +3784,7 @@ abstract class NativeComponent
                 try {
                     if ($this->renderStreaming()) {
                         $this->publishedFrame = null;
+                        $this->forgetOpsIndex();
                     } else {
                         $element = $this->renderToElement();
                         $tree = $this->memoizedToArray($element, $fingerprint);
@@ -3310,10 +3817,16 @@ abstract class NativeComponent
             if ($event === null && $inboxWaits) {
                 $skipRender = $this->nativePendingComponentEvents === [];
 
+                if (! $skipRender) {
+                    $this->renderInFull();
+                }
+
                 continue;
             }
 
             if ($event === null) {
+                $this->renderInFull();
+
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render. Polls stay
                 // parked while the error screen is up, so a throwing callback
@@ -3363,9 +3876,17 @@ abstract class NativeComponent
             // Native event from bridge function — dispatch to #[OnNative] listeners
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
+                    // A handler that only queued ops leaves the turn to
+                    // send them. Anything else it did needs a full frame.
+                    $opsBefore = count($this->nativeOps);
                     $this->dispatchNativeEvent($event);
+                    $componentEvents = $this->nativePendingComponentEvents !== [];
                     $this->flushDispatchedEvents();
                     $skipRender = $this->nativeEventUnheard;
+
+                    if (! $skipRender && ($componentEvents || count($this->nativeOps) <= $opsBefore)) {
+                        $this->renderInFull();
+                    }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -3461,6 +3982,7 @@ abstract class NativeComponent
         $this->lastNodeHashes = [];
         $this->publishCount = 0;
         $this->publishedFrame = null;
+        $this->forgetOpsIndex();
 
         if (empty($this->nativeEventListeners)) {
             $this->registerNativeEventListeners();
@@ -3491,6 +4013,7 @@ abstract class NativeComponent
             // when the turn before this one kept the frame.
             if ($this->deliverGlobalEvents()) {
                 $skipRender = false;
+                $this->renderInFull();
             }
 
             // A handler that navigated ends the loop, as any interaction does.
@@ -3502,16 +4025,29 @@ abstract class NativeComponent
             // while the loop slept, work that finished without an event.
             if ($this->tickExtensions()) {
                 $skipRender = false;
+                $this->renderInFull();
             }
 
             if (! $this->nativeRunning) {
                 break;
             }
 
+            if ($this->nativePendingComponentEvents !== []) {
+                $this->renderInFull();
+            }
+
             $this->runGuardedInteraction(
                 'flushDispatchedEvents()',
                 fn () => $this->flushDispatchedEvents(),
             );
+
+            // A turn whose only change was queued as ops (insertChildren(),
+            // removeChildren()) sends them instead of rendering the screen.
+            // The callback registry and computed cache stay as they are: the
+            // ids native holds are still the ones in use.
+            if (! $skipRender && $this->publishOpsTurn()) {
+                $skipRender = true;
+            }
 
             // A native event that went unheard leaves the frame on screen
             // as it is. Its callback ids and computed values are still
@@ -3531,6 +4067,7 @@ abstract class NativeComponent
                     if ($this->renderStreaming()) {
                         // Explicit streaming path
                         $this->publishedFrame = null;
+                        $this->forgetOpsIndex();
                         $this->nativeRouter?->flushDeferredTransition();
                         if ($perf) {
                             NativeRouter::debugLog(sprintf(
@@ -3586,10 +4123,16 @@ abstract class NativeComponent
             if ($event === null && $inboxWaits) {
                 $skipRender = $this->nativePendingComponentEvents === [];
 
+                if (! $skipRender) {
+                    $this->renderInFull();
+                }
+
                 continue;
             }
 
             if ($event === null) {
+                $this->renderInFull();
+
                 // Idle tick (poll interval elapsed, or no event yet) —
                 // fire any due polls, then loop back to re-render. Polls stay
                 // parked while the error screen is up, so a throwing callback
@@ -3658,9 +4201,17 @@ abstract class NativeComponent
             // Native event from bridge function — dispatch to #[OnNative] listeners
             if (($event['type'] ?? -1) === self::EVENT_NATIVE) {
                 try {
+                    // A handler that only queued ops leaves the turn to
+                    // send them. Anything else it did needs a full frame.
+                    $opsBefore = count($this->nativeOps);
                     $this->dispatchNativeEvent($event);
+                    $componentEvents = $this->nativePendingComponentEvents !== [];
                     $this->flushDispatchedEvents();
                     $skipRender = $this->nativeEventUnheard;
+
+                    if (! $skipRender && ($componentEvents || count($this->nativeOps) <= $opsBefore)) {
+                        $this->renderInFull();
+                    }
                 } catch (NativeDumpException $e) {
                     $this->renderDumpScreen($e);
                 } catch (\Throwable $e) {
@@ -3912,6 +4463,7 @@ abstract class NativeComponent
             $element = $this->renderToElement();
             $tree = self::closeSheetsAndModals($element->toArray($this->nativeCallbacks));
             $this->publishedFrame = null;
+            $this->forgetOpsIndex();
             nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             // Render failure on the way out — outgoing component is
@@ -4241,6 +4793,7 @@ abstract class NativeComponent
 
             $this->nativeRouter?->flushDeferredTransition();
             $this->publishedFrame = null;
+            $this->forgetOpsIndex();
             nativephp_element_publish($errorTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Error screen render failed: '.$renderError->getMessage());
@@ -4304,6 +4857,7 @@ abstract class NativeComponent
 
             $this->nativeRouter?->flushDeferredTransition();
             $this->publishedFrame = null;
+            $this->forgetOpsIndex();
             nativephp_element_publish($dumpTree);
         } catch (\Throwable $renderError) {
             NativeRouter::debugLog('Dump screen render failed: '.$renderError->getMessage());
@@ -5289,6 +5843,8 @@ abstract class NativeComponent
 
     protected function dispatchUiEvent(array $event): void
     {
+        $this->renderInFull();
+
         $callbackId = (int) ($event['callback_id'] ?? 0);
 
         // Child components own their callbacks. When this registry misses,
