@@ -88,4 +88,92 @@ struct NativeElementBridgeFrameTests {
         #expect(queue.drain().map(\.nodeCount) == [1, 2, 3])
         #expect(queue.isEmpty)
     }
+
+    @Test func theMainThreadTakesOnlyTheNewestFrame() throws {
+        func settled(_ id: UInt32, fresh: Bool = false) throws -> NativeElementBridge.Settled {
+            let tree = try #require(Self.read([Self.node(id)], previous: nil))
+            return .init(finalTree: tree, nativeChromeContinuation: false, isFreshStackMount: fresh)
+        }
+
+        _ = NativeElementBridge.takeForMain()
+
+        // Only the first frame asks for a main-queue block.
+        #expect(NativeElementBridge.offerToMain(try settled(1, fresh: true), isNav: true))
+        #expect(!NativeElementBridge.offerToMain(try settled(2), isNav: false))
+        #expect(!NativeElementBridge.offerToMain(try settled(3), isNav: false))
+
+        // The block gets the newest tree, still flagged as the navigation
+        // and fresh stack mount the first frame was.
+        let frame = try #require(NativeElementBridge.takeForMain())
+        #expect(frame.settled.finalTree.root.id == 3)
+        #expect(frame.isNav)
+        #expect(frame.settled.isFreshStackMount)
+        #expect(NativeElementBridge.takeForMain() == nil)
+    }
+
+    // MARK: Ops frames
+
+    private static func make(_ id: Int, _ type: String = "column", props: [String: Any] = [:], children: [NativeUINode] = []) -> NativeUINode {
+        NativeUINode(id: id, type: type, layout: nil, style: nil, props: GenericProps(props),
+                     onPress: 0, onLongPress: 0, children: children)
+    }
+
+    /// root 1 > [header 2, list 3 > rows 30, 20, 10]
+    private static func screen() -> NativeUINode {
+        make(1, children: [
+            make(2, "text"),
+            make(3, "list", children: [make(30, "list_item"), make(20, "list_item"), make(10, "list_item")]),
+        ])
+    }
+
+    @Test func anInsertAndARemoveCopyOnlyThePathToTheirParent() throws {
+        let root = Self.screen()
+        var index = NativeElementBridge.TreeIndex(root)
+
+        let insert = Self.make(1, "__op_insert", props: ["parent": "3", "index": 0], children: [Self.make(40, "list_item")])
+        let afterInsert = try #require(index.apply(insert))
+        let remove = Self.make(2, "__op_remove", props: ["parent": "3", "ids": "10"])
+        let newRoot = try #require(index.apply(remove))
+
+        #expect(newRoot.children[1].children.map(\.id) == [40, 30, 20])
+        #expect(afterInsert !== root)
+        #expect(newRoot.children[0] === root.children[0])
+        #expect(newRoot.children[1].children[1] === root.children[1].children[0])
+
+        // The index follows: the new row is under the list, the removed one gone.
+        #expect(index.parents[40] == 3)
+        #expect(index.nodes[10] == nil)
+        #expect(index.nodes[3] === newRoot.children[1])
+        #expect(index.nodes[1] === newRoot)
+    }
+
+    @Test func anInsertedKeyTheParentShowsMoves() throws {
+        var index = NativeElementBridge.TreeIndex(Self.screen())
+        let insert = Self.make(1, "__op_insert", props: ["parent": "3", "index": 0], children: [Self.make(10, "list_item")])
+        let newRoot = try #require(index.apply(insert))
+
+        #expect(newRoot.children[1].children.map(\.id) == [10, 30, 20])
+    }
+
+    @Test func anOpThatDoesNotFitTheTreeIsRefused() {
+        var index = NativeElementBridge.TreeIndex(Self.screen())
+
+        // No such parent.
+        #expect(index.apply(Self.make(1, "__op_insert", props: ["parent": "99", "index": 0], children: [Self.make(40)])) == nil)
+        // The header (2) under the list would show twice.
+        #expect(index.apply(Self.make(1, "__op_insert", props: ["parent": "3", "index": 0], children: [Self.make(2)])) == nil)
+        // Unknown op.
+        #expect(index.apply(Self.make(1, "__op_move", props: ["parent": "3"])) == nil)
+    }
+
+    @Test func aReuseMarkerFindsARowAnOpsFrameInserted() throws {
+        var index = NativeElementBridge.TreeIndex(Self.screen())
+        _ = try #require(index.apply(Self.make(1, "__op_insert", props: ["parent": "3", "index": 0], children: [Self.make(40, "list_item")])))
+
+        let next = NativeElementBridge.readTreeFromFlatBuffer(
+            [Self.node(40, type: 2, reuse: true)].reduce(Data(), +), propData: nil,
+            typeTable: Self.types, nodeCount: 1, prevIndex: index.nodes
+        )
+        #expect(next?.root === index.nodes[40])
+    }
 }

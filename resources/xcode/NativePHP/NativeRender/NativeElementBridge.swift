@@ -112,8 +112,23 @@ final class NativeElementBridge {
     /// Type table from last update
     private static var cachedTypeTable: [String]?
 
-    /// Previous tree for incremental diff
+    /// Previous tree for incremental diff. Set it with setPrevious(), which
+    /// keeps previousIndex in step.
     private static var previousTree: NativeUITree?
+
+    /// Every node of previousTree by id, and each one's parent. REUSE markers
+    /// splice from it and ops frames find their parent in it. Built once per
+    /// full frame and updated in place by an ops frame.
+    private static var previousIndex = TreeIndex()
+
+    /// Set when an ops frame could not be applied and PHP was asked for a
+    /// full frame. Ops frames are dropped until one lands. Shadow thread only.
+    private static var awaitingFullFrame = false
+
+    private static func setPrevious(_ tree: NativeUITree?) {
+        previousTree = tree
+        previousIndex = tree.map { TreeIndex($0.root) } ?? TreeIndex()
+    }
 
     /// Per-URI previous tree for native chrome stacks. Used so that when
     /// PHP republishes a URI we've seen before (e.g. popping back to the
@@ -123,6 +138,69 @@ final class NativeElementBridge {
     /// arrives with all-new refs, NodeView's `===` equality fails, and
     /// SwiftUI re-renders the entire tree mid-animation = visible jitter.
     private static var nativeChromePrevTrees: [String: NativeUITree] = [:]
+
+    /// One parsed frame, ready for the main thread.
+    struct Settled {
+        let finalTree: NativeUITree
+        let nativeChromeContinuation: Bool
+        let isFreshStackMount: Bool
+    }
+
+    /// The newest parsed frame the main thread hasn't taken yet, and whether
+    /// any frame it stands in for was a navigation.
+    struct MainFrame {
+        let settled: Settled
+        let isNav: Bool
+    }
+
+    /// Lock protecting mainSlot.
+    private static var mainSlotLock = os_unfair_lock()
+
+    /// Holds at most one frame for the main thread. The shadow thread
+    /// overwrites it and only schedules a main-queue block when it was empty,
+    /// so a busy main thread takes the newest tree once instead of working
+    /// through every tree posted while it was busy.
+    private static var mainSlot: MainFrame?
+
+    /// Put a frame in the main slot. Returns true when the slot was empty,
+    /// so the caller has to schedule a block to take it. A frame it replaces
+    /// passes on its navigation flag and fresh-stack flag, since the main
+    /// thread still has to treat the newer frame as that navigation.
+    static func offerToMain(_ settled: Settled, isNav: Bool) -> Bool {
+        os_unfair_lock_lock(&mainSlotLock)
+        defer { os_unfair_lock_unlock(&mainSlotLock) }
+
+        guard let waiting = mainSlot else {
+            mainSlot = MainFrame(settled: settled, isNav: isNav)
+            return true
+        }
+
+        mainSlot = MainFrame(
+            settled: Settled(
+                finalTree: settled.finalTree,
+                nativeChromeContinuation: settled.nativeChromeContinuation,
+                isFreshStackMount: settled.isFreshStackMount || waiting.settled.isFreshStackMount
+            ),
+            isNav: isNav || waiting.isNav
+        )
+        return false
+    }
+
+    /// Take the frame waiting for the main thread, if any.
+    static func takeForMain() -> MainFrame? {
+        os_unfair_lock_lock(&mainSlotLock)
+        defer { os_unfair_lock_unlock(&mainSlotLock) }
+
+        let frame = mainSlot
+        mainSlot = nil
+        return frame
+    }
+
+    private static func clearMainSlot() {
+        os_unfair_lock_lock(&mainSlotLock)
+        mainSlot = nil
+        os_unfair_lock_unlock(&mainSlotLock)
+    }
 
     // MARK: - Shadow Thread with Frame Coalescing
     // PHP thread queues each frame and signals the shadow thread. The shadow
@@ -192,7 +270,7 @@ final class NativeElementBridge {
     static func unregisterRegion() {
         regionPtr = nil
         cachedTypeTable = nil
-        previousTree = nil
+        setPrevious(nil)
         print("NativeElementBridge: region unregistered")
     }
 
@@ -314,7 +392,10 @@ final class NativeElementBridge {
             nil
         }
 
-        let isNav = NativeUIBridge.shared.navigationPending
+        // An ops frame is never a navigation, and must not take the flag
+        // from the full frame that is one.
+        let isOps = isOpsFrame(flatPtr, flatSize: flatSize, typeTable: typeTable)
+        let isNav = !isOps && NativeUIBridge.shared.navigationPending
         if isNav { NativeUIBridge.shared.navigationPending = false }
 
         cachedTypeTable = typeTable
@@ -369,13 +450,6 @@ final class NativeElementBridge {
     /// the next frame's REUSE markers find what they name, then posts only
     /// the newest to the main thread (coalescing the SwiftUI work).
     private static func shadowThreadLoop() {
-        /// One parsed frame, ready for the main thread.
-        struct Settled {
-            let finalTree: NativeUITree
-            let nativeChromeContinuation: Bool
-            let isFreshStackMount: Bool
-        }
-
         func runPass() {
             // Take every queued frame
             os_unfair_lock_lock(&pendingLock)
@@ -421,9 +495,13 @@ final class NativeElementBridge {
             guard let tree = readTreeFromFlatBuffer(
                 update.flatData, propData: update.propData,
                 typeTable: update.typeTable, nodeCount: update.nodeCount,
-                previous: previousTree
+                prevIndex: previousIndex.nodes
             ) else {
                 return nil
+            }
+
+            if tree.root.type == opsRootType {
+                return settleOps(tree.root)
             }
 
             // Determine whether this is a continuation within native chrome
@@ -481,7 +559,8 @@ final class NativeElementBridge {
             } else {
                 finalTree = tree
             }
-            previousTree = finalTree
+            setPrevious(finalTree)
+            awaitingFullFrame = false
 
             // Track the most recent tree per native chrome URI so future
             // nav publishes back to the same URI can diff against it.
@@ -500,11 +579,24 @@ final class NativeElementBridge {
         }
 
         func post(_ settled: Settled, isNav: Bool) {
+            // A block is already on its way to take the slot. It will take
+            // this frame instead of the one it was scheduled for.
+            guard offerToMain(settled, isNav: isNav) else { return }
+
+            DispatchQueue.main.async {
+                guard let frame = takeForMain() else { return }
+                apply(frame.settled, isNav: frame.isNav)
+            }
+        }
+
+        /// Show a parsed frame. Runs on the main thread.
+        @MainActor
+        func apply(_ settled: Settled, isNav: Bool) {
             let finalTree = settled.finalTree
             let nativeChromeContinuation = settled.nativeChromeContinuation
             let isFreshStackMount = settled.isFreshStackMount
 
-            DispatchQueue.main.async {
+            do {
                 // T2 checkpoint — tree is now on the main thread about
                 // to drive SwiftUI. The next CADisplayLink tick is T3.
                 InteractionTracker.shared.onTreePostedToMain()
@@ -589,6 +681,161 @@ final class NativeElementBridge {
             // stay behind for as long as the shadow thread keeps running.
             autoreleasepool { runPass() }
         }
+    }
+
+    // MARK: - Partial updates (ops frames)
+
+    /// Root type of an ops frame. PHP sends one (NativeComponent::
+    /// insertChildren() / removeChildren()) in place of a full frame when a
+    /// turn only added or dropped keyed children. Its children are the ops in
+    /// order: `__op_insert` (props `parent`, `index`; its children are the new
+    /// nodes) and `__op_remove` (props `parent`, `ids`). Ids go as decimal
+    /// strings because an fnv1a32 id doesn't fit the wire's int props.
+    static let opsRootType = "__ops"
+
+    /// Every node of a tree by id, and each node's parent id.
+    struct TreeIndex {
+        private(set) var nodes: [Int: NativeUINode] = [:]
+        private(set) var parents: [Int: Int] = [:]
+
+        init() {}
+
+        init(_ root: NativeUINode) {
+            add(root, parent: nil)
+        }
+
+        mutating func add(_ node: NativeUINode, parent: Int?) {
+            nodes[node.id] = node
+            parents[node.id] = parent
+            for child in node.children { add(child, parent: node.id) }
+        }
+
+        mutating func drop(_ node: NativeUINode) {
+            nodes[node.id] = nil
+            parents[node.id] = nil
+            for child in node.children { drop(child) }
+        }
+
+        /// Put `new` where `old` is and copy every node above it, so the
+        /// rest of the tree keeps its objects and NodeView's `===` still
+        /// skips them. Returns the new root, or nil when the path up is not
+        /// what the index says.
+        mutating func replace(_ old: NativeUINode, with new: NativeUINode) -> NativeUINode? {
+            var old = old
+            var new = new
+            nodes[new.id] = new
+
+            while let parentId = parents[old.id] {
+                guard let parent = nodes[parentId],
+                      let at = parent.children.firstIndex(where: { $0 === old }) else {
+                    return nil
+                }
+                var children = parent.children
+                children[at] = new
+                let copy = parent.copy(children: children)
+                nodes[parentId] = copy
+                old = parent
+                new = copy
+            }
+
+            return new
+        }
+
+        /// Apply one op. Returns the new root, or nil when it can't be
+        /// applied: no such parent, an inserted id that lives elsewhere, an
+        /// op this reader doesn't know.
+        mutating func apply(_ op: NativeUINode) -> NativeUINode? {
+            guard let parentId = Int(op.props.getString("parent")),
+                  let parent = nodes[parentId] else {
+                return nil
+            }
+
+            var children = parent.children
+
+            switch op.type {
+            case "__op_insert":
+                let inserted = op.children
+                let insertedIds = Set(inserted.map(\.id))
+
+                // A key the parent already shows moves to its new place; one
+                // anywhere else would show twice.
+                for id in insertedIds {
+                    guard let existing = nodes[id] else { continue }
+                    guard parents[id] == parentId else { return nil }
+                    drop(existing)
+                }
+                children.removeAll { insertedIds.contains($0.id) }
+
+                let index = min(max(0, op.props.getInt("index")), children.count)
+                children.insert(contentsOf: inserted, at: index)
+                for node in inserted { add(node, parent: parentId) }
+
+            case "__op_remove":
+                let ids = Set(op.props.getString("ids").split(separator: ",").compactMap { Int($0) })
+                children.removeAll { child in
+                    guard ids.contains(child.id) else { return false }
+                    drop(child)
+                    return true
+                }
+
+            default:
+                return nil
+            }
+
+            return replace(parent, with: parent.copy(children: children))
+        }
+    }
+
+    /// Apply a parsed ops frame to the previous tree. Each op copies only the
+    /// path from the root to its parent, so this is cheap however big the
+    /// screen is. When an op can't be applied the tree here isn't the one PHP
+    /// assumed: drop it and every ops frame after it, ask PHP for a full
+    /// frame, and keep showing what's there until it comes.
+    static func settleOps(_ opsRoot: NativeUINode) -> Settled? {
+        if awaitingFullFrame { return nil }
+
+        guard let prev = previousTree else {
+            requestFullFrame("there is no tree to apply it to")
+            return nil
+        }
+
+        var index = previousIndex
+        var root = prev.root
+
+        for op in opsRoot.children {
+            guard let patched = index.apply(op) else {
+                requestFullFrame("\(op.type) for parent \(op.props.getString("parent")) does not fit the tree")
+                return nil
+            }
+            root = patched
+        }
+
+        let finalTree = NativeUITree(version: prev.version, callbackCount: prev.callbackCount, root: root)
+        previousTree = finalTree
+        previousIndex = index
+
+        let isChrome = root.type == "native_root_stack" || root.type == "native_root_tabs"
+        if isChrome {
+            let uri = root.props.getString("current_uri", default: "")
+            if !uri.isEmpty { nativeChromePrevTrees[uri] = finalTree }
+        }
+
+        return Settled(finalTree: finalTree, nativeChromeContinuation: isChrome, isFreshStackMount: false)
+    }
+
+    /// Drop ops frames until PHP sends a full frame, and ask it for one.
+    private static func requestFullFrame(_ reason: String) {
+        print("NativeElementBridge: ops frame not applied (\(reason)), asking PHP for a full frame")
+        awaitingFullFrame = true
+        _ = sendNativeEvent(eventName: "__edge_full_frame", payloadJson: "{}")
+    }
+
+    /// Whether a flat buffer holds an ops frame: its root's type, at byte 4
+    /// of the first node, is `__ops`.
+    private static func isOpsFrame(_ flatPtr: UnsafeRawPointer, flatSize: Int, typeTable: [String]) -> Bool {
+        guard flatSize >= nodeSize else { return false }
+        let typeIdx = Int(flatPtr.loadUnaligned(fromByteOffset: 4, as: UInt16.self).littleEndian)
+        return typeIdx < typeTable.count && typeTable[typeIdx] == opsRootType
     }
 
     /// Every ref'd node in a tree, keyed by ref. The flight store pairs these
@@ -792,6 +1039,15 @@ final class NativeElementBridge {
 
     /// `previous` is the tree REUSE markers splice from: the last frame parsed.
     static func readTreeFromFlatBuffer(_ flatData: Data, propData: Data?, typeTable: [String], nodeCount: Int, previous: NativeUITree?) -> NativeUITree? {
+        readTreeFromFlatBuffer(
+            flatData, propData: propData, typeTable: typeTable, nodeCount: nodeCount,
+            prevIndex: previous.map { TreeIndex($0.root).nodes } ?? [:]
+        )
+    }
+
+    /// `prevIndex` is what REUSE markers splice from, by id: the last frame
+    /// parsed, kept as `previousIndex`.
+    static func readTreeFromFlatBuffer(_ flatData: Data, propData: Data?, typeTable: [String], nodeCount: Int, prevIndex: [Int: NativeUINode]) -> NativeUITree? {
         guard nodeCount > 0 else { return nil }
 
         let perNode = flatData.count / nodeCount
@@ -803,29 +1059,11 @@ final class NativeElementBridge {
 
         guard flatData.count >= nodeCount * stride else { return nil }
 
-        // Phase 2 — flatten the previous tree into an id → node map so
-        // REUSE markers in this frame splice prior subtrees in O(1).
-        let prevIndex = buildIdNodeIndex(previous)
-
         var offset = 0
         guard let root = readNodeDFS(flatData, propData: propData, typeTable: typeTable, stride: stride, offset: &offset, prevIndex: prevIndex) else {
             return nil
         }
         return NativeUITree(version: 0, callbackCount: 0, root: root)
-    }
-
-    /// Phase 2 — DFS-flatten the previous tree into id → node so REUSE
-    /// node parsing can splice prior subtrees by id in O(1).
-    private static func buildIdNodeIndex(_ tree: NativeUITree?) -> [Int: NativeUINode] {
-        guard let tree else { return [:] }
-        var out: [Int: NativeUINode] = [:]
-        out.reserveCapacity(64)
-        func walk(_ n: NativeUINode) {
-            out[n.id] = n
-            for c in n.children { walk(c) }
-        }
-        walk(tree.root)
-        return out
     }
 
     private static func readNodeDFS(_ flatData: Data, propData: Data?, typeTable: [String], stride: Int, offset: inout Int, prevIndex: [Int: NativeUINode]) -> NativeUINode? {
@@ -1086,6 +1324,12 @@ final class NativeElementBridge {
     /// one all the way down, so a positional id that now names a different
     /// node can't put the wrong one on screen.
     private static func diffNode(old: NativeUINode, new: NativeUINode) -> NativeUINode {
+        // A REUSE marker hands back the previous tree's own node, so there
+        // is nothing under it to compare.
+        if old === new {
+            return old
+        }
+
         guard old.id == new.id, old.type == new.type else {
             return new
         }
@@ -1135,12 +1379,13 @@ final class NativeElementBridge {
     static func startWatching() {
         // Stop any existing shadow thread before resetting state
         stopShadowThread()
-        previousTree = nil
+        setPrevious(nil)
         nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
         os_unfair_lock_lock(&pendingLock)
         pendingUpdates.clear()
         os_unfair_lock_unlock(&pendingLock)
+        clearMainSlot()
         // Format-version check lives in postTreeUpdateFromRegion() — it covers
         // every publish path, not just startWatching().
     }
@@ -1158,12 +1403,13 @@ final class NativeElementBridge {
     ///     the (stale) tree atomically.
     static func stopWatching(preserveTree: Bool = false) {
         stopShadowThread()
-        previousTree = nil
+        setPrevious(nil)
         nativeChromePrevTrees.removeAll()
         cachedTypeTable = nil
         os_unfair_lock_lock(&pendingLock)
         pendingUpdates.clear()
         os_unfair_lock_unlock(&pendingLock)
+        clearMainSlot()
 
         // Phase 0 — re-verify wire format on next region registration.
         // A hot-reload cycle can swap libphp.a out from under us.
