@@ -15,6 +15,7 @@ class CallbackRegistry
      */
     protected string $scope = '';
 
+    /** @var array<int, string|array{method: string, args: array<int, mixed>}> */
     protected array $map = [];
 
     protected array $expressionMap = [];
@@ -68,7 +69,7 @@ class CallbackRegistry
         } else {
             $id = $this->deriveId($expression);
             $this->expressionMap[$expression] = $id;
-            $this->map[$id] = $this->parseExpression($expression);
+            $this->map[$id] = $expression;
         }
 
         if ($kind !== null) {
@@ -127,7 +128,15 @@ class CallbackRegistry
 
     public function resolve(int $id): ?array
     {
-        return $this->map[$id] ?? null;
+        if (! isset($this->map[$id])) {
+            return null;
+        }
+
+        if (is_string($this->map[$id])) {
+            $this->map[$id] = $this->parseExpression($this->map[$id]);
+        }
+
+        return $this->map[$id];
     }
 
     public function kind(int $id): ?string
@@ -307,6 +316,10 @@ class CallbackRegistry
      */
     private static function toJsonArgs(string $args): string
     {
+        if (! str_contains($args, "'")) {
+            return $args;
+        }
+
         $out = '';
         $quote = null;
         $length = strlen($args);

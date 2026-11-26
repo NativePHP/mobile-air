@@ -582,3 +582,66 @@ it('wires a hyphenated custom event to a studly onX method', function () {
 
     expect($element->tappedMethod)->toBe('open');
 });
+
+it('matches reference FNV-1a 32-bit vectors in Element::fnv1a32', function () {
+    $reference = static function (string $s): int {
+        $hash = 0x811C9DC5;
+        $len = strlen($s);
+        for ($i = 0; $i < $len; $i++) {
+            $hash ^= ord($s[$i]);
+            $hash = ($hash * 0x01000193) & 0xFFFFFFFF;
+        }
+
+        return $hash === 0 ? 1 : $hash;
+    };
+
+    foreach (['', 'a', 'foobar', 'root/list/row-42/title', "a\x00b\xff", 'नमस्ते'] as $input) {
+        expect(Element::fnv1a32($input))->toBe($reference($input));
+    }
+
+    // Standard FNV-1a 32-bit test vectors
+    expect(Element::fnv1a32(''))->toBe(0x811C9DC5)
+        ->and(Element::fnv1a32('foobar'))->toBe(0xBF9CF968);
+});
+
+it('keeps whitespace, entity, and tag normalization identical across textLeaf and textOpen paths', function () {
+    ElementRegistry::swap('text', Text::class);
+
+    NativeElementCollector::reset();
+    NativeElementCollector::textLeaf(['class' => 'text-base', 'text' => "  hello\f\vworld   again\t\n"]);
+    $leafTree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+    expect($leafTree['props']['text'])->toBe('hello world again');
+
+    NativeElementCollector::reset();
+    NativeElementCollector::textOpen(['class' => 'text-base']);
+    echo '  <b>bold</b> &amp; &#60;tag&#62;  ';
+    NativeElementCollector::textClose();
+    $slotTree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+    expect($slotTree['props']['text'])->toBe('bold & <tag>');
+
+    NativeElementCollector::reset();
+    NativeElementCollector::textOpen(['class' => 'text-base']);
+    echo 'Prefix ';
+    NativeElementCollector::textLeaf(['class' => 'font-bold', 'text' => ' middle ']);
+    echo ' suffix';
+    NativeElementCollector::textClose();
+    $nestedTree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+    expect(array_map(fn (array $c) => $c['props']['text'], $nestedTree['children']))
+        ->toBe(['Prefix ', ' middle ', ' suffix']);
+});
+
+it('keeps camelCase precedence over kebab-case in Text::applyAttributes', function () {
+    $text = Text::make();
+    $text->applyAttributes([
+        'font-size' => 12,
+        'fontSize' => 20,
+        'max-lines' => 3,
+        'letter-spacing' => 1.5,
+    ]);
+
+    $props = $text->toArray(new CallbackRegistry)['props'];
+
+    expect($props['font_size'])->toBe(20.0)
+        ->and($props['max_lines'])->toBe(3)
+        ->and($props['letter_spacing'])->toBe(1.5);
+});

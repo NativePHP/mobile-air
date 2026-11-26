@@ -397,8 +397,12 @@ class NativeElementCollector
     {
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
-            $attrs = array_merge($classAttrs, $attrs);
-            unset($attrs['class']);
+            if (count($attrs) === 1) {
+                $attrs = $classAttrs;
+            } else {
+                $attrs = array_merge($classAttrs, $attrs);
+                unset($attrs['class']);
+            }
         }
 
         [$nodeId, $myKeyPath] = static::resolveStreamingKey($attrs);
@@ -409,14 +413,14 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $props = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
                 + static::buildLayoutAnimationProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -463,11 +467,11 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $darkProps = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -497,8 +501,12 @@ class NativeElementCollector
     {
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
-            $attrs = array_merge($classAttrs, $attrs);
-            unset($attrs['class']);
+            if (count($attrs) === 1) {
+                $attrs = $classAttrs;
+            } else {
+                $attrs = array_merge($classAttrs, $attrs);
+                unset($attrs['class']);
+            }
         }
 
         // Phase 1 — leaves derive an id from `native:key` but don't
@@ -510,14 +518,14 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $props = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
                 + static::buildLayoutAnimationProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -559,11 +567,11 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $darkProps = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -820,16 +828,21 @@ class NativeElementCollector
         // SharedValue, write both the initial value (for static
         // fallback) AND a companion `{key}_sv` string that the native
         // renderer parses to subscribe to live updates.
-        foreach (['translate-x', 'translate-y', 'scale', 'rotate'] as $key) {
-            if (! isset($attrs[$key])) {
-                continue;
-            }
-            $value = $attrs[$key];
-            if ($value instanceof SharedValue) {
-                $props[$key] = $value->value();         // initial / current snapshot
-                $props[$key.'_sv'] = (string) $value;   // wire-encoded binding
-            } else {
-                $props[$key] = (float) $value;
+        if (isset($attrs['translate-x'])
+            || isset($attrs['translate-y'])
+            || isset($attrs['scale'])
+            || isset($attrs['rotate'])) {
+            foreach (['translate-x', 'translate-y', 'scale', 'rotate'] as $key) {
+                if (! isset($attrs[$key])) {
+                    continue;
+                }
+                $value = $attrs[$key];
+                if ($value instanceof SharedValue) {
+                    $props[$key] = $value->value();         // initial / current snapshot
+                    $props[$key.'_sv'] = (string) $value;   // wire-encoded binding
+                } else {
+                    $props[$key] = (float) $value;
+                }
             }
         }
 
@@ -990,30 +1003,21 @@ class NativeElementCollector
      */
     public static function buildCornerRadiusProps(array $attrs): array
     {
-        $corners = [
-            'radius_tl' => 'borderRadiusTopLeft',
-            'radius_tr' => 'borderRadiusTopRight',
-            'radius_br' => 'borderRadiusBottomRight',
-            'radius_bl' => 'borderRadiusBottomLeft',
-        ];
-
-        $authored = array_filter(
-            $corners,
-            fn (string $attr): bool => isset($attrs[$attr])
-        );
-
-        if ($authored === []) {
+        if (! isset($attrs['borderRadiusTopLeft'])
+            && ! isset($attrs['borderRadiusTopRight'])
+            && ! isset($attrs['borderRadiusBottomRight'])
+            && ! isset($attrs['borderRadiusBottomLeft'])) {
             return [];
         }
 
         $uniform = isset($attrs['borderRadius']) ? (float) $attrs['borderRadius'] : 0.0;
 
-        $props = [];
-        foreach ($corners as $prop => $attr) {
-            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
-        }
-
-        return $props;
+        return [
+            'radius_tl' => isset($attrs['borderRadiusTopLeft']) ? (float) $attrs['borderRadiusTopLeft'] : $uniform,
+            'radius_tr' => isset($attrs['borderRadiusTopRight']) ? (float) $attrs['borderRadiusTopRight'] : $uniform,
+            'radius_br' => isset($attrs['borderRadiusBottomRight']) ? (float) $attrs['borderRadiusBottomRight'] : $uniform,
+            'radius_bl' => isset($attrs['borderRadiusBottomLeft']) ? (float) $attrs['borderRadiusBottomLeft'] : $uniform,
+        ];
     }
 
     /**
@@ -1502,6 +1506,12 @@ class NativeElementCollector
      */
     public static function textLeaf(array $attrs): void
     {
+        if (empty(static::$textFrames)) {
+            static::leaf('text', static::applyAttributeWhitespace($attrs, static::whitespaceMode($attrs)));
+
+            return;
+        }
+
         static::textOpen($attrs);
         static::textClose();
     }
@@ -1531,11 +1541,11 @@ class NativeElementCollector
      */
     protected static function whitespaceMode(array $attrs): ?string
     {
-        if (! is_string($attrs['class'] ?? null)) {
+        if (! is_string($class = $attrs['class'] ?? null) || ! str_contains($class, 'whitespace-')) {
             return null;
         }
 
-        return TailwindParser::parse($attrs['class'])['whitespace'] ?? null;
+        return TailwindParser::parse($class)['whitespace'] ?? null;
     }
 
     /**
@@ -1577,7 +1587,9 @@ class NativeElementCollector
         return match ($mode ?? static::DEFAULT_WHITESPACE) {
             'pre-wrap' => $text,
             'pre-line' => static::collapsePreLine($text),
-            default => preg_replace('/\s+/', ' ', $text),
+            default => (! str_contains($text, '  ') && strpbrk($text, "\r\n\t\f\v") === false)
+                ? $text
+                : preg_replace('/\s+/', ' ', $text),
         };
     }
 
@@ -1598,11 +1610,21 @@ class NativeElementCollector
      */
     protected static function applyWhitespace(string $text, ?string $mode): string
     {
-        return match ($mode ?? static::DEFAULT_WHITESPACE) {
-            'pre-wrap' => $text,
-            'pre-line' => trim(static::collapsePreLine($text)),
-            default => preg_replace('/\s+/', ' ', trim($text)),
-        };
+        $resolvedMode = $mode ?? static::DEFAULT_WHITESPACE;
+
+        if ($resolvedMode === 'pre-wrap') {
+            return $text;
+        }
+
+        if ($resolvedMode === 'pre-line') {
+            return trim(static::collapsePreLine($text));
+        }
+
+        $trimmed = trim($text);
+
+        return (! str_contains($trimmed, '  ') && strpbrk($trimmed, "\r\n\t\f\v") === false)
+            ? $trimmed
+            : preg_replace('/\s+/', ' ', $trimmed);
     }
 
     /** Flush the currently-buffered raw text as a run of the top frame. */
@@ -1626,7 +1648,14 @@ class NativeElementCollector
      */
     protected static function normalizeRunText(string $raw, ?string $mode = null): string
     {
-        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        if ($raw === '') {
+            return '';
+        }
+
+        $text = str_contains($raw, '<') ? strip_tags($raw) : $raw;
+        if (str_contains($text, '&')) {
+            $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
+        }
 
         // Under the default collapse a purely-whitespace raw segment is
         // template formatting rather than content, so it drops before
@@ -1646,7 +1675,14 @@ class NativeElementCollector
      */
     protected static function normalizeLeafText(string $raw, ?string $mode = null): string
     {
-        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        if ($raw === '') {
+            return '';
+        }
+
+        $text = str_contains($raw, '<') ? strip_tags($raw) : $raw;
+        if (str_contains($text, '&')) {
+            $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
+        }
 
         if (trim($text) === '') {
             return '';
@@ -1758,8 +1794,12 @@ class NativeElementCollector
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
-            $attrs = array_merge($classAttrs, $attrs);
-            unset($attrs['class']);
+            if (count($attrs) === 1) {
+                $attrs = $classAttrs;
+            } else {
+                $attrs = array_merge($classAttrs, $attrs);
+                unset($attrs['class']);
+            }
         }
 
         // Phase 1 — pull the key off here so applyAttributes downstream doesn't
@@ -1819,16 +1859,20 @@ class NativeElementCollector
         static::applyElementProps($element, $attrs);
 
         // Dark mode overrides — merge into element's extra props
-        $darkProps = static::buildDarkProps($attrs);
-        if (! empty($darkProps)) {
-            $element->mergeDarkProps($darkProps);
+        if (isset($attrs['dark'])) {
+            $darkProps = static::buildDarkProps($attrs);
+            if (! empty($darkProps)) {
+                $element->mergeDarkProps($darkProps);
+            }
         }
 
         // Gradient props — same central `setProp` path as animation below, so
         // `bg-gradient-to-*` works on every element type without per-element
         // wiring.
-        foreach (static::buildGradientProps($attrs) as $key => $value) {
-            $element->setProp($key, $value);
+        if (isset($attrs['gradient'])) {
+            foreach (static::buildGradientProps($attrs) as $key => $value) {
+                $element->setProp($key, $value);
+            }
         }
 
         // Animation props — push through `setProp` so builtin elements
@@ -1841,14 +1885,19 @@ class NativeElementCollector
         // Per-corner radius rides the prop bag for the same reason — the
         // packed node has only one `border_radius` float. Per-side border
         // widths and the border style likewise.
-        foreach (static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
+        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+        foreach (static::buildBorderProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
         // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
         // one JSON string the native NodeView resolves against the live
         // window width — the packed node has no room for alternatives.
-        foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
-            $element->setProp($key, $value);
+        if (isset($attrs['variants'])) {
+            foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
+                $element->setProp($key, $value);
+            }
         }
 
         // Accessibility props — same central path, so every element honors
@@ -2175,7 +2224,12 @@ class NativeElementCollector
 
     protected static function applyCustomElementEvents(Element $element, array $attrs): void
     {
-        foreach (NativeTagPrecompiler::customElementEvents() as $event) {
+        $events = NativeTagPrecompiler::customElementEvents();
+        if ($events === []) {
+            return;
+        }
+
+        foreach ($events as $event) {
             $attr = '_'.$event;
 
             if (! isset($attrs[$attr])) {
