@@ -130,6 +130,13 @@ class NativeRootTabs extends Element
         if (isset($attrs['stackDepth'])) {
             $this->props['stack_depth'] = (int) $attrs['stackDepth'];
         }
+        // The URI of every screen on the router stack, bottom first, one per
+        // line (props carry strings, not lists). iOS finds the owning tab's
+        // root in it, so a tab root it never drew can't leave the tab's stack
+        // padded with copies of the screen on top.
+        if (isset($attrs['stackUris'])) {
+            $this->props['stack_uris'] = implode("\n", array_map('strval', (array) $attrs['stackUris']));
+        }
 
         // Per-screen tab-bar overrides folded in by `wrapWithNativeChrome`.
         // `hide_tab_bar` is the explicit signal renderers use to hide the
