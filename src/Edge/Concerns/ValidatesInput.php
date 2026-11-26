@@ -32,9 +32,11 @@ use Native\Mobile\Edge\FieldErrors;
  *     }
  *
  * Validates the component's public properties with Laravel's Validator.
- * A ValidationException thrown while handling an interaction (a tap, a
- * native:model sync, an updated*() hook) keeps its messages in the error
- * bag and the screen re-renders, instead of reaching the error overlay.
+ * A ValidationException thrown while one of the component's handlers runs
+ * (a tap, a native:model sync and its updated*() hook, an #[On] listener, a
+ * child's `@event` binding, a #[Poll] method, onBackPressed()) keeps its
+ * messages in this component's error bag and the screen re-renders, instead
+ * of reaching the error overlay.
  *
  * Views receive the bag as `$errors`, so Blade's `@error('email')` works.
  * Elements can read the message for their bound field while they hydrate
@@ -86,8 +88,20 @@ trait ValidatesInput
      */
     public function validateOnly(string $field, ?array $rules = null, array $messages = [], array $attributes = []): array
     {
-        $rules ??= $this->validationRules();
-        $fieldRules = array_key_exists($field, $rules) ? [$field => $rules[$field]] : [];
+        $fieldRules = [];
+
+        // A wildcard key such as `items.*.name` covers `items.0.name`, one
+        // segment per `*`, as it does when Laravel expands the rules.
+        foreach ($rules ?? $this->validationRules() as $key => $rule) {
+            $pattern = '#^'.str_replace('\*', '[^.]*', preg_quote((string) $key, '#')).'\z#u';
+
+            if (preg_match($pattern, $field) === 1) {
+                $fieldRules[$field] = [
+                    ...$fieldRules[$field] ?? [],
+                    ...(is_string($rule) ? explode('|', $rule) : (is_array($rule) ? $rule : [$rule])),
+                ];
+            }
+        }
 
         try {
             $validated = $this->makeValidator($fieldRules, $messages, $attributes)->validate();
@@ -138,14 +152,23 @@ trait ValidatesInput
     }
 
     /**
-     * @internal Wraps the interaction entry point shared by the device
-     *           runloop and the test harness.
+     * @internal Wraps every handler of this component: taps, native:model
+     *           syncs, listeners, polls and the system back. It runs the
+     *           handler itself rather than through the parent, which marks
+     *           the ValidationExceptions it lets through.
      */
-    public function __invokeInteraction(string $method, array $parameters): mixed
+    public function __runHandler(\Closure $handler): mixed
     {
         try {
-            return parent::__invokeInteraction($method, $parameters);
+            return $handler();
         } catch (ValidationException $exception) {
+            // Thrown by a handler of a component without the trait that ran
+            // inside this one, such as a parent listener of an emit(). It
+            // goes to the overlay, as it would if this child had no trait.
+            if (static::validationLeftUnkept($exception)) {
+                throw $exception;
+            }
+
             // validate() and validateOnly() have already updated the bag;
             // a hand-thrown ValidationException::withMessages() has not.
             if ($exception !== $this->recordedValidationException) {

@@ -9,6 +9,7 @@ use Illuminate\Routing\Exceptions\BackedEnumCaseNotFoundException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\Engines\CompilerEngine;
 use Illuminate\View\View;
 use Livewire\Features\SupportEvents\BaseOn;
@@ -21,6 +22,7 @@ use Native\Mobile\Attributes\On;
 use Native\Mobile\Attributes\OnNative;
 use Native\Mobile\Attributes\Poll;
 use Native\Mobile\Browser;
+use Native\Mobile\Edge\Contracts\RunloopExtension;
 use Native\Mobile\Edge\Elements\ActivityIndicator;
 use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\Column;
@@ -28,6 +30,7 @@ use Native\Mobile\Edge\Elements\NativeRootStack;
 use Native\Mobile\Edge\Elements\NativeRootTabs;
 use Native\Mobile\Edge\Elements\TabAccessory;
 use Native\Mobile\Edge\Elements\TopBarTitle;
+use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\Exceptions\InvalidHandlerException;
 use Native\Mobile\Edge\Exceptions\LockedPropertyException;
 use Native\Mobile\Edge\Layouts\Builders\NavBar;
@@ -86,6 +89,14 @@ abstract class NativeComponent
     private static bool $dumpHandlerRegistered = false;
 
     /**
+     * Packages hooked into every screen's runloop, in the order they were
+     * registered. See {@see extend()}.
+     *
+     * @var list<RunloopExtension>
+     */
+    private static array $nativeExtensions = [];
+
+    /**
      * The component currently driving the runloop (rendering or handling an
      * event). Async tasks capture this at dispatch time so a completion arriving
      * after the user has navigated away can be dropped instead of firing against
@@ -98,6 +109,9 @@ abstract class NativeComponent
      * @var \WeakReference<self>|null
      */
     private static ?\WeakReference $nativeActiveComponent = null;
+
+    /** @var \WeakMap<ValidationException, true>|null ValidationExceptions that left a handler of a component without ValidatesInput. */
+    private static ?\WeakMap $nativeUnkeptValidation = null;
 
     private ?NativeDumpException $dumpException = null;
 
@@ -262,6 +276,13 @@ abstract class NativeComponent
         // state the next (recovered) frame still wants.
         $this->beginChildComponentFrame();
 
+        // Called here rather than off the collector's reset() because a
+        // screen can render without the collector at all (a programmatic
+        // Element tree).
+        foreach (self::$nativeExtensions as $extension) {
+            $extension->beginFrame();
+        }
+
         $result = $this->render();
 
         $element = $result instanceof View
@@ -269,6 +290,10 @@ abstract class NativeComponent
             : $result;
 
         $this->endChildComponentFrame();
+
+        foreach (self::$nativeExtensions as $extension) {
+            $extension->endFrame($this);
+        }
 
         return $element;
     }
@@ -615,9 +640,7 @@ abstract class NativeComponent
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
-            ? new ($this->nativeLayout)()
-            : null;
+        $layout = $this->chromeLayout();
 
         // ── Inline chrome (screen blade) ──
         // Non-custom bars are hoisted out of the content tree so they
@@ -681,33 +704,38 @@ abstract class NativeComponent
         }
 
         $tabBar = null;
+        $tabOptions = null;
         if ($inlineBottomNav !== null) {
+            $tabOptions = $this->tabBarOptions();
             $tabBar = TabBar::fromElement($inlineBottomNav);
             $tabBar->defaultFont($layout?->chromeFont());
             // Auto-highlight the tab owning the current URI — unless the
             // blade marked one `active` explicitly (highlight() respects
             // explicit choices on inline items).
             $currentUri = $this->nativeRouter?->currentUri();
-            if ($currentUri !== null) {
-                $tabBar->highlight($currentUri);
+            if ($currentUri !== null || $tabOptions?->highlight !== null) {
+                $tabBar->highlight($currentUri, $tabOptions?->highlight);
             }
         } elseif (! $hasCustomBottomNav && $layout !== null) {
             $tabBar = $layout->tabBar($this);
-            // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
-            // builder), mirroring the NavBar handling above. On the
-            // custom-Column path hiding is identical to the layout
-            // returning null — dropping the bar also hands the bottom
-            // safe-area edge back to the wrapper in buildChromeColumn().
-            // The native-chrome path instead keeps the config and folds a
-            // `hide_tab_bar` prop onto the sentinel, so the TabView
-            // survives for tab switching.
-            if ($tabBar !== null && ! $usesNativeChrome && $this->shouldHideTabBar()) {
-                $tabBar = null;
+            if ($tabBar !== null) {
+                $tabOptions = $this->tabBarOptions();
+                // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
+                // builder), mirroring the NavBar handling above. On the
+                // custom-Column path hiding is identical to the layout
+                // returning null — dropping the bar also hands the bottom
+                // safe-area edge back to the wrapper in buildChromeColumn().
+                // The native-chrome path instead keeps the config and folds a
+                // `hide_tab_bar` prop onto the sentinel, so the TabView
+                // survives for tab switching.
+                if (! $usesNativeChrome && $this->resolveHideTabBar($tabOptions)) {
+                    $tabBar = null;
+                }
             }
             if ($tabBar !== null) {
                 $currentUri = $this->nativeRouter?->currentUri();
-                if ($currentUri !== null) {
-                    $tabBar->highlight($currentUri);
+                if ($currentUri !== null || $tabOptions?->highlight !== null) {
+                    $tabBar->highlight($currentUri, $tabOptions?->highlight);
                 }
                 $tabBar->defaultFont($layout->chromeFont());
             }
@@ -721,7 +749,7 @@ abstract class NativeComponent
                 // native iOS / Android renderers for those types take over
                 // and use NavigationStack / TabView / NavHost / Scaffold to
                 // render chrome system-natively.
-                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
+                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout, $tabOptions);
             } else {
                 $root = $this->buildChromeColumn($content, $navBar, $tabBar);
             }
@@ -745,6 +773,18 @@ abstract class NativeComponent
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * The layout whose chrome wraps this screen: the route's layout class,
+     * or null for none. A screen that builds its chrome some other way
+     * (from data it loaded, say) overrides this.
+     */
+    protected function chromeLayout(): ?NativeLayout
+    {
+        return ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
+            : null;
     }
 
     /**
@@ -987,6 +1027,7 @@ abstract class NativeComponent
         ?NavBar $navBar,
         ?TabBar $tabBar,
         ?NativeLayout $layout,
+        ?TabBarOptions $tabOptions = null,
     ): Element {
         if ($tabBar !== null) {
             $root = NativeRootTabs::make();
@@ -1007,12 +1048,23 @@ abstract class NativeComponent
             // URI that is already on the stack pushes a new level rather
             // than being misread as a pop back to the earlier one.
             $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
+            // The URI of every screen on the router stack, bottom first. iOS
+            // only reconciles a tab's stack when SwiftUI redraws the tabs, so
+            // when two publishes land before a redraw it sees only the second.
+            // A tab root that mounts and pushes a screen at once then goes
+            // unseen, and the tab can't tell where its levels start. With the
+            // stack it finds its root and the screens above it in any frame.
+            $attrs['stackUris'] = array_column($this->nativeRouter?->getStackEntries() ?? [], 'uri');
+
+            if (func_num_args() < 5) {
+                $tabOptions = $this->tabBarOptions();
+            }
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
             // as flat props so the iOS / Android renderers don't need to
             // re-derive visibility from URI matching or `nav_back`.
-            if ($this->shouldHideTabBar()) {
+            if ($this->resolveHideTabBar($tabOptions)) {
                 $attrs['hideTabBar'] = true;
             }
             // Per-screen nav-bar opt-out, same shape as `hideTabBar` — the
@@ -1020,7 +1072,6 @@ abstract class NativeComponent
             if ($navBar !== null && $this->shouldHideNavBar()) {
                 $attrs['hideNavBar'] = true;
             }
-            $tabOptions = $this->tabBarOptions();
             if ($tabOptions !== null) {
                 if ($tabOptions->highlight !== null) {
                     $attrs['tabHighlight'] = $tabOptions->highlight;
@@ -1469,7 +1520,11 @@ abstract class NativeComponent
      */
     public function shouldHideTabBar(): bool
     {
-        $options = $this->tabBarOptions();
+        return $this->resolveHideTabBar($this->tabBarOptions());
+    }
+
+    private function resolveHideTabBar(?TabBarOptions $options): bool
+    {
         if ($options !== null && $options->hidden !== null) {
             return $options->isHidden();
         }
@@ -1630,6 +1685,11 @@ abstract class NativeComponent
         try {
             $t0 = microtime(true);
             $this->beginChildComponentFrame();
+
+            foreach (self::$nativeExtensions as $extension) {
+                $extension->beginFrame();
+            }
+
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
             $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
@@ -1637,6 +1697,11 @@ abstract class NativeComponent
 
             nphp_frame_end();
             $t2 = microtime(true);
+
+            // Same as renderToElement().
+            foreach (self::$nativeExtensions as $extension) {
+                $extension->endFrame($this);
+            }
 
             NativeRouter::debugLog(sprintf(
                 'PERF streamView(%s) blade=%.1fms frame_end=%.1fms total=%.1fms',
@@ -1847,6 +1912,19 @@ abstract class NativeComponent
             return -1;
         }
 
+        $polls = $this->nextPollTimeout($definitions);
+        $wake = $this->nextExtensionWake();
+
+        if ($wake === null) {
+            return $polls;
+        }
+
+        return $polls === -1 ? $wake : min($polls, $wake);
+    }
+
+    /** The #[Poll] and native:poll part of nextEventTimeout(). */
+    private function nextPollTimeout(array $definitions): int
+    {
         $deadlines = array_map(fn ($def) => $def['next'], $definitions);
         foreach ($this->bladePollDeadlines as $next) {
             $deadlines[] = $next;
@@ -1878,6 +1956,62 @@ abstract class NativeComponent
     }
 
     /**
+     * The soonest turn a runloop extension asked for, in milliseconds, or
+     * null when none is waiting on anything. 0 means repaint now.
+     */
+    private function nextExtensionWake(): ?int
+    {
+        if (self::$nativeExtensions === []) {
+            return null;
+        }
+
+        $tree = iterator_to_array($this->componentTree(), false);
+        $soonest = null;
+
+        foreach (self::$nativeExtensions as $extension) {
+            $wake = $extension->nextWake($tree);
+
+            if ($wake !== null) {
+                $soonest = $soonest === null ? $wake : min($soonest, $wake);
+            }
+        }
+
+        return $soonest === null ? null : max(0, $soonest);
+    }
+
+    /**
+     * Give each runloop extension its turn (RunloopExtension::tick()), at
+     * the top of each turn of the loop. What one throws shows the error
+     * screen, as any interaction does, and an extension that ends the loop
+     * (by navigating, say) stops the rest from ticking. Returns whether
+     * any of them asked for a new frame.
+     */
+    private function tickExtensions(): bool
+    {
+        if (self::$nativeExtensions === []) {
+            return false;
+        }
+
+        $repaint = false;
+
+        $this->runGuardedInteraction('RunloopExtension::tick()', function () use (&$repaint) {
+            $tree = iterator_to_array($this->componentTree(), false);
+
+            foreach (self::$nativeExtensions as $extension) {
+                if (! $this->nativeRunning) {
+                    break;
+                }
+
+                $repaint = $extension->tick($tree) || $repaint;
+            }
+
+            $this->flushDispatchedEvents();
+        });
+
+        return $repaint;
+    }
+
+    /**
      * Fire any polls whose interval has elapsed, then reschedule them.
      * Called on an idle tick (wait_event returned null) before the loop
      * re-renders. Blade native:poll timers carry no callback — they just
@@ -1899,7 +2033,7 @@ abstract class NativeComponent
                 $this->pollDefinitions[$i]['next'] = $now + $def['ms'];
 
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+                    $this->runAction($def['method'], [], ActionSource::Poll);
                 }
             }
         }
@@ -2175,6 +2309,16 @@ abstract class NativeComponent
             return;
         }
 
+        // A runloop extension may claim the event as its own plumbing (an
+        // answer to a request it made while the loop blocked, say). A
+        // claimed event reaches no listener, and the re-render at the top
+        // of the loop paints whatever the extension changed.
+        foreach (self::$nativeExtensions as $extension) {
+            if ($extension->handleNativeEvent($eventName, $payload)) {
+                return;
+            }
+        }
+
         // An event marked BroadcastsGlobally that another lane has fired. This
         // frame carries it, serialized and signed with the key of the app.
         // It is fired here as if this lane had fired it to begin with.
@@ -2308,7 +2452,7 @@ abstract class NativeComponent
                 $bound = ($closure instanceof \Closure && ! (new \ReflectionFunction($closure))->isStatic())
                     ? \Closure::bind($closure, $this, static::class)
                     : $closure;
-                $bound($eventObject);
+                $this->__runHandler(fn () => $bound($eventObject));
             }
         }
 
@@ -2521,12 +2665,12 @@ abstract class NativeComponent
                 }
             }
 
-            ComponentMethodInvoker::invoke($this, $method, $parameters);
+            $this->runAction($method, $parameters, ActionSource::NativeEvent);
 
             return;
         }
 
-        ComponentMethodInvoker::invoke($this, $method, [$payload]);
+        $this->runAction($method, [$payload], ActionSource::NativeEvent);
     }
 
     private function coerceNativePayloadValue(\ReflectionParameter $parameter, mixed $value): mixed
@@ -2670,13 +2814,15 @@ abstract class NativeComponent
             return false;
         }
 
-        // Exact correlation by id (camera). If that misses — either no id came
-        // back (some native paths drop it across a lifecycle bounce, e.g. the
-        // gallery picker) or it didn't match — fall back to the single in-flight
-        // callback for this event class.
+        // Exact correlation by id (camera). Only when no id came back (some
+        // native paths drop it across a lifecycle bounce, e.g. the gallery
+        // picker) fall back to the single in-flight callback for this event
+        // class. An id that matches nothing belongs to an operation that
+        // registered no callback; handing it another operation's callback would
+        // run that callback with the wrong result and leave its own unanswered.
         $callback = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass) : null;
 
-        if ($callback === null) {
+        if ($callback === null && blank($id)) {
             [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
         }
 
@@ -2696,7 +2842,7 @@ abstract class NativeComponent
         }
 
         try {
-            call_user_func($callback, $this->makeEventInstance($eventClass, $payload));
+            $this->__runHandler(fn () => call_user_func($callback, $this->makeEventInstance($eventClass, $payload)));
         } finally {
             // One outcome per capture — drop success/cancel/denied siblings too.
             NativeCallbacks::forget($id, $eventClass);
@@ -2833,6 +2979,30 @@ abstract class NativeComponent
         }
 
         return new $eventClass(...$args);
+    }
+
+    /**
+     * Hook a package into every screen's runloop. See RunloopExtension for
+     * what each hook is called for. Usually called from a service
+     * provider's boot(). Registering the same instance twice does nothing.
+     */
+    public static function extend(RunloopExtension $extension): void
+    {
+        if (! in_array($extension, self::$nativeExtensions, true)) {
+            self::$nativeExtensions[] = $extension;
+        }
+    }
+
+    /** @return list<RunloopExtension> The registered runloop extensions, in order. */
+    public static function extensions(): array
+    {
+        return self::$nativeExtensions;
+    }
+
+    /** @internal Forget every runloop extension. For tests. */
+    public static function forgetExtensions(): void
+    {
+        self::$nativeExtensions = [];
     }
 
     /**
@@ -3061,6 +3231,16 @@ abstract class NativeComponent
         if (self::active() === $this) {
             self::$nativeActiveComponent = null;
         }
+
+        // Extensions drop whatever they hold for this component. Children
+        // were unmounted above, so theirs went first.
+        foreach (self::$nativeExtensions as $extension) {
+            try {
+                $extension->componentUnmounted($this);
+            } catch (\Throwable $e) {
+                NativeRouter::debugLog('RunloopExtension::componentUnmounted() failed: '.$e->getMessage());
+            }
+        }
     }
 
     public function onResume(): void
@@ -3094,7 +3274,7 @@ abstract class NativeComponent
         $this->nativeAnsweringSystemBack = true;
 
         try {
-            $this->onBackPressed();
+            $this->__runHandler(fn () => $this->onBackPressed());
         } finally {
             $this->nativeAnsweringSystemBack = false;
         }
@@ -3193,6 +3373,16 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -3436,6 +3626,16 @@ abstract class NativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }
@@ -4070,6 +4270,17 @@ abstract class NativeComponent
     }
 
     // ── Injection (called by NativeRouter) ──────────
+
+    /**
+     * The context of the route table entry that opened this screen (see
+     * NativeRouter::setRouteTable()), or null for an app route. Called
+     * before mount(). Does nothing by default: a screen class that serves
+     * a route table overrides it to learn which of its routes it is.
+     */
+    public function setRouteContext(mixed $context): void
+    {
+        //
+    }
 
     public function setRouter(NativeRouter $router): void
     {
@@ -5130,10 +5341,10 @@ abstract class NativeComponent
             }
 
             // An #[On] listener names itself through the attribute, so it is
-            // never remote input. Skip the callable guard that protects
-            // template- and device-supplied method names: a listener may be
-            // protected, and may legitimately be named updatedFoo().
-            $this->invokeComponentEventAction($this, $method, $args, guarded: false);
+            // never remote input. ActionSource::ComponentEvent is unguarded
+            // for that reason: a listener may be protected, and may
+            // legitimately be named updatedFoo().
+            $this->runAction($method, $args, ActionSource::ComponentEvent);
         }
     }
 
@@ -5149,7 +5360,7 @@ abstract class NativeComponent
         $method = $binding['method'];
 
         if ($method === CallbackRegistry::ASSIGN || $method === CallbackRegistry::TOGGLE) {
-            $parent->{$method}(...$binding['args']);
+            $parent->__runHandler(fn () => $parent->{$method}(...$binding['args']));
 
             return;
         }
@@ -5160,18 +5371,112 @@ abstract class NativeComponent
             return;
         }
 
-        $this->invokeComponentEventAction($parent, $method, [...$binding['args'], ...$params]);
+        $parent->runAction($method, [...$binding['args'], ...$params], ActionSource::ParentBinding);
     }
 
-    private function invokeComponentEventAction(
-        NativeComponent $component,
-        string $method,
-        array $parameters,
-        bool $guarded = true,
-    ): mixed {
-        return $guarded
-            ? ComponentMethodInvoker::invoke($component, $method, $parameters)
-            : ComponentMethodInvoker::invokeLifecycle($component, $method, $parameters);
+    // ── Action invocation ───────────────────────────
+
+    /**
+     * The one way the framework invokes a developer's action method. Every
+     * framework-initiated call goes through here: a tap and the other UI
+     * interactions, a #[Poll] tick, a native event, a component event, a
+     * parent's `@event` tag binding, a search query, a virtual window range,
+     * a text selection, a drag end.
+     *
+     * Do not call `$this->$method(...)` directly from a new path. Adding a
+     * path means adding an {@see ActionSource} case, deciding its
+     * {@see ActionSource::guarded()} answer, and calling this.
+     *
+     * It applies the callable guard and then hands over to the overridable
+     * {@see callAction()}. The guard runs here, before the hook, so that an
+     * override cannot drop it: whatever callAction() does, a name that a
+     * template or the device chose has already been held to
+     * {@see ComponentMethodInvoker::assertCallable()}. A name the developer
+     * chose by writing an attribute (#[Poll], a component #[On]) skips the
+     * guard, so those methods may be protected. A name and arguments chosen
+     * outside the app ({@see ActionSource::Remote}) are also held to
+     * {@see ComponentMethodInvoker::assertRemoteCallable()} here, for the
+     * same reason.
+     *
+     * callAction() runs inside {@see __runHandler()}, again here rather than
+     * in the hook, so ValidatesInput sees every action whether or not an
+     * override of callAction() calls parent. Runloop extensions'
+     * aroundAction() runs inside it as well.
+     *
+     * Private on purpose, so nothing can override it. It is called on other
+     * instances too (`emit()` runs it on the parent), which private allows
+     * because it is declared on this class.
+     *
+     * Callers check `method_exists()` first; that check stays with them,
+     * because `emit()` runs it against the parent instance.
+     *
+     * Three nearby invocations are deliberately NOT routed through here:
+     *
+     *  - `fireNativeCallback()`'s `call_user_func()`. That invokes a bound
+     *    closure or an invokable class, not a named method, so there is no
+     *    name to resolve and no method attributes to read.
+     *  - `#[Computed]` getters, via `__get()`. Pure memoized reads evaluated
+     *    while rendering. Not actions.
+     *  - `updated{Property}` hooks, via `__invokeStateHook()`. A side effect
+     *    of a property write rather than an interaction in its own right.
+     *
+     * Framework-owned callbacks that templates register (`__navigate`,
+     * `__syncProperty` and the navigation helpers) are dispatched by
+     * {@see __invokeInteraction()} before reaching here, as they are not
+     * developer actions.
+     */
+    private function runAction(string $method, array $args, ActionSource $source): mixed
+    {
+        if ($source->guarded()) {
+            ComponentMethodInvoker::assertCallable($this, $method);
+        }
+
+        if ($source->isRemote()) {
+            ComponentMethodInvoker::assertRemoteCallable($this, $method, $args);
+        }
+
+        // Runloop extensions wrap the call only now, once the guards above
+        // have passed, so a refused call never reaches one. The first
+        // registered is the outermost. $next takes no arguments, so no
+        // extension can swap in a method or arguments the guards did not see.
+        $next = fn () => $this->callAction($method, $args, $source);
+
+        foreach (array_reverse(self::$nativeExtensions) as $extension) {
+            $inner = $next;
+            $next = fn () => $extension->aroundAction($this, $method, $args, $source, $inner);
+        }
+
+        // Extensions run inside __runHandler() too, so a ValidationException
+        // from a method body an extension runs itself reaches ValidatesInput
+        // the same way as one from callAction().
+        return $this->__runHandler($next);
+    }
+
+    /**
+     * Run a developer's action method. Override it to wrap every
+     * framework-initiated call at once (a tap, a poll, an event); the
+     * {@see ActionSource} tells you which kind of call it is.
+     *
+     * By the time this runs the method name has already passed the callable
+     * guard where its source needs one, so an override that never calls
+     * parent cannot widen what remote input reaches. Call parent to keep
+     * container injection and implicit model / enum binding of the arguments.
+     *
+     * @param  string  $method  Method to call. It exists, and is callable for this source.
+     * @param  array  $args  Arguments, resolved with container injection and
+     *                       implicit model / enum binding. Not for
+     *                       {@see ActionSource::Remote}: something outside
+     *                       the app chose those, so they are passed as they are.
+     * @param  ActionSource  $source  What triggered the call.
+     * @return mixed The return value. {@see ActionSource::SearchQuery} depends on it.
+     */
+    protected function callAction(string $method, array $args, ActionSource $source): mixed
+    {
+        if ($source->isRemote()) {
+            return (new \ReflectionMethod($this, $method))->invokeArgs($this, array_values($args));
+        }
+
+        return ComponentMethodInvoker::invokeLifecycle($this, $method, $args);
     }
 
     // ── Event dispatch ──────────────────────────────
@@ -5186,6 +5491,28 @@ abstract class NativeComponent
         // child as $this, and `native:model` syncs the child's property.
         // Ids no component owns are dropped, exactly as before.
         $owner = $this->findCallbackOwner($callbackId);
+
+        // A runloop extension may have registered callbacks of its own
+        // on a component. Ids are derived from expressions, and an
+        // extension's could come from outside the app, so one could be made
+        // to equal a callback the screen owns, or one another extension
+        // registered. An id more than one scope claims is dropped rather
+        // than guessed at.
+        $claims = $this->extensionCallbackClaims($callbackId);
+
+        if ($claims !== []) {
+            if ($owner !== null || count($claims) > 1) {
+                NativeRouter::debugLog("callback id [{$callbackId}] is claimed by more than one scope, dropped.");
+
+                return;
+            }
+
+            [$component, $handler] = $claims[0];
+            $handler(...$this->uiEventArgs($event));
+            $component->flushDispatchedEvents();
+
+            return;
+        }
 
         if ($owner === null) {
             return;
@@ -5212,16 +5539,7 @@ abstract class NativeComponent
             return;
         }
 
-        $type = $event['type'] ?? -1;
-
-        $eventArgs = match ($type) {
-            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
-            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
-            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
-            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
-            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
-            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
-        };
+        $eventArgs = $this->uiEventArgs($event);
 
         // Dispatch path forks based on callback kind. Default kind
         // (null) is fire-and-forget — return value is discarded.
@@ -5231,7 +5549,7 @@ abstract class NativeComponent
         $kind = $this->nativeCallbacks->kind($event['callback_id'] ?? 0);
 
         if ($kind === 'search_query') {
-            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+            $result = $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -5248,7 +5566,7 @@ abstract class NativeComponent
             $parts = explode(',', $payload, 2);
             $from = (int) ($parts[0] ?? 0);
             $to = (int) ($parts[1] ?? 0);
-            $this->invokeUiInteraction($method, [...$args, $from, $to]);
+            $this->invokeUiInteraction($method, [...$args, $from, $to], ActionSource::VirtualWindow);
 
             return;
         }
@@ -5260,7 +5578,7 @@ abstract class NativeComponent
             $parts = explode(',', $event['text'] ?? '', 2);
             $x = (float) ($parts[0] ?? 0);
             $y = (float) ($parts[1] ?? 0);
-            $this->invokeUiInteraction($method, [...$args, $x, $y]);
+            $this->invokeUiInteraction($method, [...$args, $x, $y], ActionSource::DragEnd);
 
             return;
         }
@@ -5292,17 +5610,55 @@ abstract class NativeComponent
                 $start = $end = mb_strlen($text, 'UTF-8');
             }
 
-            $this->invokeUiInteraction($method, [...$args, $text, $start, $end]);
+            $this->invokeUiInteraction($method, [...$args, $text, $start, $end], ActionSource::TextSelection);
 
             return;
         }
 
-        $this->invokeUiInteraction($method, [...$args, ...$eventArgs]);
+        $this->invokeUiInteraction($method, [...$args, ...$eventArgs], ActionSource::Interaction);
     }
 
-    private function invokeUiInteraction(string $method, array $parameters): mixed
+    /** The value a UI event carries, as the arguments appended to a callback's own. */
+    private function uiEventArgs(array $event): array
     {
-        $result = $this->__invokeInteraction($method, $parameters);
+        return match ($event['type'] ?? -1) {
+            2, 4 => [$event['text'] ?? ''],                      // TEXT_CHANGE, SUBMIT
+            3, 10 => [(bool) ($event['value'] ?? false)],          // TOGGLE_CHANGE, CHECKBOX_CHANGE
+            9 => [(float) ($event['value'] ?? 0.0)],           // SLIDER_CHANGE
+            11, 12 => [(string) ($event['value'] ?? '')],           // RADIO_CHANGE, SELECT_CHANGE
+            13 => [(int) ($event['value'] ?? 0)],               // TAB_CHANGE
+            default => [],                                           // PRESS, LONG_PRESS, SHEET_DISMISS
+        };
+    }
+
+    /**
+     * Every runloop extension's handler for the id, on any component in
+     * this one's tree, as `[component, handler]`. More than one is a clash.
+     *
+     * @return list<array{0: NativeComponent, 1: \Closure}>
+     */
+    private function extensionCallbackClaims(int $callbackId): array
+    {
+        if ($callbackId === 0 || self::$nativeExtensions === []) {
+            return [];
+        }
+
+        $claims = [];
+
+        foreach ($this->componentTree() as $component) {
+            foreach (self::$nativeExtensions as $extension) {
+                if (($handler = $extension->resolveCallback($component, $callbackId)) !== null) {
+                    $claims[] = [$component, $handler];
+                }
+            }
+        }
+
+        return $claims;
+    }
+
+    private function invokeUiInteraction(string $method, array $parameters, ActionSource $source): mixed
+    {
+        $result = $this->__invokeInteraction($method, $parameters, $source);
         $this->flushDispatchedEvents();
 
         return $result;
@@ -5311,9 +5667,20 @@ abstract class NativeComponent
     /**
      * @internal The single interaction entry point shared by the device
      *           runloop and the test harness, so both accept the same methods.
+     *           Pass {@see ActionSource::Remote} for a call whose name and
+     *           arguments came from outside the app.
      */
-    public function __invokeInteraction(string $method, array $parameters): mixed
-    {
+    public function __invokeInteraction(
+        string $method,
+        array $parameters,
+        ActionSource $source = ActionSource::Interaction,
+    ): mixed {
+        // A remote call goes straight to the chokepoint: something outside
+        // the app chose the name, so none of the shortcuts below apply.
+        if ($source->isRemote()) {
+            return $this->runAction($method, $parameters, $source);
+        }
+
         $internalCallbacks = [
             '__navigate',
             '__overlayBack',
@@ -5336,9 +5703,41 @@ abstract class NativeComponent
         ];
 
         if (in_array($method, [...$internalCallbacks, ...$navigationCallbacks], true)) {
-            return $this->{$method}(...$parameters);
+            return $this->__runHandler(fn () => $this->{$method}(...$parameters));
         }
 
-        return ComponentMethodInvoker::invoke($this, $method, $parameters);
+        return $this->runAction($method, $parameters, $source);
+    }
+
+    /**
+     * @internal Run one handler of this component: every action that
+     *           {@see runAction()} invokes, plus the handlers that don't go
+     *           through it (a native:model sync and the other framework
+     *           callbacks, an `->on()` closure listener, a fluent native
+     *           callback, a parent's assign/toggle binding and a system
+     *           back). ValidatesInput keeps a ValidationException in this
+     *           component's bag here, whichever component triggered it.
+     *
+     *           A ValidationException that leaves a handler here, on a
+     *           component without the trait, is marked so that a
+     *           component further out with the trait (a child whose
+     *           emit() ran this listener) lets it reach the overlay.
+     */
+    public function __runHandler(\Closure $handler): mixed
+    {
+        try {
+            return $handler();
+        } catch (ValidationException $exception) {
+            self::$nativeUnkeptValidation ??= new \WeakMap;
+            self::$nativeUnkeptValidation[$exception] = true;
+
+            throw $exception;
+        }
+    }
+
+    /** @internal Whether a ValidationException left a handler of a component without ValidatesInput. */
+    protected static function validationLeftUnkept(ValidationException $exception): bool
+    {
+        return isset(self::$nativeUnkeptValidation[$exception]);
     }
 }

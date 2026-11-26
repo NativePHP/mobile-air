@@ -879,6 +879,11 @@ class AppUpdateManager {
         // Run migrations
         _ = app.artisan(additionalArgs: ["migrate", "--force"])
 
+        // A new bundle may come from a version that booted the queue worker at
+        // every launch and never wrote the pending-jobs marker. Write it, so the
+        // worker runs once and clears it if the queue is empty.
+        PHPQueueWorker.markPending()
+
         // Clear caches
         _ = app.artisan(additionalArgs: ["view:clear"])
 

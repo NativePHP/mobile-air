@@ -44,7 +44,7 @@ class TopBarAction extends Element
             $attrs['image_shape'] = $attrs['image-shape'];
         }
 
-        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image', 'image_shape'] as $key) {
+        foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event', 'image', 'image_shape', 'subtitle'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];
             }

@@ -57,6 +57,112 @@ struct NativePHPApp: App {
     private func performDeferredInitialization() {
         NSLog("[NativePHP] Deferred initialization starting")
 
+        // 1–3. Prepare, extract and boot PHP, or wait for a boot that work
+        // without a screen (an App Intent, a background task) already started.
+        let booted = Self.bootRuntime(timeout: .infinity)
+
+        continueAfterBoot(booted: booted)
+    }
+
+    private enum RuntimeBoot {
+        case notStarted
+        case booting
+        case finished(Bool)
+    }
+
+    private static var runtimeBoot = RuntimeBoot.notStarted
+    private static let runtimeBootCondition = NSCondition()
+
+    /// Makes the app's PHP usable without a screen, for work iOS runs with
+    /// the app closed: an App Intent, a background task, a notification
+    /// action. Returns whether the persistent runtime is booted. To run a
+    /// command from there, use runArtisan(_:timeout:).
+    ///
+    /// PHP boots once per process, through the same steps the app takes when
+    /// its splash appears: environment, extraction of the bundle (including
+    /// a DEBUG build's and a pending update's), the persistent boot, and the
+    /// plugins' onAppReady callbacks. Whichever of the app and a caller gets
+    /// here first runs them; the other waits for that boot and gets its
+    /// result. Returns false in classic mode, which has no persistent
+    /// runtime, when the boot failed, and after `timeout` seconds of waiting
+    /// for another caller's boot.
+    ///
+    /// Blocks while PHP boots, a second or more on a cold start, so call it
+    /// off the main thread.
+    static func bootRuntime(timeout: TimeInterval = 30) -> Bool {
+        runtimeBootCondition.lock()
+
+        if case .notStarted = runtimeBoot {
+            // The app sets `shared` in init(), before iOS hands it any work.
+            guard let app = shared else {
+                runtimeBootCondition.unlock()
+                return false
+            }
+
+            runtimeBoot = .booting
+            runtimeBootCondition.unlock()
+
+            let booted = app.bootPHP()
+
+            runtimeBootCondition.lock()
+            runtimeBoot = .finished(booted)
+            runtimeBootCondition.broadcast()
+            runtimeBootCondition.unlock()
+
+            return booted
+        }
+
+        let deadline = timeout.isFinite ? Date().addingTimeInterval(timeout) : .distantFuture
+
+        while case .booting = runtimeBoot {
+            if !runtimeBootCondition.wait(until: deadline) {
+                break
+            }
+        }
+
+        defer { runtimeBootCondition.unlock() }
+
+        if case .finished(let booted) = runtimeBoot {
+            return booted
+        }
+
+        return false
+    }
+
+    /// Runs an artisan command for work without a screen, booting PHP first
+    /// as bootRuntime(timeout:) does, and returns its output. Nil when PHP
+    /// isn't available, so the command didn't run.
+    ///
+    /// The command runs in the ephemeral runtime, a PHP context beside the
+    /// app's, booted on first use. Not in the persistent runtime: while a
+    /// native screen is live, its event loop holds that runtime's only
+    /// thread, and a command sent there waits until the screen goes.
+    ///
+    /// Blocks until the command finishes, so call it off the main thread.
+    static func runArtisan(_ command: String, timeout: TimeInterval = 30) -> String? {
+        guard bootRuntime(timeout: timeout) else {
+            return nil
+        }
+
+        if ephemeral_php_is_booted() == 0 {
+            let bootstrap = AppUpdateManager.shared.getAppPath() + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
+
+            guard ephemeral_php_boot(bootstrap) == 0 else {
+                return nil
+            }
+        }
+
+        guard let result = ephemeral_php_artisan(command) else {
+            return nil
+        }
+
+        defer { free(UnsafeMutableRawPointer(mutating: result)) }
+
+        return String(cString: result)
+    }
+
+    /// Steps 1–3 of startup. Runs once per process, through bootRuntime().
+    private func bootPHP() -> Bool {
         // 1. Initialize PHP environment (env vars, php.ini, database)
         NSLog("[NativePHP] preparePhpEnvironment START")
         _ = preparePhpEnvironment()
@@ -100,6 +206,12 @@ struct NativePHPApp: App {
             }
         }
 
+        return booted
+    }
+
+    /// Steps 4–8 of startup, which only the app runs: the first screen, the
+    /// plugins' onAppLaunch callbacks, hot reload and the queue workers.
+    private func continueAfterBoot(booted: Bool) {
         // 4. Now that PHP is booted, decide the boot transport (native-first).
         // NATIVE_DIRECT: dispatch the first route straight into the persistent
         // runtime — no WKWebView, no WebContent/Networking processes — and let
@@ -153,14 +265,13 @@ struct NativePHPApp: App {
         // → applyPendingUpdates), and only when that plugin is installed
         // (NATIVEPHP_OTA). Do not re-enable a Bifrost client here.
 
-        // 8. Defer queue worker boot — start AFTER critical path completes
-        //    so it doesn't compete for CPU/memory during first page render
+        // 8. Background lanes. Neither boots PHP here: the queue worker boots
+        //    when a job is pushed (or one was left queued last run), and the
+        //    async pool boots a slot on the first AsyncTask::dispatch().
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
 
-            // Async task lane (AsyncTask::dispatch()) — pool boots on a
-            // background thread, so this returns immediately.
             NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
             AsyncTaskExecutor.shared.start()
         } else {
@@ -600,14 +711,27 @@ struct NativePHPApp: App {
         // package's migrations in both runtime modes.
         setenv("NATIVEPHP_RUNNING", "true", 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
+        setenv("NATIVEPHP_OS_VERSION", NativeOSVersion.string, 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("LARAVEL_STORAGE_PATH", storageDir, 1)
         setenv("VIEW_COMPILED_PATH", viewCacheDir, 1)
         setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
 
-        // Set APP_KEY from secure storage (generates on first run)
-        if let appKey = getOrGenerateAppKey() {
+        // Set APP_KEY from secure storage (generates on first run).
+        // If a locked background launch hits an un-migrated WhenUnlocked item
+        // (or a Before-First-Unlock launch), wait for protected data before
+        // booting PHP so Laravel and event signing never start without APP_KEY.
+        switch Self.resolveAppKey() {
+        case .key(let appKey):
             setenv("APP_KEY", appKey, 1)
+        case .locked:
+            Self.waitForProtectedDataAvailable()
+            if case .key(let appKey) = Self.resolveAppKey() {
+                setenv("APP_KEY", appKey, 1)
+                DebugLogger.shared.log("🔑 Recovered APP_KEY after protected data became available")
+            }
+        case .failed:
+            break
         }
 
         // Tell the embedded PHP to enforce signatures on device events. This
@@ -619,16 +743,38 @@ struct NativePHPApp: App {
         setenv("NATIVEPHP_EVENTS_SIGNED", "1", 1)
     }
 
-    /// Retrieves APP_KEY from Keychain or generates a new one on first launch
-    private func getOrGenerateAppKey() -> String? {
+    private enum AppKeyLookupResult {
+        case key(String)
+        case locked
+        case failed
+    }
+
+    private final class ObserverTokenBox: @unchecked Sendable {
+        var token: NSObjectProtocol?
+    }
+
+    /// Retrieves APP_KEY from Keychain or generates a new one on first launch.
+    /// Stored with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so a
+    /// background launch while the screen is locked can still read the key.
+    static func getOrGenerateAppKey() -> String? {
+        if case .key(let appKey) = resolveAppKey() {
+            return appKey
+        }
+        return nil
+    }
+
+    private static func resolveAppKey() -> AppKeyLookupResult {
         let service = Bundle.main.bundleIdentifier ?? "com.nativephp.app"
         let account = "APP_KEY"
+        let targetAccessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
 
-        // Try to retrieve existing APP_KEY from Keychain
+        // Retrieve both data and attributes so we only run SecItemUpdate once
+        // when migrating legacy WhenUnlocked items.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
             kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -637,23 +783,51 @@ struct NativePHPApp: App {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
         if status == errSecSuccess,
-           let data = result as? Data,
+           let item = result as? [String: Any],
+           let data = item[kSecValueData as String] as? Data,
            let existingKey = String(data: data, encoding: .utf8) {
+            let currentAccessibility = item[kSecAttrAccessible as String] as? String
+            if currentAccessibility != targetAccessibility {
+                let matchQuery: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrAccount as String: account,
+                    kSecAttrService as String: service
+                ]
+                let updateAttributes: [String: Any] = [
+                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                ]
+                let updateStatus = SecItemUpdate(matchQuery as CFDictionary, updateAttributes as CFDictionary)
+                if updateStatus != errSecSuccess {
+                    DebugLogger.shared.log("⚠️ Failed to migrate APP_KEY accessibility: \(updateStatus)")
+                }
+            }
             DebugLogger.shared.log("🔑 Retrieved existing APP_KEY from Keychain")
-            return existingKey
+            return .key(existingKey)
+        }
+
+        if status == errSecInteractionNotAllowed {
+            DebugLogger.shared.log("⚠️ Keychain locked while reading APP_KEY (errSecInteractionNotAllowed)")
+            return .locked
+        }
+
+        // Only generate a new key when none exists in the Keychain. Any other
+        // Keychain error must not overwrite or duplicate an existing key.
+        guard status == errSecItemNotFound else {
+            DebugLogger.shared.log("⚠️ Could not read APP_KEY from Keychain (status: \(status))")
+            return .failed
         }
 
         // Generate new APP_KEY if not found
         DebugLogger.shared.log("🔑 Generating new APP_KEY for first launch")
         guard let newKey = generateAppKey() else {
             DebugLogger.shared.log("❌ Failed to generate APP_KEY")
-            return nil
+            return .failed
         }
 
         // Store in Keychain
         guard let keyData = newKey.data(using: .utf8) else {
             DebugLogger.shared.log("❌ Failed to encode APP_KEY")
-            return nil
+            return .failed
         }
 
         let addQuery: [String: Any] = [
@@ -661,22 +835,57 @@ struct NativePHPApp: App {
             kSecAttrAccount as String: account,
             kSecAttrService as String: service,
             kSecValueData as String: keyData,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
 
         if addStatus == errSecSuccess {
             DebugLogger.shared.log("✅ APP_KEY stored securely in Keychain")
-            return newKey
+            return .key(newKey)
+        } else if addStatus == errSecInteractionNotAllowed {
+            DebugLogger.shared.log("⚠️ Keychain locked while storing APP_KEY (errSecInteractionNotAllowed)")
+            return .locked
         } else {
             DebugLogger.shared.log("❌ Failed to store APP_KEY in Keychain: \(addStatus)")
-            return nil
+            return .failed
         }
     }
 
+    /// Blocks the background init thread until iOS reports protected data is
+    /// available. Checking `isProtectedDataAvailable` and registering the
+    /// observer in the same main-queue block avoids missing an unlock between
+    /// the failed Keychain read and observer registration.
+    private static func waitForProtectedDataAvailable() {
+        guard !Thread.isMainThread else { return }
+
+        let semaphore = DispatchSemaphore(value: 0)
+
+        DispatchQueue.main.async {
+            if UIApplication.shared.isProtectedDataAvailable {
+                semaphore.signal()
+                return
+            }
+
+            let box = ObserverTokenBox()
+            box.token = NotificationCenter.default.addObserver(
+                forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                if let token = box.token {
+                    box.token = nil
+                    NotificationCenter.default.removeObserver(token)
+                    semaphore.signal()
+                }
+            }
+        }
+
+        semaphore.wait()
+    }
+
     /// Generates a new Laravel-compatible APP_KEY (base64:...)
-    private func generateAppKey() -> String? {
+    private static func generateAppKey() -> String? {
         var keyData = Data(count: 32)
         let result = keyData.withUnsafeMutableBytes {
             SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!)

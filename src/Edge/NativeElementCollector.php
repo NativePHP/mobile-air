@@ -84,11 +84,33 @@ class NativeElementCollector
      * The stack holds one entry per currently-open container; the top
      * is the parent path used when hashing the next opened/leaf node.
      * `openStreaming` pushes, `closeStreaming` pops, `leafStreaming`
-     * computes-but-doesn't-push. Empty string at the root means
-     * "unkeyed parent" — children without `native:key` then fall
-     * through to the streaming writer's auto-generated positional id.
+     * computes-but-doesn't-push. A node without `native:key` uses its
+     * position (see $positions) as its path step, so every streamed node
+     * gets an id derived from its path.
      */
     protected static array $keyPathStack = [];
+
+    /** Ids handed out this streaming frame, for collision checks. */
+    protected static array $streamedIds = [];
+
+    /**
+     * Where the next element goes, one cursor per open container with the
+     * root's at index 0. A cursor is a stack of levels, each
+     * `[prefix, next, block, segments]`: the base level numbers the
+     * container's children 0, 1, 2…; openBlock() takes the next number for
+     * a whole Blade `@if`, `@foreach`, `@switch` or child component and
+     * pushes a level that numbers what the block emits as
+     * `<block>:<segment>.<n>`.
+     *
+     * So an element's position, and its id, only depend on what comes
+     * before it in its own block, not on how many elements an earlier
+     * `@if` or loop emitted this frame. Without this, removing one
+     * conditional element gave every later sibling the previous sibling's
+     * id, and the renderers reused that sibling's state for it.
+     *
+     * @var list<list<array{0: string, 1: int, 2: string, 3: int}>>
+     */
+    protected static array $positions = [];
 
     /**
      * Frame-level re-render intervals (ms) collected from `native:poll`
@@ -154,6 +176,11 @@ class NativeElementCollector
     public static function setStreaming(bool $enabled): void
     {
         static::$streaming = $enabled;
+
+        // Each streaming frame numbers its tree from the root again.
+        static::$keyPathStack = [];
+        static::$positions = [];
+        static::$streamedIds = [];
     }
 
     public static function isStreaming(): bool
@@ -161,9 +188,33 @@ class NativeElementCollector
         return static::$streaming;
     }
 
-    public static function setCallbacks(CallbackRegistry $callbacks): void
+    /**
+     * Bind the registry callbacks register into. Nullable so a caller that
+     * swaps it for the length of a subtree (a package rendering part of a
+     * view against its own registry) can put back exactly what it found,
+     * including "nothing bound yet".
+     */
+    public static function setCallbacks(?CallbackRegistry $callbacks): void
     {
         static::$callbacks = $callbacks;
+    }
+
+    /** The registry currently bound, so a caller can save and restore it. */
+    public static function callbacks(): ?CallbackRegistry
+    {
+        return static::$callbacks;
+    }
+
+    /**
+     * The container element the last open() pushed, so a caller can keep
+     * working on the node it just emitted. Null while streaming (nodes go
+     * straight to C, there is no Element) and null between elements.
+     */
+    public static function openElement(): ?Element
+    {
+        $top = end(static::$stack);
+
+        return $top instanceof Element ? $top : null;
     }
 
     // ── Child-component scopes ───────────────────────
@@ -176,6 +227,12 @@ class NativeElementCollector
     public static function setOwner(?NativeComponent $owner): void
     {
         static::$owner = $owner;
+    }
+
+    /** The component whose render is emitting, if any. */
+    public static function owner(): ?NativeComponent
+    {
+        return static::$owner;
     }
 
     public static function inComponentScope(): bool
@@ -239,6 +296,8 @@ class NativeElementCollector
             );
         }
 
+        $element->placeAt(static::nextPosition());
+
         if (empty(static::$stack)) {
             static::$roots[] = $element;
         } else {
@@ -254,7 +313,8 @@ class NativeElementCollector
      */
     public static function capture(\Closure $render): Element
     {
-        return static::wrapRoots(static::captureRoots($render));
+        // Detached: wherever the caller puts it decides its position.
+        return static::wrapRoots(static::captureRoots($render))->placeAt(null);
     }
 
     /**
@@ -267,18 +327,19 @@ class NativeElementCollector
      */
     public static function captureRoots(\Closure $render): array
     {
-        $saved = [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack];
+        $saved = [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack, static::$positions];
         static::$stack = [];
         static::$roots = [];
         static::$textFrames = [];
         static::$keyPathStack = [];
+        static::$positions = [];
 
         try {
             $render();
 
             return array_values(static::$roots);
         } finally {
-            [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack] = $saved;
+            [static::$stack, static::$roots, static::$textFrames, static::$keyPathStack, static::$positions] = $saved;
         }
     }
 
@@ -306,7 +367,15 @@ class NativeElementCollector
             );
         }
 
-        static::$owner->mountChildComponent($tag, $attrs);
+        // One position for the whole child, so a child that renders more or
+        // fewer elements this frame doesn't move its parent's later children.
+        static::openBlock();
+
+        try {
+            static::$owner->mountChildComponent($tag, $attrs);
+        } finally {
+            static::closeBlock();
+        }
     }
 
     /**
@@ -327,16 +396,11 @@ class NativeElementCollector
      * derive the {nodeId, myKeyPath} pair to publish.
      *
      * Returns [id, myKeyPath]:
-     *   - id = 0           → no key set; let the C streaming writer
-     *                        auto-generate (legacy positional id).
-     *   - id = u32 hash    → caller passes this as the `$id` argument
-     *                        to nphp_node_open/_leaf to override the
-     *                        auto-id.
-     *   - myKeyPath = string for the depth-stack (the parent path of
-     *                 this node's children). Inherits the parent path
-     *                 when no `native:key` is set, so a keyed
-     *                 great-grandparent still informs descendants
-     *                 that *do* key themselves.
+     *   - id = u32 hash of myKeyPath, which the caller passes as the
+     *          `$id` argument to nphp_node_open/_leaf. The same tree gives
+     *          the same ids as the Element-tree path (Element::toArray()).
+     *   - myKeyPath = see Element::childKeyPath(). Containers push it as
+     *                 the parent path of their children.
      *
      * Mutates `$attrs` to strip the `native:key` entry so it doesn't
      * leak into props/layout/style downstream.
@@ -351,14 +415,90 @@ class NativeElementCollector
         // rejects ':' in names, so NativeTagPrecompiler renames it). Accept the
         // raw colon form too for the programmatic/streaming paths.
         $key = $attrs['native-key'] ?? $attrs['native:key'] ?? null;
-        if ($key === null) {
-            return [0, $parentPath];
+        unset($attrs['native-key'], $attrs['native:key']);
+
+        // Take the position even for a keyed node, as the Element-tree path
+        // does, so a key doesn't renumber the siblings after it.
+        $position = static::nextPosition();
+        $myKeyPath = Element::childKeyPath($parentPath, $key !== null ? (string) $key : null, $position);
+
+        return [Element::deriveNodeIdFromKeyPath($myKeyPath, static::$streamedIds), $myKeyPath];
+    }
+
+    // ── Positions ─────────────────────────────────────
+
+    /** The next position in the innermost open container or block. */
+    protected static function nextPosition(): string
+    {
+        if (static::$positions === []) {
+            static::$positions = [[['', 0, '', 0]]];
         }
 
-        unset($attrs['native-key'], $attrs['native:key']);
-        $myKeyPath = $parentPath.'/'.((string) $key);
+        $cursor = count(static::$positions) - 1;
+        $level = count(static::$positions[$cursor]) - 1;
 
-        return [Element::fnv1a32($myKeyPath), $myKeyPath];
+        return static::$positions[$cursor][$level][0].(static::$positions[$cursor][$level][1]++);
+    }
+
+    /** Number the children of a container that just opened from 0. */
+    protected static function enterContainer(): void
+    {
+        static::$positions[] = [['', 0, '', 0]];
+    }
+
+    protected static function exitContainer(): void
+    {
+        array_pop(static::$positions);
+    }
+
+    /**
+     * Start a block that takes one position whatever it emits: a Blade
+     * `@if`, `@unless`, `@foreach`, `@forelse`, `@for`, `@while` or
+     * `@switch` (the precompiler emits these calls around them), or a
+     * child component.
+     *
+     * Blocks inside a `<text>` are left out: its runs are emitted when the
+     * outermost text closes, after the block has already ended.
+     */
+    public static function openBlock(): void
+    {
+        if (static::$textFrames !== []) {
+            return;
+        }
+
+        $block = static::nextPosition();
+        static::$positions[count(static::$positions) - 1][] = [$block.':0.', 0, $block, 0];
+    }
+
+    /**
+     * Number what follows in the current block as a new segment: a branch
+     * of an `@if` or `@switch` (a fixed number, so each branch keeps its own
+     * ids) or the next loop iteration (null counts them).
+     */
+    public static function blockSegment(int|string|null $segment = null): void
+    {
+        $cursor = count(static::$positions) - 1;
+        $level = $cursor < 0 ? 0 : count(static::$positions[$cursor]) - 1;
+
+        if (static::$textFrames !== [] || $level === 0) {
+            return;
+        }
+
+        $current = &static::$positions[$cursor][$level];
+        $segment ??= $current[3]++;
+        $current[0] = $current[2].':'.$segment.'.';
+        $current[1] = 0;
+    }
+
+    public static function closeBlock(): void
+    {
+        $cursor = count(static::$positions) - 1;
+
+        if (static::$textFrames !== [] || $cursor < 0 || count(static::$positions[$cursor]) < 2) {
+            return;
+        }
+
+        array_pop(static::$positions[$cursor]);
     }
 
     // ── Streaming methods (write directly to C) ──────
@@ -367,25 +507,31 @@ class NativeElementCollector
     {
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
-            $attrs = array_merge($classAttrs, $attrs);
-            unset($attrs['class']);
+            if (count($attrs) === 1) {
+                $attrs = $classAttrs;
+            } else {
+                $attrs = array_merge($classAttrs, $attrs);
+                unset($attrs['class']);
+            }
         }
 
         [$nodeId, $myKeyPath] = static::resolveStreamingKey($attrs);
         static::$keyPathStack[] = $myKeyPath;
+        static::enterContainer();
 
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $props = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + static::buildLayoutAnimationProps($attrs)
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -432,11 +578,11 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $darkProps = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -444,7 +590,7 @@ class NativeElementCollector
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
             nphp_node_open(
-                $type,
+                $element->wireType(),
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
                 ! empty($props) ? $props : null,
@@ -460,14 +606,19 @@ class NativeElementCollector
         nphp_node_close();
         // Phase 1 — pop the matching key-path entry pushed by openStreaming.
         array_pop(static::$keyPathStack);
+        static::exitContainer();
     }
 
     public static function leafStreaming(string $type, array $attrs): void
     {
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
-            $attrs = array_merge($classAttrs, $attrs);
-            unset($attrs['class']);
+            if (count($attrs) === 1) {
+                $attrs = $classAttrs;
+            } else {
+                $attrs = array_merge($classAttrs, $attrs);
+                unset($attrs['class']);
+            }
         }
 
         // Phase 1 — leaves derive an id from `native:key` but don't
@@ -479,13 +630,14 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $props = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
                 + static::buildAnimationProps($attrs)
                 + static::buildHeroProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + static::buildLayoutAnimationProps($attrs)
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -527,11 +679,11 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs)
-                + static::buildGradientProps($attrs)
+            $darkProps = (isset($attrs['dark']) ? static::buildDarkProps($attrs) : [])
+                + (isset($attrs['gradient']) ? static::buildGradientProps($attrs) : [])
                 + static::buildCornerRadiusProps($attrs)
                 + static::buildBorderProps($attrs)
-                + static::buildVariantProps($attrs, fn () => static::makeElement($type));
+                + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -539,7 +691,7 @@ class NativeElementCollector
             $onLongPress = $element->getLongPressCallbackId(static::$callbacks);
 
             nphp_node_leaf(
-                $type,
+                $element->wireType(),
                 ! empty($layout) ? $layout : null,
                 ! empty($style) ? $style : null,
                 ! empty($props) ? $props : null,
@@ -788,16 +940,21 @@ class NativeElementCollector
         // SharedValue, write both the initial value (for static
         // fallback) AND a companion `{key}_sv` string that the native
         // renderer parses to subscribe to live updates.
-        foreach (['translate-x', 'translate-y', 'scale', 'rotate'] as $key) {
-            if (! isset($attrs[$key])) {
-                continue;
-            }
-            $value = $attrs[$key];
-            if ($value instanceof SharedValue) {
-                $props[$key] = $value->value();         // initial / current snapshot
-                $props[$key.'_sv'] = (string) $value;   // wire-encoded binding
-            } else {
-                $props[$key] = (float) $value;
+        if (isset($attrs['translate-x'])
+            || isset($attrs['translate-y'])
+            || isset($attrs['scale'])
+            || isset($attrs['rotate'])) {
+            foreach (['translate-x', 'translate-y', 'scale', 'rotate'] as $key) {
+                if (! isset($attrs[$key])) {
+                    continue;
+                }
+                $value = $attrs[$key];
+                if ($value instanceof SharedValue) {
+                    $props[$key] = $value->value();         // initial / current snapshot
+                    $props[$key.'_sv'] = (string) $value;   // wire-encoded binding
+                } else {
+                    $props[$key] = (float) $value;
+                }
             }
         }
 
@@ -824,6 +981,32 @@ class NativeElementCollector
         }
 
         return $props;
+    }
+
+    /**
+     * `animate-layout`: animate a container's children between frames (keyed
+     * children slide to their new place, new ones fade in, removed ones fade
+     * out). Bare `animate-layout` is true; `false` / `"false"` / `"0"` leave
+     * the prop off, so the wire is unchanged unless a container opts in.
+     */
+    public static function buildLayoutAnimationProps(array $attrs): array
+    {
+        $value = $attrs['animate-layout'] ?? $attrs['animateLayout'] ?? null;
+
+        return $value !== null && static::truthy($value) ? ['animate_layout' => true] : [];
+    }
+
+    /**
+     * A boolean attribute's value. A bare attribute compiles to `true`; the
+     * strings "false", "0", "no" and "off" are false.
+     */
+    protected static function truthy(mixed $value): bool
+    {
+        if (is_string($value)) {
+            return $value === '' || filter_var($value, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        return (bool) $value;
     }
 
     /**
@@ -932,30 +1115,21 @@ class NativeElementCollector
      */
     public static function buildCornerRadiusProps(array $attrs): array
     {
-        $corners = [
-            'radius_tl' => 'borderRadiusTopLeft',
-            'radius_tr' => 'borderRadiusTopRight',
-            'radius_br' => 'borderRadiusBottomRight',
-            'radius_bl' => 'borderRadiusBottomLeft',
-        ];
-
-        $authored = array_filter(
-            $corners,
-            fn (string $attr): bool => isset($attrs[$attr])
-        );
-
-        if ($authored === []) {
+        if (! isset($attrs['borderRadiusTopLeft'])
+            && ! isset($attrs['borderRadiusTopRight'])
+            && ! isset($attrs['borderRadiusBottomRight'])
+            && ! isset($attrs['borderRadiusBottomLeft'])) {
             return [];
         }
 
         $uniform = isset($attrs['borderRadius']) ? (float) $attrs['borderRadius'] : 0.0;
 
-        $props = [];
-        foreach ($corners as $prop => $attr) {
-            $props[$prop] = isset($attrs[$attr]) ? (float) $attrs[$attr] : $uniform;
-        }
-
-        return $props;
+        return [
+            'radius_tl' => isset($attrs['borderRadiusTopLeft']) ? (float) $attrs['borderRadiusTopLeft'] : $uniform,
+            'radius_tr' => isset($attrs['borderRadiusTopRight']) ? (float) $attrs['borderRadiusTopRight'] : $uniform,
+            'radius_br' => isset($attrs['borderRadiusBottomRight']) ? (float) $attrs['borderRadiusBottomRight'] : $uniform,
+            'radius_bl' => isset($attrs['borderRadiusBottomLeft']) ? (float) $attrs['borderRadiusBottomLeft'] : $uniform,
+        ];
     }
 
     /**
@@ -1244,7 +1418,9 @@ class NativeElementCollector
         }
 
         $element = static::createElement($type, $attrs);
+        $element->placeAt(static::nextPosition());
         static::$stack[] = $element;
+        static::enterContainer();
     }
 
     /**
@@ -1310,6 +1486,7 @@ class NativeElementCollector
         }
 
         $element = array_pop(static::$stack);
+        static::exitContainer();
 
         if (empty(static::$stack)) {
             static::$roots[] = $element;
@@ -1339,6 +1516,7 @@ class NativeElementCollector
         }
 
         $element = static::createElement($type, $attrs);
+        $element->placeAt(static::nextPosition());
 
         if (empty(static::$stack)) {
             static::$roots[] = $element;
@@ -1444,6 +1622,12 @@ class NativeElementCollector
      */
     public static function textLeaf(array $attrs): void
     {
+        if (empty(static::$textFrames)) {
+            static::leaf('text', static::applyAttributeWhitespace($attrs, static::whitespaceMode($attrs)));
+
+            return;
+        }
+
         static::textOpen($attrs);
         static::textClose();
     }
@@ -1473,11 +1657,11 @@ class NativeElementCollector
      */
     protected static function whitespaceMode(array $attrs): ?string
     {
-        if (! is_string($attrs['class'] ?? null)) {
+        if (! is_string($class = $attrs['class'] ?? null) || ! str_contains($class, 'whitespace-')) {
             return null;
         }
 
-        return TailwindParser::parse($attrs['class'])['whitespace'] ?? null;
+        return TailwindParser::parse($class)['whitespace'] ?? null;
     }
 
     /**
@@ -1519,7 +1703,9 @@ class NativeElementCollector
         return match ($mode ?? static::DEFAULT_WHITESPACE) {
             'pre-wrap' => $text,
             'pre-line' => static::collapsePreLine($text),
-            default => preg_replace('/\s+/', ' ', $text),
+            default => (! str_contains($text, '  ') && strpbrk($text, "\r\n\t\f\v") === false)
+                ? $text
+                : preg_replace('/\s+/', ' ', $text),
         };
     }
 
@@ -1540,11 +1726,21 @@ class NativeElementCollector
      */
     protected static function applyWhitespace(string $text, ?string $mode): string
     {
-        return match ($mode ?? static::DEFAULT_WHITESPACE) {
-            'pre-wrap' => $text,
-            'pre-line' => trim(static::collapsePreLine($text)),
-            default => preg_replace('/\s+/', ' ', trim($text)),
-        };
+        $resolvedMode = $mode ?? static::DEFAULT_WHITESPACE;
+
+        if ($resolvedMode === 'pre-wrap') {
+            return $text;
+        }
+
+        if ($resolvedMode === 'pre-line') {
+            return trim(static::collapsePreLine($text));
+        }
+
+        $trimmed = trim($text);
+
+        return (! str_contains($trimmed, '  ') && strpbrk($trimmed, "\r\n\t\f\v") === false)
+            ? $trimmed
+            : preg_replace('/\s+/', ' ', $trimmed);
     }
 
     /** Flush the currently-buffered raw text as a run of the top frame. */
@@ -1568,7 +1764,14 @@ class NativeElementCollector
      */
     protected static function normalizeRunText(string $raw, ?string $mode = null): string
     {
-        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        if ($raw === '') {
+            return '';
+        }
+
+        $text = str_contains($raw, '<') ? strip_tags($raw) : $raw;
+        if (str_contains($text, '&')) {
+            $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
+        }
 
         // Under the default collapse a purely-whitespace raw segment is
         // template formatting rather than content, so it drops before
@@ -1588,7 +1791,14 @@ class NativeElementCollector
      */
     protected static function normalizeLeafText(string $raw, ?string $mode = null): string
     {
-        $text = html_entity_decode(strip_tags($raw), ENT_QUOTES, 'UTF-8');
+        if ($raw === '') {
+            return '';
+        }
+
+        $text = str_contains($raw, '<') ? strip_tags($raw) : $raw;
+        if (str_contains($text, '&')) {
+            $text = html_entity_decode($text, ENT_QUOTES, 'UTF-8');
+        }
 
         if (trim($text) === '') {
             return '';
@@ -1658,6 +1868,8 @@ class NativeElementCollector
         // (e.g. an error thrown mid-render that skipped the matching
         // closeStreaming pops).
         static::$keyPathStack = [];
+        static::$positions = [];
+        static::$streamedIds = [];
         // Reset is only reachable at screen level (child scopes route
         // through capture()), so the render-context bookkeeping can be
         // cleared too — the screen's view()/partial() rebinds it right
@@ -1700,8 +1912,12 @@ class NativeElementCollector
         // Parse Tailwind classes into attribute array
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
-            $attrs = array_merge($classAttrs, $attrs);
-            unset($attrs['class']);
+            if (count($attrs) === 1) {
+                $attrs = $classAttrs;
+            } else {
+                $attrs = array_merge($classAttrs, $attrs);
+                unset($attrs['class']);
+            }
         }
 
         // Phase 1 — pull the key off here so applyAttributes downstream doesn't
@@ -1761,16 +1977,20 @@ class NativeElementCollector
         static::applyElementProps($element, $attrs);
 
         // Dark mode overrides — merge into element's extra props
-        $darkProps = static::buildDarkProps($attrs);
-        if (! empty($darkProps)) {
-            $element->mergeDarkProps($darkProps);
+        if (isset($attrs['dark'])) {
+            $darkProps = static::buildDarkProps($attrs);
+            if (! empty($darkProps)) {
+                $element->mergeDarkProps($darkProps);
+            }
         }
 
         // Gradient props — same central `setProp` path as animation below, so
         // `bg-gradient-to-*` works on every element type without per-element
         // wiring.
-        foreach (static::buildGradientProps($attrs) as $key => $value) {
-            $element->setProp($key, $value);
+        if (isset($attrs['gradient'])) {
+            foreach (static::buildGradientProps($attrs) as $key => $value) {
+                $element->setProp($key, $value);
+            }
         }
 
         // Animation props — push through `setProp` so builtin elements
@@ -1783,14 +2003,19 @@ class NativeElementCollector
         // Per-corner radius rides the prop bag for the same reason — the
         // packed node has only one `border_radius` float. Per-side border
         // widths and the border style likewise.
-        foreach (static::buildCornerRadiusProps($attrs) + static::buildBorderProps($attrs) as $key => $value) {
+        foreach (static::buildCornerRadiusProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
+        foreach (static::buildBorderProps($attrs) as $key => $value) {
             $element->setProp($key, $value);
         }
         // Responsive variants (`md:` / `lg:` classes) ride the prop bag as
         // one JSON string the native NodeView resolves against the live
         // window width — the packed node has no room for alternatives.
-        foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
-            $element->setProp($key, $value);
+        if (isset($attrs['variants'])) {
+            foreach (static::buildVariantProps($attrs, fn () => static::makeElement($type)) as $key => $value) {
+                $element->setProp($key, $value);
+            }
         }
 
         // Accessibility props — same central path, so every element honors
@@ -2016,6 +2241,11 @@ class NativeElementCollector
         if (isset($attrs['scroll-anchor'])) {
             $element->setProp('scroll_anchor', (string) $attrs['scroll-anchor']);
         }
+        // Layout animation between frames. Generic, so it works on column,
+        // row, stack, scroll-view and plugin containers such as list alike.
+        foreach (static::buildLayoutAnimationProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
+        }
         // Shared-element motion controls. The element's IDENTITY is its
         // `ref` (applied generically in applyCallbacks → Element::ref), so
         // these only shape HOW a matched pair travels.
@@ -2112,7 +2342,12 @@ class NativeElementCollector
 
     protected static function applyCustomElementEvents(Element $element, array $attrs): void
     {
-        foreach (NativeTagPrecompiler::customElementEvents() as $event) {
+        $events = NativeTagPrecompiler::customElementEvents();
+        if ($events === []) {
+            return;
+        }
+
+        foreach ($events as $event) {
             $attr = '_'.$event;
 
             if (! isset($attrs[$attr])) {
@@ -2155,6 +2390,20 @@ class NativeElementCollector
             // ScrollView::autoScrollTo() so both authoring styles behave alike.
             if (isset($attrs['autoScrollTo']) || isset($attrs['auto-scroll-to'])) {
                 $element->autoScrollTo((int) ($attrs['autoScrollTo'] ?? $attrs['auto-scroll-to']));
+            }
+
+            // `auto-scroll-animated`: animate every move, the first included
+            // (a request the scroll view opens with still jumps).
+            $animated = $attrs['auto-scroll-animated'] ?? $attrs['autoScrollAnimated'] ?? null;
+            if ($animated !== null) {
+                $element->autoScrollAnimated(static::truthy($animated));
+            }
+
+            // `:auto-scroll-token="$n"`: a new token re-requests the same
+            // child, which repeating `auto-scroll-to` alone can't do.
+            $token = $attrs['auto-scroll-token'] ?? $attrs['autoScrollToken'] ?? null;
+            if (is_string($token) || is_int($token)) {
+                $element->autoScrollToken($token);
             }
         }
 

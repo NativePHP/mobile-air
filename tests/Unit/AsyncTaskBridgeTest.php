@@ -133,7 +133,7 @@ it('gives each task to a free slot, not to the next slot in turn', function () {
     };
 
     $submit = $swiftFunction('private func submit(');
-    $run = $swiftFunction('private func run(');
+    $next = $swiftFunction('private func next(');
     $workerLoop = substr($android, strpos($android, 'private fun workerLoop'));
 
     expect($ios)->not->toContain('nextSlot')
@@ -141,10 +141,71 @@ it('gives each task to a free slot, not to the next slot in turn', function () {
         ->and($submit)->toContain('idleSlots.popLast()')
         ->and($submit)->toContain('waiting.append(taskId)')
         // ...which, once its task is done, takes the oldest waiting one or goes idle.
-        ->and(strpos($run, '_async_php_run'))->toBeLessThan(strpos($run, 'waiting.removeFirst()'))
-        ->and($run)->toContain('idleSlots.append(index)')
-        ->and(substr_count($android, 'LinkedBlockingQueue<String>()'))->toBe(1)
-        ->and($workerLoop)->toContain('queue.poll(');
+        ->and(strpos($next, 'waiting.removeFirst()'))->toBeLessThan(strpos($next, 'idleSlots.append(slot)'))
+        ->and($swiftFunction('private func run('))->toContain('self.next(on: slot)')
+        ->and(substr_count($android, 'private val queue = ArrayDeque<String>()'))->toBe(1)
+        ->and($workerLoop)->toContain('queue.pollFirst()');
+});
+
+/**
+ * Each slot is a whole Laravel boot, so none boot at launch: the first task
+ * boots one, and another only while tasks wait and there is room under the
+ * configured maximum, which never passes the C lane's ASYNC_PHP_MAX_SLOTS.
+ */
+it('boots async slots on demand, up to the configured maximum', function () {
+    $ios = asyncBridgeSource('xcode/NativePHP/Bridge/AsyncTaskExecutor.swift');
+    $android = asyncBridgeSource('androidstudio/app/src/main/java/com/nativephp/mobile/bridge/AsyncTaskExecutor.kt');
+    $c = asyncBridgeSource('xcode/Include/Bridge/PHP.c');
+
+    $start = substr($ios, strpos($ios, 'func start()'), 600);
+    $androidStart = substr($android, strpos($android, 'fun start()'), 600);
+
+    preg_match('/#define ASYNC_PHP_MAX_SLOTS (\d+)/', $c, $max);
+
+    expect($start)->not->toContain('_async_php_boot')
+        ->and($start)->not->toContain('bootSlot')
+        ->and($androidStart)->not->toContain('workerLoop')
+        ->and($ios)->toContain('waiting.count > bootingSlots,')
+        ->and($ios)->toContain('slots.count + bootingSlots < poolSize else {')
+        ->and($android)->toContain('queue.size > live - busy && live < maxSlots')
+        ->and($ios)->toContain('private static let hardMaxSlots = '.$max[1])
+        ->and($android)->toContain('private const val HARD_MAX_SLOTS = '.$max[1])
+        ->and($ios)->toContain('"async_max_slots"')
+        ->and($android)->toContain('"async_max_slots"');
+});
+
+it('boots async PHP contexts lazily on first task on both platforms', function () {
+    $ios = asyncBridgeSource('xcode/NativePHP/Bridge/AsyncTaskExecutor.swift');
+    $android = asyncBridgeSource('androidstudio/app/src/main/java/com/nativephp/mobile/bridge/AsyncTaskExecutor.kt');
+
+    $iosStart = substr($ios, strpos($ios, 'func start()'), strpos($ios, 'func dispatch(') - strpos($ios, 'func start()'));
+    $androidStart = substr($android, strpos($android, 'fun start()'), strpos($android, 'fun dispatch(') - strpos($android, 'fun start()'));
+
+    expect($iosStart)->not->toContain('_async_php_boot')
+        ->and($androidStart)->not->toContain('bootAsyncContext')
+        ->and($ios)->toContain('private func bootSlot(')
+        ->and($ios)->toContain('slots.count + bootingSlots < poolSize');
+});
+
+/**
+ * An idle slot shuts down only when nothing can still be using it: it must be
+ * on the idle list (so not running a task and not booting), in the same pool
+ * generation, and have taken no task since its timer was armed. The stop runs
+ * on the slot's own serial queue, and the slot stays counted until it is done.
+ */
+it('retires an idle iOS slot only when it is idle in the current generation', function () {
+    $ios = asyncBridgeSource('xcode/NativePHP/Bridge/AsyncTaskExecutor.swift');
+
+    $timer = substr($ios, strpos($ios, 'private func armIdleTimer('));
+    $timer = substr($timer, 0, strpos($timer, "\n    private func ", 1));
+
+    expect($timer)->toContain('self.generation == armedGeneration')
+        ->and($timer)->toContain('slot.useCount == use')
+        ->and($timer)->toContain('self.idleSlots.firstIndex(where: { $0 === slot })')
+        ->and($timer)->toContain('slot.queue.async {')
+        ->and(strpos($timer, 'slot.shutDown()'))->toBeLessThan(strpos($timer, 'self.slots.removeAll { $0 === slot }'))
+        ->and($ios)->not->toContain('retiring')
+        ->and($ios)->toContain('private let bootQueue = DispatchQueue(label: "nativephp-async-boot"');
 });
 
 it('logs a warning when native refuses the outcome of a task', function () {

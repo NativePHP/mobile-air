@@ -1,5 +1,6 @@
 <?php
 
+use Native\Mobile\Edge\Layouts\Builders\TabBarOptions;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\PestExpectations;
@@ -300,6 +301,64 @@ it('fails when an unexpected nav action is present', function () {
 it('hides the tab bar via the tabBarOptions builder', function () {
     Native::test(HiddenTabOptionsScreen::class, layout: ChromeTabsLayout::class)
         ->assertTabBarHidden();
+});
+
+it('highlights the tab requested by tabBarOptions across real routes and chrome paths', function (string $layoutClass, string $uri) {
+    $screen = new class extends ChromeScreen
+    {
+        public int $tabBarOptionsCalls = 0;
+
+        public function tabBarOptions(): ?TabBarOptions
+        {
+            $this->tabBarOptionsCalls++;
+
+            return TabBarOptions::make()->highlight('detail');
+        }
+    };
+
+    NativeRouter::register($uri, $screen::class, layout: $layoutClass);
+
+    $testable = Native::visit($uri)
+        ->assertTabActive('Detail');
+
+    expect($testable->instance()->tabBarOptionsCalls)->toBe(1);
+
+    if ($layoutClass === ChromeTabsLayout::class) {
+        $testable->assertElement('native_root_tabs', fn (array $n) => ($n['props']['tab_highlight'] ?? null) === 'detail');
+    }
+})->with([
+    'native chrome outside tab URL prefix' => [ChromeTabsLayout::class, '/people'],
+    'native chrome overriding URL match' => [ChromeTabsLayout::class, '/'],
+    'column chrome outside tab URL prefix' => [ChromeColumnLayout::class, '/people'],
+    'column chrome overriding URL match' => [ChromeColumnLayout::class, '/'],
+]);
+
+it('falls back to URL matching when tabBarOptions highlight names an unknown tab', function () {
+    $screen = new class extends ChromeScreen
+    {
+        public function tabBarOptions(): ?TabBarOptions
+        {
+            return TabBarOptions::make()->highlight('nonexistent');
+        }
+    };
+
+    NativeRouter::register('/detail/1', $screen::class, layout: ChromeTabsLayout::class);
+
+    Native::visit('/detail/1')
+        ->assertTabActive('Detail');
+});
+
+it('reads tab_highlight in both iOS and Android native tab renderers', function () {
+    $ios = file_get_contents(dirname(__DIR__, 2).'/resources/xcode/NativePHP/NativeRender/NativeRootTabsRenderer.swift');
+    $android = file_get_contents(dirname(__DIR__, 2).'/resources/androidstudio/app/src/main/java/com/nativephp/mobile/ui/nativerender/NativeRootTabsRenderer.kt');
+
+    expect($ios)
+        ->toContain('node.props.getString("tab_highlight", default: "")')
+        ->toContain('let owningIdx = highlightedIdx');
+
+    expect($android)
+        ->toContain('node.props.getString("tab_highlight", "")')
+        ->toContain('val activeTabIdx = (highlightedTabIdx ?:');
 });
 
 it('drops the tab bar entirely on the custom-Column chrome path', function () {

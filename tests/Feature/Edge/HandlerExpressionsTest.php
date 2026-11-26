@@ -18,8 +18,7 @@ beforeEach(function () {
     app('view')->addLocation(__DIR__.'/../../Fixtures/views');
 
     // `bottom_sheet` normally comes from a UI plugin.
-    $this->savedElements = ElementRegistry::all();
-    ElementRegistry::register('bottom_sheet', BottomSheet::class);
+    ElementRegistry::swap('bottom_sheet', BottomSheet::class);
 
     ComponentRegistry::reset();
     ComponentRegistry::components(['saving-child' => SavingChild::class]);
@@ -28,10 +27,6 @@ beforeEach(function () {
 
 afterEach(function () {
     ComponentRegistry::reset();
-    ElementRegistry::reset();
-    foreach ($this->savedElements as $type => $class) {
-        ElementRegistry::register($type, $class);
-    }
 });
 
 it('sets a property to a literal from a press', function () {

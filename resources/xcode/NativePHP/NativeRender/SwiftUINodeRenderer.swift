@@ -498,6 +498,15 @@ struct ResolvedNodeView: View, Equatable {
         // nothing else.
         if decorations.isEmpty {
             laidOut
+        } else if decorations.contains(.layoutAnimation) {
+            // Outside every other decoration, so the node's own frame,
+            // background and opacity move with its children. A branch of its
+            // own rather than another `nodeModifier(if:)` step in the chain,
+            // whose type already doubles with every step (see
+            // `NodeDecorationsModifier`).
+            laidOut
+                .modifier(NodeDecorationsModifier(node: node, decorations: decorations))
+                .modifier(NodeLayoutAnimationModifier(signature: node.structureSignature))
         } else {
             laidOut.modifier(NodeDecorationsModifier(node: node, decorations: decorations))
         }
@@ -572,7 +581,7 @@ struct ResolvedNodeView: View, Equatable {
 /// transitions and animation already rebuilt a node when they came or went.
 /// Everything else can't lose anything by being built again.
 struct NodeDecorations: OptionSet {
-    let rawValue: UInt16
+    let rawValue: UInt32
 
     static let fill = NodeDecorations(rawValue: 1 << 0)
     static let clip = NodeDecorations(rawValue: 1 << 1)
@@ -590,12 +599,13 @@ struct NodeDecorations: OptionSet {
     static let hidden = NodeDecorations(rawValue: 1 << 13)
     static let accessibility = NodeDecorations(rawValue: 1 << 14)
     static let ref = NodeDecorations(rawValue: 1 << 15)
+    static let layoutAnimation = NodeDecorations(rawValue: 1 << 16)
 
     /// The layers whose changes never rebuilt a node, kept on every node
     /// that keeps state.
     static let stable: NodeDecorations = [.fill, .border, .shadow, .opacity, .hidden]
 
-    init(rawValue: UInt16) {
+    init(rawValue: UInt32) {
         self.rawValue = rawValue
     }
 
@@ -672,6 +682,9 @@ struct NodeDecorations: OptionSet {
         }
         if !props.getString("ref", default: "").isEmpty {
             insert(.ref)
+        }
+        if props.getBool("animate_layout") {
+            insert(.layoutAnimation)
         }
     }
 }

@@ -178,8 +178,80 @@ class PHPBridge(private val context: Context) {
         @Volatile
         private var persistentBooted = false
 
+        // The ephemeral runtime is a PHP context on the thread that boots
+        // it, so runArtisan() boots, runs and shuts it down on one thread
+        // while holding this.
+        private val headlessLock = Any()
+
         init {
             System.loadLibrary("php_wrapper")
+        }
+
+        /**
+         * Makes the app's PHP usable without a screen, for work Android runs
+         * with no Activity: a launcher shortcut's trampoline, a WorkManager
+         * job, a broadcast receiver. Returns whether the persistent runtime
+         * is booted. To run a command from there, use runArtisan().
+         *
+         * Registers the bridge functions that need no Activity, sets up the
+         * environment and unpacks the bundle if needed, and boots the
+         * persistent runtime, or reuses the one the app already booted.
+         * MainActivity takes the same lock for the same steps, so whichever
+         * of the app and a caller gets there first boots, and the other waits
+         * and reuses it. The runtime stays up for the app. Returns false in
+         * classic mode, which has no persistent runtime, and when the boot
+         * fails.
+         *
+         * Blocks while PHP boots, a second or more on a cold start, so call
+         * it off the main thread.
+         */
+        @JvmStatic
+        fun bootRuntime(context: Context): Boolean {
+            val appContext = context.applicationContext
+
+            if (LaravelEnvironment.getRuntimeMode(appContext) == "classic") {
+                return false
+            }
+
+            registerContextBridgeFunctions(appContext)
+
+            return try {
+                LaravelEnvironment(appContext).initializeForBackground()
+                PHPBridge(appContext).bootPersistentRuntime()
+            } catch (e: RuntimeException) {
+                Log.e(TAG, "Headless PHP boot failed", e)
+                false
+            }
+        }
+
+        /**
+         * Runs an artisan command for work without a screen, booting PHP
+         * first as bootRuntime() does, and returns its output. Null when PHP
+         * isn't available, so the command didn't run.
+         *
+         * The command runs in the ephemeral runtime, a PHP context on the
+         * calling thread beside the app's: while a native screen is live,
+         * its event loop holds the persistent runtime's only thread.
+         *
+         * Blocks until the command finishes, so call it off the main thread.
+         */
+        @JvmStatic
+        fun runArtisan(context: Context, command: String): String? = synchronized(headlessLock) {
+            if (!bootRuntime(context)) {
+                return null
+            }
+
+            val bridge = PHPBridge(context.applicationContext)
+
+            if (bridge.nativeEphemeralBoot(bridge.persistentBootstrapScript) != 0) {
+                return null
+            }
+
+            try {
+                bridge.nativeEphemeralArtisan(command)
+            } finally {
+                bridge.nativeEphemeralShutdown()
+            }
         }
     }
 

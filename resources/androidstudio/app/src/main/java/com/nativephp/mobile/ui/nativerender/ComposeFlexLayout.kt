@@ -15,10 +15,29 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector2D
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.round
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
@@ -184,7 +203,9 @@ fun FlexContainer(
                 // because nodeLayout's size(0) / alpha(0) sit inside nodeStyle.
                 if ((node.layout?.display ?: 0) == Display.NONE) return@forEach
                 if ((node.layout?.positionType ?: 0) == PositionType.ABSOLUTE) {
-                    AbsolutePositionedChild(node = node, modifier = Modifier.matchParentSize())
+                    key(node.id, node.type) {
+                        AbsolutePositionedChild(node = node, modifier = Modifier.matchParentSize())
+                    }
                 }
             }
         }
@@ -302,6 +323,8 @@ private fun FlexColumn(
         else -> Alignment.Start // UNSET, START and STRETCH all start-align; STRETCH fills per-child
     }
 
+    val animation = if (LocalAnimateLayoutChildren.current) rememberLayoutAnimation(childNodes) else null
+
     Column(
         modifier = modifier,
         verticalArrangement = arrangement,
@@ -316,8 +339,15 @@ private fun FlexColumn(
             // a definite width of its own only if this column's is definite.
             val childDefinite = (LocalDefiniteWidth.current && columnChildStretches(node, align)) ||
                 ((node.layout?.widthMode == SizeMode.FIXED || node.layout?.widthMode == SizeMode.PERCENT) && (node.layout?.width ?: 0f) > 0f)
-            CompositionLocalProvider(LocalDefiniteWidth provides childDefinite) {
-                NodeView(node = node, overrideModifier = childMod)
+            // Keyed here, among the siblings, so a node's state follows its id
+            // when an earlier sibling comes or goes. NodeView's own key sits
+            // inside this call, where Compose only matches by position.
+            key(node.id, node.type) {
+                AnimatedLayoutChild(node, animation) { animated ->
+                    CompositionLocalProvider(LocalDefiniteWidth provides childDefinite) {
+                        NodeView(node = node, overrideModifier = animated.then(childMod))
+                    }
+                }
             }
         }
     }
@@ -333,6 +363,8 @@ private fun FlexRow(
     modifier: Modifier,
     content: @Composable () -> Unit
 ) {
+    val animation = if (LocalAnimateLayoutChildren.current) rememberLayoutAnimation(childNodes) else null
+
     val arrangement = when (justify) {
         JustifyContent.CENTER -> if (gap > 0f) Arrangement.spacedBy(gap.dp, Alignment.CenterHorizontally) else Arrangement.Center
         JustifyContent.END -> if (gap > 0f) Arrangement.spacedBy(gap.dp, Alignment.End) else Arrangement.End
@@ -363,8 +395,12 @@ private fun FlexRow(
                 val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
                 // same definite-width gate for flex-wrap children —
                 // the chips in a wrapping row are exactly the content-sized case.
-                CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
-                    NodeView(node = node, overrideModifier = childMod)
+                key(node.id, node.type) {
+                    AnimatedLayoutChild(node, animation) { animated ->
+                        CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                            NodeView(node = node, overrideModifier = animated.then(childMod))
+                        }
+                    }
                 }
             }
         }
@@ -392,8 +428,12 @@ private fun FlexRow(
                     // Outside a RowScope, buildChildModifier leaves out
                     // weight() and align(); the RowChildSpec carries them.
                     val childMod = buildChildModifier(node, isRow = true, align = align, scope = Unit)
-                    CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
-                        NodeView(node = node, overrideModifier = Modifier.layoutId(rowChildSpec(node, alignment)).then(childMod))
+                    key(node.id, node.type) {
+                        AnimatedLayoutChild(node, animation) { animated ->
+                            CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                                NodeView(node = node, overrideModifier = animated.then(Modifier.layoutId(rowChildSpec(node, alignment))).then(childMod))
+                            }
+                        }
                     }
                 }
             },
@@ -411,8 +451,12 @@ private fun FlexRow(
         flowNodes.forEach { node ->
             val childMod = buildChildModifier(node, isRow = true, align = align, scope = this)
             // a row child's width is definite only when it grows or is sized.
-            CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
-                NodeView(node = node, overrideModifier = childMod)
+            key(node.id, node.type) {
+                AnimatedLayoutChild(node, animation) { animated ->
+                    CompositionLocalProvider(LocalDefiniteWidth provides rowChildDefinite(node)) {
+                        NodeView(node = node, overrideModifier = animated.then(childMod))
+                    }
+                }
             }
         }
     }
@@ -421,6 +465,117 @@ private fun FlexRow(
 private class RowLayoutChoice {
     var isChosen = false
 }
+
+// MARK: - Layout animation (`animate-layout`)
+
+/**
+ * True for the flex container of a node with `animate-layout`, provided by
+ * `DefaultContainerNode` around its FlexContainer. Each animated child resets
+ * it to false, so it never reaches the container's grandchildren. A local
+ * rather than a parameter keeps FlexContainer's signature (and its
+ * baseline-profile entry) as it was.
+ */
+val LocalAnimateLayoutChildren = staticCompositionLocalOf { false }
+
+/**
+ * Motion state for the children of one container with `animate-layout`,
+ * kept by node id and type rather than in each child's composition. The
+ * container composes its children positionally, so a child that moves to
+ * another place is composed afresh there; its motion has to outlive that to
+ * slide from where it was.
+ */
+private class LayoutAnimationState(val scope: CoroutineScope) {
+    /** Whether the container has been on screen for a frame, so a child it
+     *  hasn't seen before is new and fades in. Not state: flipping it must
+     *  not recompose the container. */
+    var settled = false
+    val children = HashMap<Pair<Int, String>, ChildMotion>()
+
+    fun motion(node: NativeUINode): ChildMotion =
+        children.getOrPut(node.id to node.type) { ChildMotion(appearing = settled) }
+
+    /** Forgets children that have gone and starts the fades of new ones. */
+    fun afterFrame(childNodes: List<NativeUINode>) {
+        settled = true
+        val present = childNodes.mapTo(HashSet()) { it.id to it.type }
+        children.keys.retainAll(present)
+        for (motion in children.values) {
+            if (motion.alpha.targetValue < 1f) {
+                scope.launch { motion.alpha.animateTo(1f, tween(durationMillis = 220)) }
+            }
+        }
+    }
+}
+
+private class ChildMotion(appearing: Boolean) {
+    val alpha = Animatable(if (appearing) 0f else 1f)
+
+    /** Where the container placed the child last, before the offset below. */
+    val target = mutableStateOf<IntOffset?>(null)
+    var placement: Animatable<IntOffset, AnimationVector2D>? = null
+}
+
+@Composable
+private fun rememberLayoutAnimation(childNodes: List<NativeUINode>): LayoutAnimationState {
+    val scope = rememberCoroutineScope()
+    val state = remember { LayoutAnimationState(scope) }
+    SideEffect { state.afterFrame(childNodes) }
+    return state
+}
+
+/**
+ * One child of a container with `animate-layout`. [animation] is null when
+ * the container doesn't animate: the child is composed exactly as before.
+ * When it animates, the child gets [layoutMotion] and its own children don't
+ * inherit the container's `animate-layout`.
+ */
+@Composable
+private fun AnimatedLayoutChild(
+    node: NativeUINode,
+    animation: LayoutAnimationState?,
+    content: @Composable (Modifier) -> Unit,
+) {
+    if (animation == null) {
+        content(Modifier)
+        return
+    }
+    val animated = Modifier.layoutMotion(animation.motion(node), animation.scope)
+    CompositionLocalProvider(LocalAnimateLayoutChildren provides false) {
+        content(animated)
+    }
+}
+
+/** Spring for a child sliding to its new place, close to iOS's. */
+private val LayoutPlacementSpec = spring(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+    visibilityThreshold = IntOffset.VisibilityThreshold,
+)
+
+/**
+ * Slides the child from where it was placed last frame to where it is placed
+ * now, and fades it in when it's new. The Compose docs' "animate placement"
+ * pattern: the offset is the difference between the animated position and
+ * the real one, so layout itself is untouched.
+ *
+ * Runs on Compose's animation clock, which follows the system animator
+ * duration scale; at 0 (animations off) the child lands at once.
+ *
+ * Removed children aren't faded out: a plain Column has nothing left to draw
+ * once a child is gone. A lazy list's `animateItem()` does fade them.
+ */
+private fun Modifier.layoutMotion(motion: ChildMotion, scope: CoroutineScope): Modifier = this
+    .onPlaced { motion.target.value = it.positionInParent().round() }
+    .offset {
+        val now = motion.target.value ?: return@offset IntOffset.Zero
+        val anim = motion.placement
+            ?: Animatable(now, IntOffset.VectorConverter).also { motion.placement = it }
+        if (anim.targetValue != now) {
+            scope.launch { anim.animateTo(now, LayoutPlacementSpec) }
+        }
+        anim.value - now
+    }
+    .graphicsLayer { alpha = motion.alpha.value }
 
 /**
  * Does this row child keep its width when the row runs out of room?

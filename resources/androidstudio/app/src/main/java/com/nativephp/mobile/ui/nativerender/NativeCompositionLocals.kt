@@ -19,7 +19,7 @@ val LocalAvailableHeight = compositionLocalOf { 844f }
 /**
  * True when a root host renders a persistent background layer beneath the
  * content (e.g. mobile-ui's `background_layer` map). Chrome that normally
- * paints an opaque canvas — the tabs Scaffold — goes transparent so the
+ * paints an opaque canvas — the tabs and stack Scaffolds — goes transparent so the
  * layer shows through.
  */
 val LocalBackgroundLayerPresent = compositionLocalOf { false }

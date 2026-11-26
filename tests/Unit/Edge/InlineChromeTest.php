@@ -15,6 +15,7 @@ use Tests\Fixtures\Edge\FabScreen;
 use Tests\Fixtures\Edge\InlineBottomNavScreen;
 use Tests\Fixtures\Edge\InlineFadedGlassBottomBarScreen;
 use Tests\Fixtures\Edge\InlineGlassBottomBarScreen;
+use Tests\Fixtures\Edge\InlineScrollEdgeBottomBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarScreen;
 use Tests\Fixtures\Edge\InlineTopBarTitleScreen;
 use Tests\Fixtures\Edge\ScrollFabScreen;
@@ -129,6 +130,30 @@ it('auto-highlights prebuilt tab items only when none is explicitly active', fun
     [$home, $settings] = $explicit->tabElements();
     expect($home->isActive())->toBeFalse()
         ->and($settings->isActive())->toBeTrue();
+
+    // Explicit tabId override (from TabBarOptions::highlight()) wins over URL matching
+    // and over an inline active flag on another tab.
+    $forced = $make(false)->highlight('/people', 'settings');
+    [$home, $settings] = $forced->tabElements();
+    expect($home->isActive())->toBeFalse()
+        ->and($settings->isActive())->toBeTrue();
+
+    $forcedOverInline = $make(true)->highlight('/people', 'home');
+    [$home, $settings] = $forcedOverInline->tabElements();
+    expect($home->isActive())->toBeTrue()
+        ->and($settings->isActive())->toBeFalse();
+
+    // Unknown tabId falls back to URL matching when a URL is given, and preserves
+    // existing selection when no URL is given instead of matching '/'.
+    $fallbackUrl = $make(false)->highlight('/settings', 'missing');
+    [$home, $settings] = $fallbackUrl->tabElements();
+    expect($home->isActive())->toBeFalse()
+        ->and($settings->isActive())->toBeTrue();
+
+    $fallbackNoUrl = $make(true)->highlight(null, 'missing');
+    [$home, $settings] = $fallbackNoUrl->tabElements();
+    expect($home->isActive())->toBeFalse()
+        ->and($settings->isActive())->toBeTrue();
 });
 
 it('mixes builder tabs and prebuilt items in highlight and tabElements', function () {
@@ -236,6 +261,28 @@ it('sends no glass opacity for a glass bottom-bar without a suffix', function ()
     $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
 
     expect($bar['props'])->not->toHaveKey('glass_opacity');
+});
+
+it('carries the scroll edge effect on an inline bottom-bar to the bottom_bar marker, beside its glass', function () {
+    $tree = Native::test(InlineScrollEdgeBottomBarScreen::class)
+        ->assertSee('Composer')
+        ->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    // iOS 26+ draws the soft edge effect in place of the glass; older iOS
+    // still gets the glass.
+    expect($bar['props']['edge_blur'] ?? null)->toBe('soft')
+        ->and($bar['props']['glass'] ?? null)->toBe(1)
+        ->and($bar['props']['glass_opacity'] ?? null)->toBe(0.8);
+});
+
+it('sends no scroll edge effect for a bottom-bar that does not ask for one', function () {
+    $tree = Native::test(InlineGlassBottomBarScreen::class)->tree();
+
+    $bar = collect($tree['children'])->firstWhere('type', 'bottom_bar');
+
+    expect($bar['props'])->not->toHaveKey('edge_blur');
 });
 
 it('hoists an inline bottom-nav into a NativeRootTabs with no layout at all', function () {

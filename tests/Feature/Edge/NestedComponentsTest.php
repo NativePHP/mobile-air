@@ -22,7 +22,7 @@ beforeEach(function () {
 
     // `text_input` normally comes from a UI plugin; the child fixture's
     // native:model coverage needs a change-capable element.
-    ElementRegistry::register('text_input', TextInput::class);
+    ElementRegistry::swap('text_input', TextInput::class);
 
     ComponentRegistry::reset();
     ComponentRegistry::components([
