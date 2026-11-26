@@ -63,8 +63,7 @@ class TabBar
 
     private ?string $edgeBlur = null;
 
-    /** Null = the default: the bar hides on pushed screens on both platforms. */
-    private ?bool $hideOnPush = null;
+    private bool $hideOnPush = true;
 
     private ?string $presentationIdentifier = null;
 
@@ -98,7 +97,7 @@ class TabBar
         $bar->font = $props['font_name'] ?? null;
         $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
         $bar->edgeBlur = $props['edge_blur'] ?? null;
-        $bar->hideOnPush = isset($props['hide_on_push']) ? (bool) $props['hide_on_push'] : null;
+        $bar->hideOnPush = (bool) ($props['hide_on_push'] ?? true);
         $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
         $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
 
@@ -420,8 +419,8 @@ class TabBar
         if ($this->edgeBlur !== null) {
             $attrs['edgeBlur'] = $this->edgeBlur;
         }
-        if ($this->hideOnPush !== null) {
-            $attrs['hideOnPush'] = $this->hideOnPush;
+        if ($this->hideOnPush) {
+            $attrs['hideOnPush'] = true;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
@@ -484,8 +483,8 @@ class TabBar
         if ($this->edgeBlur !== null) {
             $attrs['edgeBlur'] = $this->edgeBlur;
         }
-        if ($this->hideOnPush !== null) {
-            $attrs['hideOnPush'] = $this->hideOnPush;
+        if ($this->hideOnPush) {
+            $attrs['hideOnPush'] = true;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
