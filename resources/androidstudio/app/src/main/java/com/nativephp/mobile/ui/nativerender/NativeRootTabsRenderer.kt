@@ -50,6 +50,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -193,8 +194,26 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // even when the tab index doesn't change.
     val currentUri = node.props.getString("current_uri", "")
 
+    // Whether this screen was pushed inside the active tab (e.g. chats list
+    // → chat detail). Mirrors iOS, where the per-tab NavigationStack gives
+    // pushed levels a back button and `HideTabBarOnPushModifier` hides the
+    // tab bar. Same depth reconciliation as `PerTabNavigationCoordinator`:
+    // each tab remembers the router depth seen at its own URL (1 until
+    // learned), and a deeper `stack_depth` is a pushed level. A screen
+    // swapped in at the root depth (a cold deep link, a `replace()`)
+    // stays a root.
+    val stackDepth = node.props.getInt("stack_depth", 0)
+    val activeTabUrl = tabs.getOrNull(activeTabIdx)?.props?.getString("url", "").orEmpty()
+    val atTabRoot = activeTabUrl.isNotEmpty() && tabUriPath(currentUri) == tabUriPath(activeTabUrl)
+    val tabRootDepths = remember { mutableStateMapOf<String, Int>() }
+    SideEffect {
+        if (atTabRoot && stackDepth > 0) tabRootDepths[activeTabId] = stackDepth
+    }
+    val isPushed = !atTabRoot && stackDepth > (tabRootDepths[activeTabId] ?: 1)
+
     // Folded NavBar config — present when the layout supplied both bars.
-    val navBack = node.props.getBool("nav_back")
+    // Pushed levels always get a back button, as on iOS.
+    val navBack = node.props.getBool("nav_back") || isPushed
     val navTitle = node.props.getString("nav_title", "")
     val navSubtitle = node.props.getString("nav_subtitle", "")
     val navBgArgb = node.props.getColor("nav_background_color", 0)
@@ -225,7 +244,6 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // keeps a pushed-over screen alive and shows it again on back, so its
     // query outlives the push. A level's query goes when PHP pops or
     // replaces that level, and a tab change replaces the whole stack.
-    val stackDepth = node.props.getInt("stack_depth", 0)
     val searchLevel = "$stackDepth|$currentUri"
     val searchQueries = remember { mutableStateMapOf<String, String>() }
     val searchLevels = remember { HashMap<Int, String>() }
@@ -483,10 +501,10 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         bottomBar = bottomBar@{
             // Mirror iOS's `HideTabBarOnPushModifier`: pushed-detail
             // screens hide the tab strip entirely (iMessage / Music /
-            // Mail pattern). Driven by the `hide_tab_bar` wire prop set
-            // by the screen via `$hidesTabBar` or
-            // `tabBarOptions()->hidden()`.
-            if (hideTabBar) return@bottomBar
+            // Mail pattern). Driven by the push depth above, or by the
+            // `hide_tab_bar` wire prop set by the screen via `$hidesTabBar`
+            // or `tabBarOptions()->hidden()`.
+            if (hideTabBar || isPushed) return@bottomBar
 
             Column {
                 // Persistent accessory pinned above the NavigationBar
@@ -1075,4 +1093,14 @@ internal fun InlineNavSearchField(
             },
         )
     }
+}
+
+/**
+ * The path a navigation URI addresses, without its query string, fragment
+ * or trailing slash — so `/chats?x=1` and `/chats/` both read as `/chats`.
+ * Mirrors iOS's `PerTabNavigationCoordinator.path(of:)`.
+ */
+private fun tabUriPath(uri: String): String {
+    val path = uri.substringBefore('#').substringBefore('?')
+    return "/" + path.trim('/')
 }
