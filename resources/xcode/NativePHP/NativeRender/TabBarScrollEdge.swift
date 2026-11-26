@@ -18,6 +18,11 @@ import SwiftUI
 /// bottom bar keeps the system effect (`hasBottomBar`): the bar's own edge
 /// blur sits inside this modifier and wins for the bar's region, and a band
 /// over the level would blur the bar itself. Before iOS 26 this does nothing.
+///
+/// Each style applies only while the tab bar is actually on screen across
+/// the foot of the level (`TabBarEdgeEffect`). Content can hide the bar from
+/// inside a root level (a UIKit navigation controller hosted there that
+/// pushes its own pages, say), and core's own signals never see that.
 struct TabBarEdgeBlurModifier: ViewModifier {
     let style: String
     var hasBottomBar: Bool = false
@@ -26,14 +31,10 @@ struct TabBarEdgeBlurModifier: ViewModifier {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             switch style {
-            case "none":
-                content.scrollEdgeEffectHidden(true, for: .bottom)
-            case "hard":
-                content.scrollEdgeEffectStyle(.hard, for: .bottom)
+            case "none", "hard":
+                content.modifier(TabBarEdgeEffect(style: style))
             case "soft" where !hasBottomBar:
-                content
-                    .scrollEdgeEffectHidden(true, for: .bottom)
-                    .overlay { TabBarProgressiveBlur() }
+                content.modifier(TabBarEdgeEffect(style: style))
             default:
                 content
             }
@@ -45,6 +46,169 @@ struct TabBarEdgeBlurModifier: ViewModifier {
         #endif
     }
 }
+
+#if compiler(>=6.2)
+/// `TabBarEdgeBlurModifier`'s styles, applied while `TabBarVisibilityProbe`
+/// sees the tab bar across the foot of the level and dropped while it is
+/// hidden or off screen, however that came about. Then no band is drawn,
+/// and nothing hides or restyles the bottom edge effect, so a page shown in
+/// the level can blur under its own bottom bar.
+///
+/// The structure stays the same either way: only the modifiers' values and
+/// the band change, so the level's content keeps its identity and state.
+@available(iOS 26.0, *)
+private struct TabBarEdgeEffect: ViewModifier {
+    let style: String
+    @State private var tabBarShows = true
+
+    func body(content: Content) -> some View {
+        content
+            .scrollEdgeEffectHidden(tabBarShows && style != "hard", for: .bottom)
+            .scrollEdgeEffectStyle(tabBarShows && style == "hard" ? .hard : nil, for: .bottom)
+            .overlay {
+                if tabBarShows && style == "soft" {
+                    TabBarProgressiveBlur()
+                }
+            }
+            .background {
+                TabBarVisibilityProbe { tabBarShows = $0 }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+    }
+}
+
+/// Says whether the tab bar shows across the foot of the view it backs: in
+/// the window, not hidden or faded out (it or anything above it), and lying
+/// over the bottom half of the view wider than it is tall. A bar at the top
+/// or side, or the whole-window frame a resize can leave for a moment, does
+/// not count. It reports changes only.
+///
+/// It looks again on the next turn after anything that can move or hide the
+/// bar: joining a window, a layout or safe-area change (hiding the bar moves
+/// the level's bottom inset), and the bar's own hidden, alpha or frame
+/// changing. Hiding fades the bar to clear before setting `isHidden`, and
+/// showing does the reverse, so either is seen as it starts.
+@available(iOS 26.0, *)
+private struct TabBarVisibilityProbe: UIViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ view: ProbeView, context: Context) {
+        view.onChange = onChange
+    }
+
+    static func dismantleUIView(_ view: ProbeView, coordinator: ()) {
+        view.stopObserving()
+    }
+
+    final class ProbeView: UIView {
+        var onChange: ((Bool) -> Void)?
+        private var reported: Bool?
+        private weak var observedBar: UITabBar?
+        private var observations: [NSKeyValueObservation] = []
+        private var checkScheduled = false
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            isAccessibilityElement = false
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil {
+                stopObserving()
+            } else {
+                scheduleCheck()
+            }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            scheduleCheck()
+        }
+
+        override func safeAreaInsetsDidChange() {
+            super.safeAreaInsetsDidChange()
+            scheduleCheck()
+        }
+
+        func stopObserving() {
+            observations.forEach { $0.invalidate() }
+            observations = []
+            observedBar = nil
+        }
+
+        /// On the next turn, once: the callbacks come inside UIKit and
+        /// SwiftUI updates, and the probe's owner changes state on a report.
+        private func scheduleCheck() {
+            guard !checkScheduled else { return }
+            checkScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.checkScheduled = false
+                self.check()
+            }
+        }
+
+        private func check() {
+            guard window != nil, let bar = tabBarController()?.tabBar else { return }
+            observe(bar)
+            let shows = showsAcrossFoot(bar)
+            guard shows != reported else { return }
+            reported = shows
+            onChange?(shows)
+        }
+
+        private func showsAcrossFoot(_ bar: UITabBar) -> Bool {
+            guard let window, bar.window === window else { return false }
+            var view: UIView? = bar
+            while let current = view, current !== window {
+                if current.isHidden || current.alpha < 0.01 { return false }
+                view = current.superview
+            }
+            let overlap = bounds.intersection(bar.convert(bar.bounds, to: self))
+            return !overlap.isNull
+                && overlap.width > overlap.height
+                && overlap.midY > bounds.midY
+        }
+
+        private func observe(_ bar: UITabBar) {
+            guard observedBar !== bar else { return }
+            stopObserving()
+            observedBar = bar
+            observations = [
+                bar.observe(\.isHidden) { [weak self] _, _ in self?.scheduleCheck() },
+                bar.observe(\.alpha) { [weak self] _, _ in self?.scheduleCheck() },
+                bar.observe(\.frame) { [weak self] _, _ in self?.scheduleCheck() },
+                bar.observe(\.center) { [weak self] _, _ in self?.scheduleCheck() },
+            ]
+        }
+
+        private func tabBarController() -> UITabBarController? {
+            var responder: UIResponder? = self
+            while let current = responder {
+                if let controller = current as? UIViewController, let tabs = controller.tabBarController {
+                    return tabs
+                }
+                responder = current.next
+            }
+            return nil
+        }
+    }
+}
+#endif
 
 /// A progressive blur from `reach` points above the tab bar to the bottom of
 /// the screen, laid over a tab's content and under the tab bar (which UIKit
@@ -135,10 +299,10 @@ struct TabBarProgressiveBlur: View {
 /// `amount` by a `UIViewPropertyAnimator` (public API; how weak blurs are
 /// usually made on iOS). The tint scales down with the blur.
 ///
-/// A paused animator doesn't survive everything: the view re-arms it just
-/// after it joins a window, when the app becomes active again and when light
-/// or dark mode changes, and stops it when it leaves the window or is
-/// dismantled (releasing a paused animator traps).
+/// A paused animator doesn't survive everything: the view re-arms it a turn
+/// after it joins a window, the app becomes active again or light or dark
+/// mode changes, and stops it when it leaves the window or is dismantled
+/// (releasing a paused animator traps).
 @available(iOS 26.0, *)
 private struct PartialBlurView: UIViewRepresentable {
     let amount: CGFloat
@@ -174,7 +338,12 @@ final class PartialBlurUIView: UIVisualEffectView {
             DispatchQueue.main.async { self?.arm() }
         }
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: PartialBlurUIView, _) in
-            view.arm()
+            // Not straight away: this runs before the effect view rebuilds
+            // its filters for the new appearance. Armed now, the animator
+            // only holds the old appearance's filters, and any the new one
+            // adds (light mode's brightness, for one) sit at full strength.
+            // Twelve of those stack into an opaque strip.
+            DispatchQueue.main.async { [weak view] in view?.arm() }
         }
     }
 
