@@ -9,15 +9,16 @@ use Tests\Fixtures\Edge\KeepOnPushTabsLayout;
 use Tests\Fixtures\Edge\KeepTabBarScreen;
 
 /**
- * Whether the tab bar stays on screens pushed inside a tab. Unset leaves the
- * renderers' default (both hide it); `hideOnPush(false)` keeps it. The
- * renderers read `hide_on_push` and the per-screen `show_tab_bar`.
+ * Whether the tab bar stays on screens pushed inside a tab. It hides by
+ * default on both platforms, and only `hideOnPush(false)` is sent, since the
+ * renderers treat a missing `hide_on_push` as true. They also read the
+ * per-screen `show_tab_bar`.
  */
 beforeEach(function () {
     app('view')->addLocation(__DIR__.'/../../Fixtures/views');
 });
 
-it('leaves hide-on-push unset by default so platforms keep their behaviour', function () {
+it('sends nothing by default, which the renderers read as hide on push', function () {
     expect(TabBar::make()->toRootProps())->not->toHaveKey('hideOnPush');
 
     $props = Native::test(ChromeScreen::class, layout: ChromeTabsLayout::class)->tree()['props'];
@@ -26,13 +27,15 @@ it('leaves hide-on-push unset by default so platforms keep their behaviour', fun
         ->and($props)->not->toHaveKey('show_tab_bar');
 });
 
-it('serializes an explicit hideOnPush choice', function (bool $hide) {
-    expect(TabBar::make()->hideOnPush($hide)->toRootProps())->toBe(['hideOnPush' => $hide])
-        ->and(TabBar::make()->hideOnPush($hide)->toElement()->getRawProps()['hide_on_push'])->toBe($hide);
-})->with([true, false]);
+it('serializes hideOnPush(false)', function () {
+    expect(TabBar::make()->hideOnPush(false)->toRootProps())->toBe(['hideOnPush' => false])
+        ->and(TabBar::make()->hideOnPush(false)->toElement()->getRawProps()['hide_on_push'])->toBeFalse();
+});
 
-it('defaults hideOnPush() to hiding', function () {
-    expect(TabBar::make()->hideOnPush()->toRootProps())->toBe(['hideOnPush' => true]);
+it('sends nothing for hideOnPush(true), the same as the default', function () {
+    expect(TabBar::make()->hideOnPush(true)->toRootProps())->toBe([])
+        ->and(TabBar::make()->hideOnPush()->toRootProps())->toBe([])
+        ->and(TabBar::make()->hideOnPush(true)->toElement()->getRawProps())->not->toHaveKey('hide_on_push');
 });
 
 it('publishes hide_on_push on the native root tabs', function () {
@@ -47,7 +50,7 @@ it('reads hide-on-push from an inline bottom-nav', function (mixed $value, bool 
     $nav->applyAttributes(['hide-on-push' => $value]);
 
     expect($nav->getRawProps()['hide_on_push'])->toBe($expected)
-        ->and(TabBar::fromElement($nav)->toRootProps()['hideOnPush'])->toBe($expected);
+        ->and(TabBar::fromElement($nav)->toRootProps()['hideOnPush'] ?? true)->toBe($expected);
 })->with([
     'string false' => ['false', false],
     'bound false' => [false, false],

@@ -235,8 +235,8 @@ class TabBar
 
     /**
      * Whether the bar hides on screens pushed inside a tab (a detail screen
-     * opened from a tab's root). Left unset, the bar hides on pushed screens
-     * on both iOS and Android. Set it to choose:
+     * opened from a tab's root). By default the bar hides on pushed screens
+     * on both iOS and Android, and only false is sent to the renderers:
      *
      *   TabBar::make()->hideOnPush(false)   // keep the bar on pushed screens
      *   TabBar::make()->hideOnPush()        // hide it on pushed screens
@@ -419,8 +419,8 @@ class TabBar
         if ($this->edgeBlur !== null) {
             $attrs['edgeBlur'] = $this->edgeBlur;
         }
-        if ($this->hideOnPush) {
-            $attrs['hideOnPush'] = true;
+        if (! $this->hideOnPush) {
+            $attrs['hideOnPush'] = false;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
@@ -483,8 +483,8 @@ class TabBar
         if ($this->edgeBlur !== null) {
             $attrs['edgeBlur'] = $this->edgeBlur;
         }
-        if ($this->hideOnPush) {
-            $attrs['hideOnPush'] = true;
+        if (! $this->hideOnPush) {
+            $attrs['hideOnPush'] = false;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
