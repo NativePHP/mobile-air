@@ -132,6 +132,14 @@ struct ContentView: View {
                 AppState.shared.markInitialized()
             }
         }
+        .onAppear {
+            // When PHP was already booted (by an App Intent, say), the first
+            // tree can be published before this view mounts, and onChange
+            // never sees it change.
+            if nativeUIBridge.isActive && !AppState.shared.isInitialized {
+                AppState.shared.markInitialized()
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
         // Push a native AppearanceChanged event to PHP when the system theme
         // flips (Control Center toggle, sunset auto-switch). Drives the
