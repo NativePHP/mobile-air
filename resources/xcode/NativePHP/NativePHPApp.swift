@@ -153,14 +153,13 @@ struct NativePHPApp: App {
         // → applyPendingUpdates), and only when that plugin is installed
         // (NATIVEPHP_OTA). Do not re-enable a Bifrost client here.
 
-        // 8. Defer queue worker boot — start AFTER critical path completes
-        //    so it doesn't compete for CPU/memory during first page render
+        // 8. Background lanes. Neither boots PHP here: the queue worker boots
+        //    when a job is pushed (or one was left queued last run), and the
+        //    async pool boots a slot on the first AsyncTask::dispatch().
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
 
-            // Async task lane (AsyncTask::dispatch()) — pool boots on a
-            // background thread, so this returns immediately.
             NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
             AsyncTaskExecutor.shared.start()
         } else {

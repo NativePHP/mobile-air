@@ -292,11 +292,11 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 // Async task lane (AsyncTask::dispatch()). Started BEFORE the first
                 // route runs, not with the deferred queue worker below: a screen may
                 // dispatch while it mounts, and a dispatch with no executor fails.
-                // Pool threads boot their PHP context lazily on first task, so this
-                // costs nothing until work is dispatched.
+                // Pool threads start on the first task and boot their PHP context
+                // then, so this costs nothing until work is dispatched.
                 if (!isFinishing && !isDestroyed &&
                     phpBridge.isPersistentMode() && asyncExecutor == null) {
-                    asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+                    asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor.fromBundleMeta(this, phpBridge).also { it.start() }
                 }
 
                 when (plan) {
@@ -318,9 +318,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                     }
                 }
 
-                // Defer the background queue worker — it boots a SECOND full Laravel
-                // runtime that would contend for CPU during first paint. Start it a
-                // couple of seconds after the UI is up. Guarded against a fast destroy,
+                // Defer the background queue worker. start() boots nothing unless
+                // jobs were left queued last run (then it boots a SECOND full Laravel
+                // runtime, which would contend for CPU during first paint); after
+                // that it boots when a job is pushed. Guarded against a fast destroy,
                 // against double-starting if the activity was re-created, and against
                 // a runtime reboot in flight, which starts its own worker when done.
                 Handler(Looper.getMainLooper()).postDelayed({
@@ -328,7 +329,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         if (!isFinishing && !isDestroyed && !rebootingRuntime &&
                             phpBridge.isPersistentMode() && queueWorker == null) {
                             Log.d("MainActivity", "▶️ Starting deferred background queue worker")
-                            queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+                            queueWorker = PHPQueueWorker(phpBridge, PHPQueueWorker.pendingMarkerFor(this)).also { it.start() }
                         }
                     }
                 }, WORKER_START_DELAY_MS)
@@ -456,10 +457,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         phpBridge.bootPersistentRuntime()
 
         synchronized(queueWorkerLock) {
-            queueWorker = PHPQueueWorker(phpBridge).also { it.start() }
+            queueWorker = PHPQueueWorker(phpBridge, PHPQueueWorker.pendingMarkerFor(this)).also { it.start() }
             rebootingRuntime = false
         }
-        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor(phpBridge).also { it.start() }
+        asyncExecutor = com.nativephp.mobile.bridge.AsyncTaskExecutor.fromBundleMeta(this, phpBridge).also { it.start() }
     }
 
     private fun handleNativeSessionExit(rawResponse: String) {

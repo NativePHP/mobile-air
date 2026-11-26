@@ -232,10 +232,24 @@ the call site.
 
 ## Concurrency
 
-A bounded pool of async PHP contexts (default 4). Each context is a booted
-interpreter reused across tasks (boot cost paid once, like the queue worker).
-Tasks beyond the pool size queue in native FIFO; the native side `log()`s when a
-task waits so bounded concurrency is never silent. Ordering across tasks is not
+A bounded pool of async PHP contexts, booted on demand. None boot at launch:
+each is a full Laravel boot with its own heap, and most apps run a task now and
+then, if at all. Android's pool threads always booted their context on their
+first task; iOS has done the same since #749, which boots slots one at a time
+on a serial queue so two boots never race inside `ephemeral_embed_init()`. The
+first dispatch boots one context (the task waits for it, so the first task pays
+the boot), and another boots only while more tasks are waiting than contexts
+are on their way, up to `config('nativephp.async.max_slots')` (default 2, env
+`NATIVEPHP_ASYNC_MAX_SLOTS`). The C lane's `ASYNC_PHP_MAX_SLOTS` (4) stays the
+hard ceiling. A context with no task for `nativephp.async.idle_timeout` seconds
+(default 60, 0 keeps it) shuts down and frees its memory; the next task boots a
+new one. Only an idle context is ever retired, never one running a task or still
+booting. Both values reach native through `bundle_meta.json`, so they change
+with a native build, not an OTA bundle.
+
+A booted context is reused across tasks. Tasks beyond the pool size queue in
+native FIFO; the native side `log()`s when a task waits so bounded concurrency
+is never silent. Ordering across tasks is not
 guaranteed — each `finished()` fires when its own task completes.
 
 ---
@@ -274,10 +288,12 @@ an app gets without reinstalling it.
 Both executors **stop synchronously**: `stop()` drains in-flight tasks and shuts
 each context down before returning, because callers stop the pool immediately
 before a persistent-runtime reboot and `php_embed_shutdown` frees Zend module
-state a live async context still references. On iOS the pool boots asynchronously,
-so `stop()` waits out an in-flight boot rather than returning early — bailing
-would leave C slots allocated with nothing able to reclaim them, and `start()`
-refusing to run twice would then drop every later dispatch for the life of the app.
+state a live async context still references. On iOS slots boot asynchronously, so
+`stop()` waits out an in-flight boot rather than returning early, and every
+`start()`/`stop()` bumps a generation counter: a boot that finishes after a stop
+sees the new generation and shuts its own slot down instead of leaking it. An
+idle-timeout shutdown checks the same generation, and runs on the slot's own
+serial queue, so `stop()` waits for one already under way.
 
 The lane also avoids `setenv()`. The single-threaded lanes set
 `APP_RUNNING_IN_CONSOLE`/`PHP_SELF` that way, but this one runs several contexts
