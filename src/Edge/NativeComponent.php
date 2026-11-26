@@ -2814,13 +2814,15 @@ abstract class NativeComponent
             return false;
         }
 
-        // Exact correlation by id (camera). If that misses — either no id came
-        // back (some native paths drop it across a lifecycle bounce, e.g. the
-        // gallery picker) or it didn't match — fall back to the single in-flight
-        // callback for this event class.
+        // Exact correlation by id (camera). Only when no id came back (some
+        // native paths drop it across a lifecycle bounce, e.g. the gallery
+        // picker) fall back to the single in-flight callback for this event
+        // class. An id that matches nothing belongs to an operation that
+        // registered no callback; handing it another operation's callback would
+        // run that callback with the wrong result and leave its own unanswered.
         $callback = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass) : null;
 
-        if ($callback === null) {
+        if ($callback === null && blank($id)) {
             [$id, $callback] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
         }
 
