@@ -655,32 +655,49 @@ class NativeTagPrecompiler
         return ['', ''];
     }
 
-    /** Offset just past the `)` closing the `(` at $offset, or null if none. */
+    /**
+     * Offset just past the `)` closing the `(` at $offset, or null if none.
+     *
+     * Picks the same `)` Blade does in BladeCompiler::compileStatements():
+     * the first one where the arguments so far tokenise as PHP with as many
+     * `(` as `)`, ending in that `)`. Strings and comments are tokens of
+     * their own, so a bracket or quote inside one doesn't count.
+     */
     private function endOfParentheses(string $html, int $offset): ?int
     {
-        $depth = 0;
-        $quote = null;
-        $length = strlen($html);
+        $end = $offset;
 
-        for ($i = $offset; $i < $length; $i++) {
-            $c = $html[$i];
+        while (($end = strpos($html, ')', $end)) !== false) {
+            $end++;
 
-            if ($quote !== null) {
-                if ($c === '\\') {
-                    $i++;
-                } elseif ($c === $quote) {
-                    $quote = null;
-                }
-            } elseif ($c === '"' || $c === "'") {
-                $quote = $c;
-            } elseif ($c === '(') {
-                $depth++;
-            } elseif ($c === ')' && --$depth === 0) {
-                return $i + 1;
+            if ($this->hasBalancedParentheses(substr($html, $offset, $end - $offset))) {
+                return $end;
             }
         }
 
         return null;
+    }
+
+    /** BladeCompiler::hasEvenNumberOfParentheses(), which is protected. */
+    private function hasBalancedParentheses(string $expression): bool
+    {
+        $tokens = token_get_all('<?php '.$expression);
+
+        if (end($tokens) !== ')') {
+            return false;
+        }
+
+        $depth = 0;
+
+        foreach ($tokens as $token) {
+            if ($token === '(') {
+                $depth++;
+            } elseif ($token === ')') {
+                $depth--;
+            }
+        }
+
+        return $depth === 0;
     }
 
     /**
