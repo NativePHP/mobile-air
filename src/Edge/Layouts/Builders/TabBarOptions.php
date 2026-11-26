@@ -46,7 +46,13 @@ class TabBarOptions
         return new self;
     }
 
-    /** Hide the tab bar on this screen. Detail / pushed-content pattern. */
+    /**
+     * Hide the tab bar on this screen. Detail / pushed-content pattern.
+     *
+     * `hidden(false)` does the opposite: it keeps the bar on this screen
+     * even when the screen is pushed inside a tab and the bar would
+     * otherwise hide on push (see TabBar::hideOnPush()).
+     */
     public function hidden(bool $hidden = true): self
     {
         $this->hidden = $hidden;
