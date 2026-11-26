@@ -88,8 +88,20 @@ trait ValidatesInput
      */
     public function validateOnly(string $field, ?array $rules = null, array $messages = [], array $attributes = []): array
     {
-        $rules ??= $this->validationRules();
-        $fieldRules = array_key_exists($field, $rules) ? [$field => $rules[$field]] : [];
+        $fieldRules = [];
+
+        // A wildcard key such as `items.*.name` covers `items.0.name`, one
+        // segment per `*`, as it does when Laravel expands the rules.
+        foreach ($rules ?? $this->validationRules() as $key => $rule) {
+            $pattern = '#^'.str_replace('\*', '[^.]*', preg_quote((string) $key, '#')).'\z#u';
+
+            if (preg_match($pattern, $field) === 1) {
+                $fieldRules[$field] = [
+                    ...$fieldRules[$field] ?? [],
+                    ...(is_string($rule) ? explode('|', $rule) : (is_array($rule) ? $rule : [$rule])),
+                ];
+            }
+        }
 
         try {
             $validated = $this->makeValidator($fieldRules, $messages, $attributes)->validate();
