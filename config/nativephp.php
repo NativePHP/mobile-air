@@ -284,6 +284,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | OPcache
+    |--------------------------------------------------------------------------
+    |
+    | file_cache: keep compiled PHP on disk between launches, so a cold start
+    | doesn't compile the framework again. The cache is emptied whenever the
+    | app installs a new bundle. Turn it off to compile on every launch.
+    |
+    */
+
+    'opcache' => [
+        'file_cache' => env('NATIVEPHP_OPCACHE_FILE_CACHE', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |
@@ -319,6 +334,21 @@ return [
         'storage/framework/testing',
         'storage/logs/laravel.log',
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Vendor Files to Keep
+    |--------------------------------------------------------------------------
+    |
+    | Inside vendor/, files PHP never reads on the device are left out of the
+    | bundle: docs, lock files and native plugin sources such as '*.swift'
+    | and '*.kt' (see BundleExclusions::VENDOR_PATTERNS). List any of those
+    | patterns here to ship the matching files anyway, for example 'docs'.
+    | Licence and notice files (LICENSE*, COPYING*, NOTICE*) always ship.
+    |
+    */
+
+    'cleanup_keep_vendor_files' => [],
 
     /*
     |--------------------------------------------------------------------------

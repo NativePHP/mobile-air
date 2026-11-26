@@ -124,6 +124,10 @@ class AppUpdateManager {
             return
         }
 
+        // The compiled scripts describe the app about to be replaced, and the
+        // migrate below already runs PHP against the new one.
+        PHPIni.clearFileCache()
+
         do {
             // Remove existing app if any
             if FileManager.default.fileExists(atPath: appPath) {
@@ -322,6 +326,9 @@ class AppUpdateManager {
             try FileManager.default.moveItem(atPath: extractPath, toPath: appPath)
             excludeFromBackup(appPath)
 
+            // Before the migrate below runs PHP against the new files.
+            PHPIni.clearFileCache()
+
             // Restore the stashed .env over whatever the zip extracted: the
             // environment belongs to the installed app, not to the payload.
             if hadEnv, FileManager.default.fileExists(atPath: envStashPath) {
@@ -506,6 +513,11 @@ class AppUpdateManager {
                 try? FileManager.default.removeItem(at: entry)
             }
         }
+
+        // The bootstrap cache files just removed are regenerated at the same
+        // paths, and opcache doesn't check timestamps in release, so drop
+        // whatever the post-extraction artisan run compiled as well.
+        PHPIni.clearFileCache()
 
         NativeLog.debug("🧹 Cleared compiled caches after extraction")
     }

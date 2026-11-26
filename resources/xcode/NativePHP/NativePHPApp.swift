@@ -495,27 +495,9 @@ struct NativePHPApp: App {
     private func createPhpIni() -> String {
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? "Path not found"
 
-        // Same file PersistentPHPRuntime.createPhpIni writes; keep the two in step.
-        let phpIni = """
-        curl.cainfo="\(caPath)"
-        openssl.cafile="\(caPath)"
-        upload_max_filesize=16M
-        post_max_size=16M
-        memory_limit=128M
-        """
-
-        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let path = supportDir.appendingPathComponent("php.ini")
-
-        do {
-            try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-
-            try phpIni.write(to: path, atomically: true, encoding: .utf8)
-        } catch {
-            NativeLog.error("Couldn't create php.ini")
-        }
-
-        return supportDir.appendingPathComponent("php.ini").path(percentEncoded: false)
+        // Artisan and classic requests start PHP again for every call, so
+        // they never use the file cache (see PHPIni.write).
+        return PHPIni.write(caPath: caPath, fileCache: false)
     }
 
     private func createDatabase() {
@@ -652,6 +634,8 @@ struct NativePHPApp: App {
         envKeys.append("CONTENT_TYPE")
 
         // Equivalent to PHP_EMBED_START_BLOCK
+        PHPIni.noteStartup()
+
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)
 
@@ -923,6 +907,8 @@ struct NativePHPApp: App {
 
         let appPath = AppUpdateManager.shared.getAppPath()
         let phpFilePath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/artisan.php"
+
+        PHPIni.noteStartup()
 
         argv.withUnsafeMutableBufferPointer { bufferPtr in
             php_embed_init(argc, bufferPtr.baseAddress)

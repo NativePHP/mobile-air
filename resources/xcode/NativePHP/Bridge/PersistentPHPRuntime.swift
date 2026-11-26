@@ -82,7 +82,10 @@ final class PersistentPHPRuntime {
 
         // PHP INI
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? ""
-        setenv("PHPRC", createPhpIni(caPath: caPath), 1)
+        // Only the first PHP start-up in the process can use the file cache;
+        // see PHPIni.write.
+        setenv("PHPRC", PHPIni.write(caPath: caPath, fileCache: !PHPIni.hasStarted), 1)
+        PHPIni.noteStartup()
 
         // APP_KEY from Keychain
         if let appKey = NativePHPApp.getOrGenerateAppKey() {
@@ -217,34 +220,6 @@ final class PersistentPHPRuntime {
 
         _persistent_php_shutdown()
         isBooted = false
-    }
-
-    // MARK: - Helpers
-
-    private func createPhpIni(caPath: String) -> String {
-        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let iniPath = supportDir.appendingPathComponent("php.ini")
-
-        // upload_max_filesize and post_max_size match the bridge's 16MB
-        // response cap instead of PHP's 2MB/8MB defaults; BridgeDispatcher
-        // applies them to request bodies the way PHP does. They go here, not
-        // in the embed SAPI's ini_entries: php_embed_init() replaces those.
-        //
-        // memory_limit: 128M for every context. The persistent runtime, which
-        // runs the native session, raises its own to 512M when it boots (see
-        // raise_persistent_memory_limit in PHP.c).
-        let phpIni = """
-        curl.cainfo="\(caPath)"
-        openssl.cafile="\(caPath)"
-        upload_max_filesize=16M
-        post_max_size=16M
-        memory_limit=128M
-        """
-
-        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-        try? phpIni.write(to: iniPath, atomically: true, encoding: .utf8)
-
-        return iniPath.path(percentEncoded: false)
     }
 }
 

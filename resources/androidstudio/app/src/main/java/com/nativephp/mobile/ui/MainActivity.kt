@@ -1,5 +1,6 @@
 package com.nativephp.mobile.ui
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -934,6 +935,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         NativeLog.d("CookieInfo") { "All cookies cleared" }
     }
 
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            NativeElementBridge.trimMemory()
+        }
+    }
 
     override fun onDestroy() {
         super.onDestroy()

@@ -335,6 +335,35 @@ elsewhere with `ComponentRegistry::components(['user-card' => UserCard::class])`
   not the screen. Children nest recursively; child navigation calls (`navigate()`, `back()`) forward to the
   screen.
 - Slot content between component tags is not supported (it throws) — pass data through props.
+- **Memoise list rows with `#[Memo]`.** The parent's Blade view re-runs on every event, so without it every
+  child in a long list rebuilds its subtree on every tap or keystroke. Put `#[Memo]` on a row, card or chip
+  component whose `render()` reads only its own public properties; it then re-renders only when its props,
+  state or `@event` bindings change. Don't use it on a child whose view reads the clock, session, config or
+  database, because it would keep showing stale output.
+
+## Performance
+
+Every event re-renders the screen's component tree in PHP and publishes it to native, so the cost of a frame
+grows with the size of the tree the screen owns.
+
+- **One screen per route.** Navigate between screens with `navigate()`/`back()` and the native stack or tab
+  bar. Don't fake navigation by holding several "screens" as state in one component and swapping what
+  `render()` shows: every event then re-renders all of them, and you lose the native push/pop animation and
+  swipe-back.
+- **Extract repeated UI into `#[Memo]` child components** (see above) so unchanged rows are reused as built.
+- **Use `native:list` for long or paginated content.** It is lazy on both platforms; `on-end-reached` loads
+  the next page.
+- **Keep the first frame fast.** Do slow work (network calls, big queries) off the render path: render a
+  placeholder first (`#[Lazy]` on the screen, or a loading state) and fetch with `$this->async(...)` /
+  `AsyncTask`, which runs on a background PHP lane and updates state in its callback.
+- **Request images at the size you show them.** When the image host supports it (most CDNs take a `width`
+  or similar query parameter), ask for roughly the displayed width times the screen scale instead of the
+  original.
+- **Keep public state small.** Store ids and the fields a view needs, not whole API responses or models with
+  every relation loaded.
+- **Measure on a release build only.** Time and compare performance with `native:run ios --build=release` on a
+  device or a Release archive, never a debug build. A debug build bundles dev packages, runs with `APP_DEBUG` on,
+  compiles native code unoptimised and logs much more, so its numbers say little about what users get.
 
 ## Native Chrome — Composable Blade Elements (Layouts Optional)
 
@@ -585,6 +614,10 @@ rest with the `nativephp-webview-to-native` skill.
 - Using the loop index as a child component `key` — keys must be stable domain ids or state sticks to the
   wrong child on reorder
 - Duplicating the same card/row Blade across screens instead of extracting a nested child component
+- Holding every screen (or every tab's stack) as state in one component and swapping what `render()` shows,
+  instead of separate routes with `navigate()`/`back()` and native chrome; it re-renders everything on every
+  event and loses native transitions
+- Long lists of child components without `#[Memo]` on the row component
 - Putting slot content between component tags (`<native:user-card>…</native:user-card>`) — it throws; pass
   data via props
 - Expecting Vite HMR without passing `--vite` (opt-in since v4)

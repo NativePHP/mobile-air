@@ -32,6 +32,9 @@ elements (`native:column`, `native:text`, `native:button`, …).** This is the w
   props, its own persistent state, and `emit()` events bubbling to `@event` tag bindings / `#[On('event')]`
   listeners. Prefer extracting a reusable child component over duplicating Blade across screens; give list
   children a stable domain `key` (never the loop index).
+- Give each screen its own route and navigate with `navigate()`/`back()`; never hold several screens as state
+  in one component. Mark list row components `#[Memo]` when their view reads only their own properties, use
+  `native:list` for long lists, and fetch slow data with `$this->async(...)` after a placeholder renders.
 - Use `native:icon` (SF Symbols on iOS, Material Icons on Android) for iconography — never emoji characters in
   UI text, labels, or buttons, unless the user explicitly asks for emojis. Prefer the typed icon enums
   (`App\Icons\Ios`, `App\Icons\Android`, `App\Icons\AndroidOutlined`) bound via the `:ios` / `:android`
