@@ -56,7 +56,7 @@ class AppUpdateManager {
         do {
             try url.setResourceValues(values)
         } catch {
-            print("⚠️ Could not exclude \(url.lastPathComponent) from backup: \(error)")
+            NativeLog.error("⚠️ Could not exclude \(url.lastPathComponent) from backup: \(error)")
         }
     }
 

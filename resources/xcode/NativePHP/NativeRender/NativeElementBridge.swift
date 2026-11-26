@@ -641,7 +641,7 @@ final class NativeElementBridge {
     /// Reject frames with REUSE markers until one without arrives, and ask
     /// PHP to send one. The screen keeps the last tree that was built.
     private static func requestFullFrame(_ reason: String) {
-        print("NativeElementBridge: rejecting frames until a full one arrives: \(reason)")
+        NativeLog.debug("NativeElementBridge: rejecting frames until a full one arrives: \(reason)")
         awaitingFullFrame = true
         nativeElementWriteEvent(Int32(EventType.fullFrame), 0, 0, nil, 0)
     }
