@@ -674,10 +674,14 @@ static void do_artisan(const char *command) {
     clear_output_buffer();
 
     setenv("APP_RUNNING_IN_CONSOLE", "true", 1);
+    setenv("PHP_SELF", "artisan.php", 1);
 
+    // Symfony Console reads $_SERVER['PHP_SELF']. Only a request sets it on
+    // this thread, so an artisan call before the first screen would fail.
     char eval_code[4096];
     snprintf(eval_code, sizeof(eval_code),
         "try {\n"
+        "    $_SERVER['PHP_SELF'] = 'artisan.php';\n"
         "    echo \\Native\\Mobile\\Runtime::artisan('%s');\n"
         "} catch (\\Throwable $e) {\n"
         "    echo 'Artisan error: ' . $e->getMessage();\n"
