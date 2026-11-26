@@ -43,12 +43,12 @@ func getIconForName(_ iconName: String) -> String {
     // Attempt smart fallback: try common SF Symbol patterns
     let autoSymbol = tryAutoConvertIcon(iconName)
     if let symbol = autoSymbol {
-        print("✅ Auto-resolved icon: \(iconName) -> \(symbol)")
+        NativeLog.debug("✅ Auto-resolved icon: \(iconName) -> \(symbol)")
         return symbol
     }
 
     // Final fallback: default circle icon
-    print("⚠️ Unknown icon: \(iconName), using default circle")
+    NativeLog.debug("⚠️ Unknown icon: \(iconName), using default circle")
     return "circle.fill"
 }
 

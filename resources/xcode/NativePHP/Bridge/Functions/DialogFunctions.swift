@@ -110,12 +110,12 @@ enum DialogFunctions {
             let durationParam = parameters["duration"] as? String ?? "long"
             let duration: TimeInterval = durationParam.lowercased() == "short" ? 2.0 : 4.0
 
-            print("Dialog.Toast called with message: \(message)")
+            NativeLog.debug("Dialog.Toast called with message: \(message)")
 
             // Show toast on main thread
             DispatchQueue.main.async {
                 ToastManager.shared.show(message: message, duration: duration)
-                print("Toast displayed")
+                NativeLog.debug("Toast displayed")
             }
 
             return ["success": true]

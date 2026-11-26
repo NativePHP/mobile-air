@@ -15,6 +15,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Holds Laravel's APP_KEY (and any keys it replaced) encrypted under a key
@@ -58,9 +59,9 @@ class AppKeyStore(context: Context) {
         if (legacyFile.exists()) legacyFile.delete()
 
         if (legacyKey != null) {
-            Log.d(TAG, "🔐 Moved legacy APP_KEY into the Keystore (rotated: ${keys.current != legacyKey})")
+            NativeLog.d(TAG) { "🔐 Moved legacy APP_KEY into the Keystore (rotated: ${keys.current != legacyKey})" }
         } else {
-            Log.d(TAG, "🔐 Generated new APP_KEY")
+            NativeLog.d(TAG) { "🔐 Generated new APP_KEY" }
         }
 
         return Result(keys, migrated = legacyKey != null)

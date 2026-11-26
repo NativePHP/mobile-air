@@ -1,6 +1,5 @@
 package com.nativephp.mobile.utils
 
-import android.util.Log
 import android.webkit.WebView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
@@ -36,7 +35,7 @@ class NativeActionCoordinator : Fragment() {
     }
 
     fun launchAlert(title: String, message: String, buttons: Array<String>, styles: Array<String>, id: String?, eventClass: String?) {
-        Log.d("NativeActionCoordinator", "🚨 launchAlert called with title: '$title', message: '$message', buttons: ${buttons.contentToString()}, styles: ${styles.contentToString()}, id: '$id', eventClass: '$eventClass'")
+        NativeLog.d("NativeActionCoordinator") { "🚨 launchAlert called with title: '$title', message: '$message', buttons: ${buttons.contentToString()}, styles: ${styles.contentToString()}, id: '$id', eventClass: '$eventClass'" }
 
         val context = requireContext()
 
@@ -45,7 +44,7 @@ class NativeActionCoordinator : Fragment() {
 
         // Use NativeActions to show the alert with callback
         NativeActions.showAlert(context, title, message, buttons, styles) { index, label ->
-            Log.d("NativeActionCoordinator", "🔘 Alert button clicked: index=$index, label='$label'")
+            NativeLog.d("NativeActionCoordinator") { "🔘 Alert button clicked: index=$index, label='$label'" }
 
             // Create payload for the ButtonPressed event with optional id
             val payload = JSONObject().apply {
@@ -66,7 +65,7 @@ class NativeActionCoordinator : Fragment() {
      * surfaces. See NativeElementBridge.sendNativeEvent.
      */
     private fun dispatch(event: String, payloadJson: String) {
-        Log.d("NativeActionCoordinator", "📢 Dispatching event: $event")
+        NativeLog.d("NativeActionCoordinator") { "📢 Dispatching event: $event" }
 
         NativeElementBridge.sendNativeEvent(event, payloadJson)
     }
@@ -136,7 +135,7 @@ class NativeActionCoordinator : Fragment() {
                 })();
             """.trimIndent()
 
-            Log.d("NativeActionCoordinator", "📢 Injecting JS event: $event")
+            NativeLog.d("NativeActionCoordinator") { "📢 Injecting JS event: $event" }
 
             webView.evaluateJavascript(js, null)
         }
@@ -158,7 +157,7 @@ class NativeActionCoordinator : Fragment() {
          * This is a helper method for activities/fragments that need to dispatch events
          */
         fun dispatchEvent(activity: FragmentActivity, event: String, payloadJson: String) {
-            Log.d("NativeActionCoordinator", "📢 Static dispatch event: $event")
+            NativeLog.d("NativeActionCoordinator") { "📢 Static dispatch event: $event" }
             val coordinator = install(activity)
             coordinator.dispatch(event, payloadJson)
         }

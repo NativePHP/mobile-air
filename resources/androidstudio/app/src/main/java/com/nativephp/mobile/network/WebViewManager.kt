@@ -23,6 +23,7 @@ import com.nativephp.mobile.security.LaravelSecurity
 import com.nativephp.mobile.security.LogRedaction
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
+import com.nativephp.mobile.utils.NativeLog
 
 class WebViewManager(
     private val context: Context,
@@ -89,7 +90,7 @@ class WebViewManager(
                 RequestBodyShim.SCRIPT,
                 APP_ORIGIN_RULES
             )
-            Log.d(TAG, "✅ Request body shim installed at document start")
+            NativeLog.d(TAG) { "✅ Request body shim installed at document start" }
         } catch (e: Exception) {
             Log.w(TAG, "⚠️ Could not install the request body shim at document start: ${e.message}")
         }
@@ -174,10 +175,7 @@ class WebViewManager(
             }
 
             override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
-                Log.d(
-                    "$TAG-Console",
-                    "${consoleMessage.message()} -- From line ${consoleMessage.lineNumber()}"
-                )
+                NativeLog.d("$TAG-Console") { "${consoleMessage.message()} -- From line ${consoleMessage.lineNumber()}" }
                 return true
             }
 
@@ -201,7 +199,7 @@ class WebViewManager(
                         request: WebResourceRequest
                     ): Boolean {
                         val url = request.url.toString()
-                        Log.d(TAG, "🪟 onCreateWindow resolved: $url")
+                        NativeLog.d(TAG) { "🪟 onCreateWindow resolved: $url" }
                         if ((url.startsWith("http://") || url.startsWith("https://")) &&
                             !url.contains("127.0.0.1") &&
                             !url.contains("localhost")
@@ -237,13 +235,13 @@ class WebViewManager(
             ): Boolean {
                 val url = request.url.toString()
                 val method = request.method
-                Log.d("$TAG-DEBUG", "URL: $url, Method: $method")
-                Log.d(TAG, "⬆️ shouldOverrideUrlLoading: $url")
+                NativeLog.d("$TAG-DEBUG") { "URL: $url, Method: $method" }
+                NativeLog.d(TAG) { "⬆️ shouldOverrideUrlLoading: $url" }
 
                 // Handle system URL schemes (tel:, mailto:, sms:, geo:) - open with system handler
                 val scheme = request.url.scheme?.lowercase()
                 if (scheme in listOf("tel", "mailto", "sms", "geo")) {
-                    Log.d("WebView", "📞 Intercepted system URL scheme: $url")
+                    NativeLog.d("WebView") { "📞 Intercepted system URL scheme: $url" }
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                     intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     try {
@@ -256,7 +254,7 @@ class WebViewManager(
                 }
 
                 if (url.startsWith("nativephp://")) {
-                    Log.d("WebView", "🔗 Intercepted deep link inside WebView: $url")
+                    NativeLog.d("WebView") { "🔗 Intercepted deep link inside WebView: $url" }
 
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                     intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -282,7 +280,7 @@ class WebViewManager(
                 ) {
                     val rewritten = "http://127.0.0.1${request.url.encodedPath ?: "/"}" +
                         (request.url.encodedQuery?.let { "?$it" } ?: "")
-                    Log.d(TAG, "🛰️ [JUMP-FORWARD] Rewriting session link → $rewritten")
+                    NativeLog.d(TAG) { "🛰️ [JUMP-FORWARD] Rewriting session link → $rewritten" }
                     view.loadUrl(rewritten)
                     return true
                 }
@@ -304,7 +302,7 @@ class WebViewManager(
                     val fullUrl = "http://127.0.0.1${uri.encodedPath}" +
                         (uri.encodedQuery?.let { "?$it" } ?: "")
 
-                    Log.d(TAG, "🛠️ Rewriting relative URL with query: $fullUrl")
+                    NativeLog.d(TAG) { "🛠️ Rewriting relative URL with query: $fullUrl" }
                     view.loadUrl(fullUrl)
                     return true
                 }
@@ -319,10 +317,10 @@ class WebViewManager(
                 val url = request.url.toString()
                 val method = request.method
 
-                Log.d(TAG, "🔄 Intercepting $method request to $url")
+                NativeLog.d(TAG) { "🔄 Intercepting $method request to $url" }
 
                 request.requestHeaders.forEach { (key, value) ->
-                    Log.d("$TAG-Headers", "📋 $key: ${LogRedaction.header(key, value)}")
+                    NativeLog.d("$TAG-Headers") { "📋 $key: ${LogRedaction.header(key, value)}" }
                 }
 
                 if (url.startsWith("http://") && !url.contains(".") && !url.contains("127.0.0.1") && !url.contains("localhost")) {
@@ -330,7 +328,7 @@ class WebViewManager(
                     val path = if (url.contains("/")) "/${url.substringAfter("/")}" else "/"
                     val correctedUrl = "http://127.0.0.1/$host$path"
 
-                    Log.d(TAG, "🔄 Correcting malformed URL from $url to $correctedUrl")
+                    NativeLog.d(TAG) { "🔄 Correcting malformed URL from $url to $correctedUrl" }
 
                     // Create a modified request with the corrected URL
                     val correctedUri = Uri.parse(correctedUrl)
@@ -349,13 +347,13 @@ class WebViewManager(
 
                 if (!url.contains("127.0.0.1") && !url.contains("localhost")) {
                     // This is an external resource - let the WebView handle it directly
-                    Log.d(TAG, "📡 External resource - passing to system: $url")
+                    NativeLog.d(TAG) { "📡 External resource - passing to system: $url" }
                     return null // Returning null lets the WebView load it normally
                 }
 
                 // Allow Vite dev server (port 5173) to handle its own requests, including WebSocket upgrades for HMR
                 if (url.contains(":5173")) {
-                    Log.d(TAG, "🔥 Vite dev server request - allowing native WebView handling: $url")
+                    NativeLog.d(TAG) { "🔥 Vite dev server request - allowing native WebView handling: $url" }
                     return null
                 }
 
@@ -371,13 +369,13 @@ class WebViewManager(
                         if (JumpWebViewSession.isActive) {
                             phpHandler.forwardToRemote(request, null as CapturedBody?)
                         } else {
-                            Log.d(TAG, "🖼️ Handling asset request")
+                            NativeLog.d(TAG) { "🖼️ Handling asset request" }
                             phpHandler.handleAssetRequest(url, request.requestHeaders)
                         }
                     }
                     // Regular PHP requests
                     url.contains("127.0.0.1") -> {
-                        Log.d(TAG, "🌐 Handling PHP request")
+                        NativeLog.d(TAG) { "🌐 Handling PHP request" }
                         val requestMethod = request.method.uppercase()
                         val postData: CapturedBody? = if (requestMethod != "GET" &&
                             requestMethod != "HEAD" && requestMethod != "OPTIONS") {
@@ -408,7 +406,7 @@ class WebViewManager(
                         }
                     }
                     else -> {
-                        Log.d(TAG, "↪️ Delegating to system handler: $url")
+                        NativeLog.d(TAG) { "↪️ Delegating to system handler: $url" }
                         null
                     }
                 }
@@ -416,7 +414,7 @@ class WebViewManager(
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                Log.d(TAG, "🚀 Page started loading: $url")
+                NativeLog.d(TAG) { "🚀 Page started loading: $url" }
 
                 // A WebView page load means we are (back) in WebView mode. For a
                 // Route::native screen the response's native-tree publish re-sets
@@ -457,7 +455,7 @@ class WebViewManager(
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
-                Log.d(TAG, "✅ Page finished loading: $url")
+                NativeLog.d(TAG) { "✅ Page finished loading: $url" }
 
                 // Inject safe area insets again to ensure they're set. This
                 // writes to the root webview, so an embedded one leaves it be.
@@ -559,7 +557,7 @@ class WebViewManager(
     """.trimIndent()
 
         view.evaluateJavascript(jsCode) { result ->
-            Log.d(TAG, "JavaScript injection result: $result")
+            NativeLog.d(TAG) { "JavaScript injection result: $result" }
         }
     }
 
@@ -584,7 +582,7 @@ class WebViewManager(
             ) { _, message, _, _, _ ->
                 message.data?.let { jsBridge.handleMessage(it) }
             }
-            Log.d(TAG, "✅ AndroidPOST registered as an origin-scoped WebMessageListener")
+            NativeLog.d(TAG) { "✅ AndroidPOST registered as an origin-scoped WebMessageListener" }
         } else {
             // Pre-WebMessageListener WebView (very old / unupdated). Fall back to
             // addJavascriptInterface so forms and every non-GET request still
@@ -640,7 +638,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
         val envelope = try {
             JSONObject(raw)
         } catch (e: Exception) {
-            Log.e("$TAG-JS", "Ignoring a malformed AndroidPOST message: ${e.message}")
+            Log.e("$TAG-JS", "Ignoring a malformed AndroidPOST message: ${e.javaClass.simpleName}")
             return
         }
         val method = envelope.optString("method")
@@ -699,7 +697,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
     fun commitBody(key: String) {
         val body = pending.remove(key) ?: return
         val captured = CapturedBody(body.bytes.toByteArray(), body.contentType)
-        Log.d("$TAG-JS", "📦 Body captured for ${body.url} key=$key (${captured.size} bytes, type=${body.contentType.ifEmpty { "none" }})")
+        NativeLog.d("$TAG-JS") { "📦 Body captured for ${body.url} key=$key (${captured.size} bytes, type=${body.contentType.ifEmpty { "none" }})" }
 
         phpBridge.storePostBody(key, captured)
         if (body.isForm) {
@@ -720,7 +718,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
     /** Text-only capture kept for older injected scripts. */
     @JavascriptInterface
     fun logPostData(data: String, url: String, headers: String, requestId: String) {
-        Log.d("$TAG-JS", "📦 POST data captured (fetch/XHR) for: $url reqId=$requestId (length=${data.length})")
+        NativeLog.d("$TAG-JS") { "📦 POST data captured (fetch/XHR) for: $url reqId=$requestId (length=${data.length})" }
 
         // Store by unique request ID — fetch/XHR requests carry the ID as a header
         phpBridge.storePostData(requestId, data)
@@ -735,7 +733,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
         // Native form submissions can't carry custom headers, so store by URL
         // shouldInterceptRequest will look up by URL in the fallback path
         val path = android.net.Uri.parse(url).path ?: url
-        Log.d("$TAG-JS", "📦 POST data captured (form) for: $url path=$path (length=${data.length})")
+        NativeLog.d("$TAG-JS") { "📦 POST data captured (form) for: $url path=$path (length=${data.length})" }
 
         phpBridge.storePostData(url, data)
         // Also store by path in case shouldInterceptRequest receives the full URL
@@ -749,7 +747,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
 
     @JavascriptInterface
     fun storeCsrfToken(token: String) {
-        Log.d("$TAG-CSRF", "🔑 JS provided a CSRF token")
+        NativeLog.d("$TAG-CSRF") { "🔑 JS provided a CSRF token" }
         LaravelSecurity.set(token)
     }
 
@@ -764,7 +762,7 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
                 // Look for _token field
                 if (jsonObj.has("_token")) {
                     val token = jsonObj.getString("_token")
-                    Log.d("$TAG-CSRF", "🔑 Extracted token from POST data")
+                    NativeLog.d("$TAG-CSRF") { "🔑 Extracted token from POST data" }
                     LaravelSecurity.set(token)
                 }
             }
@@ -774,14 +772,14 @@ class JSBridge(private val phpBridge: PHPBridge, private val TAG: String) {
                 for (part in parts) {
                     if (part.startsWith("_token=")) {
                         val token = part.substring("_token=".length)
-                        Log.d("$TAG-CSRF", "🔑 Extracted token from form data")
+                        NativeLog.d("$TAG-CSRF") { "🔑 Extracted token from form data" }
                         LaravelSecurity.set(token)
                         break
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("$TAG-CSRF", "⚠️ Error extracting CSRF token: ${e.message}")
+            Log.e("$TAG-CSRF", "⚠️ Error extracting CSRF token: ${e.javaClass.simpleName}")
         }
     }
 }

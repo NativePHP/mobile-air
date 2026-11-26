@@ -1,9 +1,9 @@
 package com.nativephp.mobile.ui.nativerender
 
-import android.util.Log
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Observable state holder for native UI rendering.
@@ -137,7 +137,7 @@ class NativeUIBridge private constructor() {
         /* ── Legacy compat stubs (called by MainActivity) ── */
 
         fun startWatching() {
-            Log.d(TAG, "startWatching() — no-op, watcher removed")
+            NativeLog.d(TAG) { "startWatching() — no-op, watcher removed" }
         }
 
         fun stopWatching() {

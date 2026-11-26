@@ -96,10 +96,10 @@ final class PHPQueueWorker {
         lock.unlock()
 
         if let marker = PHPQueueWorker.pendingMarkerPath, FileManager.default.fileExists(atPath: marker) {
-            NSLog("PHPQueueWorker: jobs may be queued from an earlier run; booting")
+            NativeLog.debug("PHPQueueWorker: jobs may be queued from an earlier run; booting")
             wake()
         } else {
-            NSLog("PHPQueueWorker: idle until a job is queued")
+            NativeLog.debug("PHPQueueWorker: idle until a job is queued")
         }
     }
 
@@ -132,7 +132,7 @@ final class PHPQueueWorker {
         thread.qualityOfService = .utility
         thread.start()
 
-        NSLog("PHPQueueWorker: thread launched")
+        NativeLog.debug("PHPQueueWorker: thread launched")
     }
 
     /// Stop the worker thread (non-blocking — thread exits on next loop iteration).
@@ -147,7 +147,7 @@ final class PHPQueueWorker {
         dueTimer = nil
         lock.unlock()
 
-        NSLog("PHPQueueWorker: stopping")
+        NativeLog.debug("PHPQueueWorker: stopping")
         wakeSignal.signal()
     }
 
@@ -166,10 +166,10 @@ final class PHPQueueWorker {
 
         guard alive, let done else { return }
 
-        NSLog("PHPQueueWorker: stopAndWait — waiting for worker to exit")
+        NativeLog.debug("PHPQueueWorker: stopAndWait — waiting for worker to exit")
         wakeSignal.signal()
         done.wait()
-        NSLog("PHPQueueWorker: stopAndWait — worker exited")
+        NativeLog.debug("PHPQueueWorker: stopAndWait — worker exited")
     }
 
     var isRunning: Bool {
@@ -195,12 +195,12 @@ final class PHPQueueWorker {
         // wake that lands while it shuts down starts another pass on this
         // thread, so two contexts never overlap in the C worker's globals.
         while true {
-            NSLog("PHPQueueWorker: starting (dedicated TSRM context)")
+            NativeLog.debug("PHPQueueWorker: starting (dedicated TSRM context)")
             let started = DispatchTime.now()
 
             let result = _worker_php_boot(bootstrapPath)
             if result != 0 {
-                NSLog("PHPQueueWorker: boot FAILED (%d), aborting", result)
+                NativeLog.error(String(format: "PHPQueueWorker: boot FAILED (%d), aborting", result))
                 lock.lock()
                 threadAlive = false
                 wakeRequested = false
@@ -210,7 +210,7 @@ final class PHPQueueWorker {
             }
 
             let ms = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
-            NSLog("PHPQueueWorker: boot complete in %.0f ms, processing jobs", ms)
+            NativeLog.perf(String(format: "PHPQueueWorker: boot complete in %.0f ms, processing jobs", ms))
 
             let wakeAgainIn = processUntilIdle()
 
@@ -227,12 +227,12 @@ final class PHPQueueWorker {
             lock.unlock()
 
             if again {
-                NSLog("PHPQueueWorker: woken while shutting down; booting again")
+                NativeLog.debug("PHPQueueWorker: woken while shutting down; booting again")
                 continue
             }
 
             done.signal()
-            NSLog("PHPQueueWorker: stopped")
+            NativeLog.debug("PHPQueueWorker: stopped")
             return
         }
     }
@@ -259,13 +259,13 @@ final class PHPQueueWorker {
 
             // Log any output for diagnostics (errors from bridge calls, etc.)
             if !output.isEmpty {
-                NSLog("PHPQueueWorker: output: %@", output)
+                NativeLog.debug(String(format: "PHPQueueWorker: output: %@", output))
             }
 
             // Shorter sleep if we just processed a job, longer if idle
             let sleepMs: UInt64
             if output.localizedCaseInsensitiveContains("Processed") {
-                NSLog("PHPQueueWorker: job processed")
+                NativeLog.debug("PHPQueueWorker: job processed")
                 sleepMs = sleepIntervalMs
                 idleSince = Date()
             } else {
@@ -277,22 +277,22 @@ final class PHPQueueWorker {
 
                 switch (status.pending, status.next) {
                 case (0, _):
-                    NSLog("PHPQueueWorker: queue empty; shutting down until a job is queued")
+                    NativeLog.debug("PHPQueueWorker: queue empty; shutting down until a job is queued")
                     return nil
                 case (nil, _):
                     // PHP couldn't read the queue. The marker stays, so the
                     // next launch or push tries again.
-                    NSLog("PHPQueueWorker: queue state unknown; shutting down")
+                    NativeLog.debug("PHPQueueWorker: queue state unknown; shutting down")
                     return nil
                 case let (pending?, next?) where next * 1000 <= Int(sleepIdleMs):
                     // Due now or within one poll: keep going.
-                    NSLog("PHPQueueWorker: %d job(s) still due; staying up", pending)
+                    NativeLog.debug(String(format: "PHPQueueWorker: %d job(s) still due; staying up", pending))
                     idleSince = Date()
                 case let (pending?, next?):
-                    NSLog("PHPQueueWorker: %d job(s) not due for %ds; shutting down until then", pending, next)
+                    NativeLog.debug(String(format: "PHPQueueWorker: %d job(s) not due for %ds; shutting down until then", pending, next))
                     return next
                 case let (pending?, nil):
-                    NSLog("PHPQueueWorker: %d job(s) left with no due time; checking again in %ds", pending, unknownDueRecheck)
+                    NativeLog.debug(String(format: "PHPQueueWorker: %d job(s) left with no due time; checking again in %ds", pending, unknownDueRecheck))
                     return unknownDueRecheck
                 }
             }
@@ -310,7 +310,7 @@ final class PHPQueueWorker {
         guard let line = output.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("{") }),
               let data = String(line).data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            NSLog("PHPQueueWorker: unreadable idle status: %@", output)
+            NativeLog.error(String(format: "PHPQueueWorker: unreadable idle status: %@", output))
             return IdleStatus(pending: nil, next: nil)
         }
 
@@ -324,7 +324,7 @@ final class PHPQueueWorker {
     private func armDueTimer(seconds: Int) {
         dueTimer?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            NSLog("PHPQueueWorker: a delayed job is due; waking")
+            NativeLog.debug("PHPQueueWorker: a delayed job is due; waking")
             self?.wake()
         }
         dueTimer = item

@@ -110,9 +110,9 @@ final class LaravelBridge {
 
         webView.evaluateJavaScript(js) { result, error in
             if let error = error {
-                print("JavaScript injection error injecting event '\(event)': \(error)")
+                NativeLog.error("JavaScript injection error injecting event '\(event)': \(error)")
             } else {
-                print("JavaScript event '\(event)' dispatched.")
+                NativeLog.debug("JavaScript event '\(event)' dispatched.")
             }
         }
     }

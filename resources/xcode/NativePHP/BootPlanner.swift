@@ -38,24 +38,24 @@ enum BootPlanner {
 
     static func plan(startPath: String) -> Entry {
         guard let meta = readBundleMeta() else {
-            NSLog("[BootPlanner] No bundle_meta.json — legacy WebView boot")
+            NativeLog.debug("[BootPlanner] No bundle_meta.json — legacy WebView boot")
             return .webLegacy
         }
 
         if (meta["entry_mode"] as? String) == "web" {
-            NSLog("[BootPlanner] entry_mode=web — forcing legacy WebView boot")
+            NativeLog.debug("[BootPlanner] entry_mode=web — forcing legacy WebView boot")
             return .webLegacy
         }
 
         guard let patterns = freshestPatterns(meta: meta) else {
-            NSLog("[BootPlanner] No native-route manifest — legacy WebView boot")
+            NativeLog.debug("[BootPlanner] No native-route manifest — legacy WebView boot")
             return .webLegacy
         }
 
         let path = startPath.components(separatedBy: "?").first ?? "/"
         let matched = patterns.contains { matches(pattern: $0, path: path) }
         // The path can come from a deep link, so keep it out of the format string.
-        NSLog("%@", "[BootPlanner] Boot plan for \(path): \(matched ? "NATIVE_DIRECT" : "WEB_LEGACY") (\(patterns.count) native patterns)")
+        NativeLog.debug("[BootPlanner] Boot plan for \(path): \(matched ? "NATIVE_DIRECT" : "WEB_LEGACY") (\(patterns.count) native patterns)")
         return matched ? .nativeDirect : .webLegacy
     }
 

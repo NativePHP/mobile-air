@@ -310,11 +310,11 @@ struct WebView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         // Reuse existing coordinator if available to maintain LaravelBridge connection
         if let existingCoordinator = shared.coordinator {
-            print("♻️ Reusing existing Coordinator")
+            NativeLog.debug("♻️ Reusing existing Coordinator")
             return existingCoordinator
         }
 
-        print("🆕 Creating new Coordinator")
+        NativeLog.debug("🆕 Creating new Coordinator")
         let coordinator = Coordinator()
         shared.coordinator = coordinator
         return coordinator
@@ -323,7 +323,7 @@ struct WebView: UIViewRepresentable {
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         // Don't remove observers or clear LaravelBridge when reusing the WebView
         // The shared instance will persist and we'll re-register in makeUIView if needed
-        print("⚠️ dismantleUIView called - skipping observer removal for reused WebView")
+        NativeLog.debug("⚠️ dismantleUIView called - skipping observer removal for reused WebView")
     }
 
     class Coordinator: NSObject, WKNavigationDelegate {
@@ -515,7 +515,7 @@ struct WebView: UIViewRepresentable {
 
         // Reuse existing WebView if available (coordinator is also reused via makeCoordinator)
         if let existingWebView = shared.webView {
-            print("♻️ Reusing existing WKWebView instance (coordinator already reused)")
+            NativeLog.debug("♻️ Reusing existing WKWebView instance (coordinator already reused)")
             // Ensure coordinator has reference to webView
             coordinator.webView = existingWebView
             existingWebView.navigationDelegate = coordinator
@@ -527,7 +527,7 @@ struct WebView: UIViewRepresentable {
             return existingWebView
         }
 
-        print("🆕 Creating new WKWebView instance with new Coordinator")
+        NativeLog.debug("🆕 Creating new WKWebView instance with new Coordinator")
 
         // Initialize the custom scheme handler
         let schemeHandler = PHPSchemeHandler()
@@ -938,8 +938,8 @@ class ConsoleLogger: NSObject, WKScriptMessageHandler {
         if let body = message.body as? [String: Any],
            let type = body["type"] as? String,
            let logMessage = body["message"] as? String {
-            print()
-            print("JS \(type): \(logMessage)")
+            NativeLog.debug()
+            NativeLog.debug("JS \(type): \(logMessage)")
         }
     }
 }

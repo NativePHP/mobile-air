@@ -3,6 +3,7 @@ package com.nativephp.mobile.lifecycle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Singleton event bus for NativePHP lifecycle events.
@@ -46,7 +47,7 @@ object NativePHPLifecycle {
     fun on(event: String, callback: (Map<String, Any>) -> Unit): String {
         listeners.getOrPut(event) { mutableListOf() }.add(callback)
         val subscriptionId = "${event}_${System.identityHashCode(callback)}"
-        Log.d(TAG, "📢 Subscribed to event: $event (id: $subscriptionId)")
+        NativeLog.d(TAG) { "📢 Subscribed to event: $event (id: $subscriptionId)" }
         return subscriptionId
     }
 
@@ -59,7 +60,7 @@ object NativePHPLifecycle {
     @Synchronized
     fun off(event: String, callback: (Map<String, Any>) -> Unit) {
         listeners[event]?.remove(callback)
-        Log.d(TAG, "🔇 Unsubscribed from event: $event")
+        NativeLog.d(TAG) { "🔇 Unsubscribed from event: $event" }
     }
 
     /**
@@ -70,7 +71,7 @@ object NativePHPLifecycle {
     @Synchronized
     fun offAll(event: String) {
         listeners.remove(event)
-        Log.d(TAG, "🔇 Removed all listeners for event: $event")
+        NativeLog.d(TAG) { "🔇 Removed all listeners for event: $event" }
     }
 
     /**
@@ -81,14 +82,14 @@ object NativePHPLifecycle {
      * @param data The event data (default: empty map)
      */
     fun post(event: String, data: Map<String, Any> = emptyMap()) {
-        Log.d(TAG, "📤 Posting event: $event with data: $data")
+        NativeLog.d(TAG) { "📤 Posting event: $event with data: $data" }
 
         val callbacks = synchronized(this) {
             listeners[event]?.toList() ?: emptyList()
         }
 
         if (callbacks.isEmpty()) {
-            Log.d(TAG, "📭 No listeners for event: $event")
+            NativeLog.d(TAG) { "📭 No listeners for event: $event" }
             return
         }
 
@@ -131,7 +132,7 @@ object NativePHPLifecycle {
     @Synchronized
     fun clear() {
         listeners.clear()
-        Log.d(TAG, "🧹 Cleared all listeners")
+        NativeLog.d(TAG) { "🧹 Cleared all listeners" }
     }
 
     // Convenience constants for event names (mirrors iOS Notification.Name pattern)

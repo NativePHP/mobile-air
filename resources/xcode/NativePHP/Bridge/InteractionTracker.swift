@@ -133,7 +133,7 @@ final class InteractionTracker {
             ))
 
             if logRealtime {
-                print(String(format: "INTERACTION cb=%d type=%@ event_delivery=%.2fms compose_post=%.2fms frame_paint=%.2fms TOTAL=%.2fms",
+                NSLog("%@", String(format: "INTERACTION cb=%d type=%@ event_delivery=%.2fms compose_post=%.2fms frame_paint=%.2fms TOTAL=%.2fms",
                              cbId, type, eventDelivery, composePost, framePaint, total))
             }
         }

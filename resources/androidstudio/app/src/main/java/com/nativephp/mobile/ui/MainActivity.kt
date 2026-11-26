@@ -66,6 +66,7 @@ import androidx.core.graphics.Insets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.nativephp.mobile.utils.NativeLog
 
 class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.WebEventSink {
     // Native-first boot: no WebView exists until a web response actually
@@ -281,7 +282,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 if (pendingDeepLink != null &&
                     plan == BootPlanner.Entry.WEB_LEGACY &&
                     BootPlanner.plan(this, startUrl) == BootPlanner.Entry.NATIVE_DIRECT) {
-                    Log.d("DeepLink", "⏳ No native screen for $target, booting $startUrl and handing the link to PHP")
+                    NativeLog.d("DeepLink") { "⏳ No native screen for $target, booting $startUrl and handing the link to PHP" }
                     coldAppLink = target to pendingDeepLinkUrl
                     target = startUrl
                     plan = BootPlanner.Entry.NATIVE_DIRECT
@@ -314,7 +315,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         // content fires on the page's first commit.
                         val renderer = ensureWebRenderer()
                         val fullUrl = "http://127.0.0.1$target"
-                        Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
+                        NativeLog.d("DeepLink") { "🚀 Loading final URL after WebView setup: $fullUrl" }
                         renderer.webView.loadUrl(fullUrl)
                     }
                 }
@@ -329,7 +330,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                     synchronized(queueWorkerLock) {
                         if (!isFinishing && !isDestroyed && !rebootingRuntime &&
                             phpBridge.isPersistentMode() && queueWorker == null) {
-                            Log.d("MainActivity", "▶️ Starting deferred background queue worker")
+                            NativeLog.d("MainActivity") { "▶️ Starting deferred background queue worker" }
                             queueWorker = PHPQueueWorker(phpBridge, PHPQueueWorker.pendingMarkerFor(this)).also { it.start() }
                         }
                     }
@@ -402,7 +403,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     private fun startNativeSession(uri: String) {
         val sessionThread = Thread({
             try {
-                Log.d("NativeBoot", "🚀 Direct native dispatch: $uri")
+                NativeLog.d("NativeBoot") { "🚀 Direct native dispatch: $uri" }
                 val raw = runNativeSession(uri)
                 handleNativeSessionExit(raw)
             } catch (e: Exception) {
@@ -473,7 +474,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             .firstOrNull { it.startsWith("Location:", ignoreCase = true) }
             ?.substringAfter(":")?.trim()
 
-        Log.d("NativeBoot", "Native session exited: status=$status location=$location")
+        NativeLog.d("NativeBoot") { "Native session exited: status=$status location=$location" }
 
         when {
             status in 300..399 && !location.isNullOrEmpty() -> {
@@ -492,11 +493,11 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             status == 204 -> {
                 // Hot restart in flight — the reload watcher re-executes the
                 // route on a fresh thread. Nothing to do here.
-                Log.d("NativeBoot", "Native session yielded for hot restart")
+                NativeLog.d("NativeBoot") { "Native session yielded for hot restart" }
             }
             else -> runOnUiThread {
                 if (!isFinishing && !isDestroyed && !NativeUIBridge.isActive.value) {
-                    Log.d("NativeBoot", "Native stack empty — finishing activity")
+                    NativeLog.d("NativeBoot") { "Native stack empty — finishing activity" }
                     finish()
                 }
             }
@@ -510,7 +511,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
      */
     private fun exitToWeb(path: String) {
         if (isFinishing || isDestroyed) return
-        Log.d("NativeBoot", "⇄ EXIT_WEB → $path")
+        NativeLog.d("NativeBoot") { "⇄ EXIT_WEB → $path" }
         pendingWebSwap = true
         val renderer = ensureWebRenderer()
         renderer.webView.loadUrl("http://127.0.0.1$path")
@@ -536,7 +537,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     fun onFirstContent(source: String) {
         if (firstContentReported) return
         firstContentReported = true
-        Log.d("MainActivity", "🎨 First content ($source)")
+        NativeLog.perf("MainActivity") { "🎨 First content ($source)" }
 
                 // The two lines below keep their original 12-space indent: splash-screen
                 // plugins (s2br/nativephp-mobile-splashscreen) patch them via exact-string
@@ -576,7 +577,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        Log.d("MainActivity", "🌀 Config changed: orientation = ${newConfig.orientation}")
+        NativeLog.d("MainActivity") { "🌀 Config changed: orientation = ${newConfig.orientation}" }
 
         // Re-inject safe area insets on orientation change
         pendingInsets?.let {
@@ -643,20 +644,20 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 windowInsetsController.isAppearanceLightStatusBars = !isSystemDarkMode
                 windowInsetsController.isAppearanceLightNavigationBars = !isSystemDarkMode
 
-                Log.d("StatusBar", "🎨 System bars style: auto (system ${if (isSystemDarkMode) "dark" else "light"} mode)")
-                Log.d("StatusBar", "🎨 Using ${if (!isSystemDarkMode) "dark" else "light"} icons with transparent background")
+                NativeLog.d("StatusBar") { "🎨 System bars style: auto (system ${if (isSystemDarkMode) "dark" else "light"} mode)" }
+                NativeLog.d("StatusBar") { "🎨 Using ${if (!isSystemDarkMode) "dark" else "light"} icons with transparent background" }
             }
             "light" -> {
                 windowInsetsController.isAppearanceLightStatusBars = false
                 windowInsetsController.isAppearanceLightNavigationBars = false
 
-                Log.d("StatusBar", "🎨 System bars style: light (white icons with transparent background)")
+                NativeLog.d("StatusBar") { "🎨 System bars style: light (white icons with transparent background)" }
             }
             "dark" -> {
                 windowInsetsController.isAppearanceLightStatusBars = true
                 windowInsetsController.isAppearanceLightNavigationBars = true
 
-                Log.d("StatusBar", "🎨 System bars style: dark (dark icons with transparent background)")
+                NativeLog.d("StatusBar") { "🎨 System bars style: dark (dark icons with transparent background)" }
             }
             else -> {
                 Log.w("StatusBar", "⚠️ Unknown status bar style: $statusBarStyle, defaulting to auto")
@@ -686,25 +687,25 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             // any plugin code runs (plugin init functions run inside
             // registerBridgeFunctions). Once the generated plugin renderers
             // are in, the renderer registry locks and refuses new types.
-            Log.d("MainActivity", "🔌 Registering bridge functions...")
+            NativeLog.d("MainActivity") { "🔌 Registering bridge functions..." }
             registerNativeChromeRenderers()
             registerBridgeFunctions(this, applicationContext)
             registerPluginRenderers()
             NativeRendererRegistry.lockRegistrations()
-            Log.d("MainActivity", "✅ Bridge functions registered")
+            NativeLog.d("MainActivity") { "✅ Bridge functions registered" }
 
-            Log.d("LaravelInit", "Starting async Laravel extraction...")
+            NativeLog.d("LaravelInit") { "Starting async Laravel extraction..." }
             laravelEnv = LaravelEnvironment(this)
             laravelEnv.initialize()
 
-            Log.d("LaravelInit", "Laravel environment ready")
+            NativeLog.d("LaravelInit") { "Laravel environment ready" }
 
             // Check runtime mode from bundle_meta.json
             val runtimeMode = LaravelEnvironment.getRuntimeMode(this)
-            Log.d("LaravelInit", "Runtime mode: $runtimeMode")
+            NativeLog.d("LaravelInit") { "Runtime mode: $runtimeMode" }
 
             if (runtimeMode == "classic") {
-                Log.d("LaravelInit", "Classic mode configured — skipping persistent runtime boot")
+                NativeLog.d("LaravelInit") { "Classic mode configured — skipping persistent runtime boot" }
             } else {
                 // Boot persistent PHP runtime BEFORE WebView loads
                 val bootStart = System.currentTimeMillis()
@@ -712,7 +713,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 val bootTime = System.currentTimeMillis() - bootStart
 
                 if (booted) {
-                    Log.d("LaravelInit", "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown")
+                    NativeLog.perf("LaravelInit") { "Persistent runtime booted in ${bootTime}ms — requests will skip init/shutdown" }
 
                     // NOTE: the background queue worker is NOT started here. It
                     // boots a second full Laravel runtime that would contend for
@@ -807,11 +808,11 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 ?.replace("\\", "\\\\")?.replace("\"", "\\\"")
                 ?.let { ",\"url\":\"$it\"" }
                 ?: ""
-            Log.d("DeepLink", "🚀 native-ui: dispatching __deeplink event: $route")
+            NativeLog.d("DeepLink") { "🚀 native-ui: dispatching __deeplink event: $route" }
             NativeElementBridge.sendNativeEvent("__deeplink", "{\"uri\":\"$escaped\"$url}")
         } else {
             val fullUrl = "http://127.0.0.1$route"
-            Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
+            NativeLog.d("DeepLink") { "🚀 Loading deep link immediately (app already running): $fullUrl" }
             ensureWebRenderer().webView.loadUrl(fullUrl)
         }
         pendingDeepLink = null
@@ -824,7 +825,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // Check for notification URL extra (from local notification taps or foreground push)
         val notificationUrl = intent?.getStringExtra("notification_url")
         if (!notificationUrl.isNullOrEmpty()) {
-            Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
+            NativeLog.d("DeepLink") { "🔔 Notification URL: $notificationUrl" }
             pendingDeepLink = notificationUrl
             pendingDeepLinkUrl = null
             if (::laravelEnv.isInitialized && bootReady) {
@@ -836,7 +837,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // Check for deep link URL from FCM data payload (background/killed push notifications)
         val fcmUrl = intent?.getStringExtra("url") ?: intent?.getStringExtra("link")
         if (!fcmUrl.isNullOrEmpty()) {
-            Log.d("DeepLink", "🔔 FCM deep link URL: $fcmUrl")
+            NativeLog.d("DeepLink") { "🔔 FCM deep link URL: $fcmUrl" }
             val uri = android.net.Uri.parse(fcmUrl)
             val scheme = uri.scheme
             val route = if (scheme != null && scheme != "http" && scheme != "https") {
@@ -856,14 +857,14 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         }
 
         val uri = intent?.data ?: return
-        Log.d("DeepLink", "🌐 Received deep link: $uri")
+        NativeLog.d("DeepLink") { "🌐 Received deep link: $uri" }
 
         // Check if this is an OAuth callback from nativephp:// scheme
         if (uri.scheme == "nativephp") {
-            Log.d("OAuth", "🔐 OAuth callback detected from scheme: ${uri.scheme}")
-            Log.d("OAuth", "🔐 OAuth callback host: ${uri.host}")
-            Log.d("OAuth", "🔐 OAuth callback path: ${uri.path}")
-            Log.d("OAuth", "🔐 OAuth callback query: ${uri.query}")
+            NativeLog.d("OAuth") { "🔐 OAuth callback detected from scheme: ${uri.scheme}" }
+            NativeLog.d("OAuth") { "🔐 OAuth callback host: ${uri.host}" }
+            NativeLog.d("OAuth") { "🔐 OAuth callback path: ${uri.path}" }
+            NativeLog.d("OAuth") { "🔐 OAuth callback query: ${uri.query}" }
 
             // Check for common OAuth parameters
             val code = uri.getQueryParameter("code")
@@ -871,10 +872,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             val error = uri.getQueryParameter("error")
 
             if (code != null) {
-                Log.d("OAuth", "✅ OAuth authorization code received: ${code.take(10)}...")
+                NativeLog.d("OAuth") { "✅ OAuth authorization code received: ${code.take(10)}..." }
             }
             if (state != null) {
-                Log.d("OAuth", "✅ OAuth state parameter: $state")
+                NativeLog.d("OAuth") { "✅ OAuth state parameter: $state" }
             }
             if (error != null) {
                 Log.e("OAuth", "❌ OAuth error received: $error")
@@ -909,14 +910,14 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // link (jump://…) has nowhere else to go.
         val externalUrl = if (uri.scheme == "https" || uri.scheme == "http") uri.toString() else null
 
-        Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
+        NativeLog.d("DeepLink") { "📦 Saving deep link for later: $laravelUrl" }
         pendingDeepLink = laravelUrl
         pendingDeepLinkUrl = externalUrl
         if (::laravelEnv.isInitialized && bootReady) {
             // Only navigate immediately once the boot pipeline is ready
             navigateWarm(laravelUrl, externalUrl)
         } else {
-            Log.d("DeepLink", "⏳ Deep link saved, waiting for app initialization to complete")
+            NativeLog.d("DeepLink") { "⏳ Deep link saved, waiting for app initialization to complete" }
         }
     }
 
@@ -931,7 +932,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     fun clearAllCookies() {
         com.nativephp.mobile.security.LaravelCookieStore.clear()
         com.nativephp.mobile.security.WebCookieMirror.clearAll()
-        Log.d("CookieInfo", "All cookies cleared")
+        NativeLog.d("CookieInfo") { "All cookies cleared" }
     }
 
 
@@ -1047,7 +1048,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         when (requestCode) {
             1001 -> {
                 if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
-                    Log.d("Permission", "✅ Location permission granted")
+                    NativeLog.d("Permission") { "✅ Location permission granted" }
                     // Optionally re-trigger the location fetch
                 } else {
                     Log.e("Permission", "❌ Location permission denied")
@@ -1055,7 +1056,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             }
             1002 -> {
                 if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
-                    Log.d("Permission", "✅ Push notification permission granted")
+                    NativeLog.d("Permission") { "✅ Push notification permission granted" }
                 } else {
                     Log.e("Permission", "❌ Push notification permission denied")
                 }
@@ -1100,13 +1101,13 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             // logcat output ("HMR#N").
             var reloadGeneration = 0
 
-            Log.d("HotReload", "Watcher started — watching: ${reloadFile.absolutePath}")
+            NativeLog.d("HotReload") { "Watcher started — watching: ${reloadFile.absolutePath}" }
 
             while (!shouldStopWatcher && !Thread.currentThread().isInterrupted) {
                 try {
                     pollCount++
                     if (pollCount % 20 == 0) {
-                        Log.d("HotReload", "Poll #$pollCount — exists=${reloadFile.exists()} lastMod=$lastModified curMod=${if (reloadFile.exists()) reloadFile.lastModified() else "N/A"} nativeUI=${NativeUIBridge.isActive.value}")
+                        NativeLog.d("HotReload") { "Poll #$pollCount — exists=${reloadFile.exists()} lastMod=$lastModified curMod=${if (reloadFile.exists()) reloadFile.lastModified() else "N/A"} nativeUI=${NativeUIBridge.isActive.value}" }
                     }
 
                     // Reset the mtime tracker when the file is gone
@@ -1130,38 +1131,38 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         val gen = reloadGeneration
                         val mtime = restartFile.lastModified()
                         lastRestartModified = mtime
-                        Log.d("HotReload", "HMR#$gen .hot_restart detected — mtime=$mtime size=${restartFile.length()}")
+                        NativeLog.d("HotReload") { "HMR#$gen .hot_restart detected — mtime=$mtime size=${restartFile.length()}" }
                         try {
                             val content = restartFile.readText()
                             val json = org.json.JSONObject(content)
                             val restartUri = json.optString("uri", "/")
                             val stackSize = json.optJSONArray("stack")?.length() ?: 0
 
-                            Log.d("HotReload", "HMR#$gen restart uri=$restartUri stackDepth=$stackSize")
+                            NativeLog.d("HotReload") { "HMR#$gen restart uri=$restartUri stackDepth=$stackSize" }
 
                             // Wait for old PHP thread to finish (C mutex also guards this,
                             // but joining here avoids starting a thread that just blocks)
                             val oldThread = nativeUIThread
                             if (oldThread != null && oldThread.isAlive) {
                                 val joinStart = System.currentTimeMillis()
-                                Log.d("HotReload", "HMR#$gen waiting on old PHP thread (name=${oldThread.name})...")
+                                NativeLog.d("HotReload") { "HMR#$gen waiting on old PHP thread (name=${oldThread.name})..." }
                                 oldThread.join(5000)
                                 val joinElapsed = System.currentTimeMillis() - joinStart
                                 if (oldThread.isAlive) {
                                     Log.w("HotReload", "HMR#$gen ⚠️ old PHP thread STILL ALIVE after ${joinElapsed}ms — proceeding anyway (C mutex will serialize)")
                                 } else {
-                                    Log.d("HotReload", "HMR#$gen old PHP thread exited in ${joinElapsed}ms")
+                                    NativeLog.d("HotReload") { "HMR#$gen old PHP thread exited in ${joinElapsed}ms" }
                                 }
                             } else {
-                                Log.d("HotReload", "HMR#$gen no live old PHP thread (nativeUIThread=${oldThread?.name ?: "null"})")
+                                NativeLog.d("HotReload") { "HMR#$gen no live old PHP thread (nativeUIThread=${oldThread?.name ?: "null"})" }
                             }
 
                             // If persistent mode, reboot interpreter to pick up new class definitions
                             if (phpBridge.isPersistentMode()) {
                                 val rebootStart = System.currentTimeMillis()
-                                Log.d("HotReload", "HMR#$gen rebooting persistent runtime...")
+                                NativeLog.d("HotReload") { "HMR#$gen rebooting persistent runtime..." }
                                 rebootPersistentRuntime()
-                                Log.d("HotReload", "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms")
+                                NativeLog.d("HotReload") { "HMR#$gen reboot complete in ${System.currentTimeMillis() - rebootStart}ms" }
                             }
 
                             // Re-start the native UI watcher (PHP will re-init shared memory)
@@ -1172,10 +1173,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                             // This bypasses the WebView entirely — fresh PHP process
                             val restartThread = Thread({
                                 try {
-                                    Log.d("HotReload", "HMR#$gen executing PHP for $restartUri")
+                                    NativeLog.d("HotReload") { "HMR#$gen executing PHP for $restartUri" }
                                     val execStart = System.currentTimeMillis()
                                     runNativeSession(restartUri)
-                                    Log.d("HotReload", "HMR#$gen PHP execution returned after ${System.currentTimeMillis() - execStart}ms")
+                                    NativeLog.d("HotReload") { "HMR#$gen PHP execution returned after ${System.currentTimeMillis() - execStart}ms" }
                                 } catch (e: Exception) {
                                     Log.e("HotReload", "HMR#$gen execution failed: ${e.message}", e)
                                 }
@@ -1201,7 +1202,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                         // never recovers). Drop the duplicate; the user
                         // can save again after this reload finishes.
                         if (NativeUIBridge.isReloading.value) {
-                            Log.d("HotReload", "▶ reload_signal fired (mod=$lastModified) — SKIPPED, reload already in flight")
+                            NativeLog.d("HotReload") { "▶ reload_signal fired (mod=$lastModified) — SKIPPED, reload already in flight" }
                             continue
                         }
 
@@ -1210,7 +1211,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                             // PHP will shut down and write .hot_restart signal
                             val elementReady = NativeElementBridge.nativeElementIsReady()
                             val phpBooted = phpBridge.isPersistentMode()
-                            Log.d("HotReload", "▶ reload_signal fired (mod=$lastModified) — sending HMR event (isActive=true elementReady=$elementReady persistent=$phpBooted lastRestartModified=$lastRestartModified)")
+                            NativeLog.d("HotReload") { "▶ reload_signal fired (mod=$lastModified) — sending HMR event (isActive=true elementReady=$elementReady persistent=$phpBooted lastRestartModified=$lastRestartModified)" }
                             // Preserve the visible tree across PHP's
                             // C-side stopWatching call. Cleared in
                             // `onTreePostedToMain` when the first new
@@ -1231,15 +1232,15 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                             // WebView mode: reload the page
                             // If persistent mode, reboot the interpreter to pick up new class definitions
                             if (phpBridge.isPersistentMode()) {
-                                Log.d("HotReload", "Rebooting persistent runtime for hot reload...")
+                                NativeLog.d("HotReload") { "Rebooting persistent runtime for hot reload..." }
                                 val rebootStart = System.currentTimeMillis()
                                 rebootPersistentRuntime()
-                                Log.d("HotReload", "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms")
+                                NativeLog.d("HotReload") { "Persistent runtime rebooted in ${System.currentTimeMillis() - rebootStart}ms" }
                             }
 
                             runOnUiThread {
                                 val web = webRenderer?.webView ?: run {
-                                    Log.d("HotReload", "No WebView and native UI inactive — skipping web reload")
+                                    NativeLog.d("HotReload") { "No WebView and native UI inactive — skipping web reload" }
                                     return@runOnUiThread
                                 }
                                 web.stopLoading()
@@ -1343,10 +1344,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // Get actual device orientation from Android Configuration
         val isPortrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
 
-        Log.d("SafeArea", "Device orientation: ${if (isPortrait) "Portrait" else "Landscape"}")
-        Log.d("SafeArea", "Current screen dimensions: ${currentWidthPx}x${currentHeightPx}")
-        Log.d("SafeArea", "Natural (portrait) dimensions: ${portraitWidthPx}x${portraitHeightPx}")
-        Log.d("SafeArea", "Injecting insets: top=${topPx}px, right=${rightPx}px, bottom=${bottomPx}px, left=${leftPx}px")
+        NativeLog.d("SafeArea") { "Device orientation: ${if (isPortrait) "Portrait" else "Landscape"}" }
+        NativeLog.d("SafeArea") { "Current screen dimensions: ${currentWidthPx}x${currentHeightPx}" }
+        NativeLog.d("SafeArea") { "Natural (portrait) dimensions: ${portraitWidthPx}x${portraitHeightPx}" }
+        NativeLog.d("SafeArea") { "Injecting insets: top=${topPx}px, right=${rightPx}px, bottom=${bottomPx}px, left=${leftPx}px" }
 
         // Inject CSS as early as possible - create a self-executing function that runs immediately
         // and also sets up listeners for Livewire navigation to persist styles
@@ -1444,7 +1445,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             "document.body.classList.remove('keyboard-visible');"
         }
         webRenderer?.webView?.evaluateJavascript(jsCode, null)
-        Log.d("Keyboard", "⌨️ Keyboard visibility changed: $isVisible")
+        NativeLog.d("Keyboard") { "⌨️ Keyboard visibility changed: $isVisible" }
     }
 
     /**
@@ -1452,7 +1453,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
      * Supports Laravel route() helper output and relative paths
      */
     private fun extractPath(url: String): String {
-        Log.d("Navigation", "📥 Received URL: $url")
+        NativeLog.d("Navigation") { "📥 Received URL: $url" }
 
         return try {
             if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -1462,23 +1463,23 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 val path = if (parsedUrl.path.isNullOrEmpty()) "/" else parsedUrl.path
                 val query = parsedUrl.query
                 val result = if (query != null) "$path?$query" else path
-                Log.d("Navigation", "✅ Extracted path from full URL: $result")
+                NativeLog.d("Navigation") { "✅ Extracted path from full URL: $result" }
                 result
             } else if (url.startsWith("/")) {
                 // Already a path
-                Log.d("Navigation", "✅ Using path as-is: $url")
+                NativeLog.d("Navigation") { "✅ Using path as-is: $url" }
                 url
             } else {
                 // Relative path, prepend /
                 val result = "/$url"
-                Log.d("Navigation", "✅ Converted relative to absolute: $result")
+                NativeLog.d("Navigation") { "✅ Converted relative to absolute: $result" }
                 result
             }
         } catch (e: Exception) {
-            Log.e("Navigation", "❌ Error parsing URL: $url", e)
+            Log.e("Navigation", "❌ Error parsing URL", e)
             // Fallback: treat as relative path
             val fallback = if (url.startsWith("/")) url else "/$url"
-            Log.d("Navigation", "🔄 Using fallback: $fallback")
+            NativeLog.d("Navigation") { "🔄 Using fallback: $fallback" }
             fallback
         }
     }
@@ -1490,7 +1491,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
      */
     private fun navigateWithInertia(url: String) {
         val path = extractPath(url)
-        Log.d("Navigation", "🚀 Navigating with Inertia check: $path")
+        NativeLog.d("Navigation") { "🚀 Navigating with Inertia check: $path" }
 
         // Escape the path for JavaScript string (use double quotes to avoid issues with /)
         val escapedPath = path.replace("\\", "\\\\").replace("\"", "\\\"")

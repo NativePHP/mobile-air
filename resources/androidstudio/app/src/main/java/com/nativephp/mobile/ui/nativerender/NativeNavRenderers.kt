@@ -20,6 +20,7 @@ import com.nativephp.mobile.ui.getIconName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import com.nativephp.mobile.utils.NativeLog
 
 private const val TAG = "NativeNavRenderers"
 
@@ -203,7 +204,7 @@ private fun RenderSideNavItemContent(
         },
         selected = active,
         onClick = {
-            Log.d(TAG, "Side nav item clicked: $label -> $url")
+            NativeLog.d(TAG) { "Side nav item clicked: $label -> $url" }
             val openInBrowser = props.getBool("open_in_browser") || isExternalUrl(url)
             if (openInBrowser) {
                 try {

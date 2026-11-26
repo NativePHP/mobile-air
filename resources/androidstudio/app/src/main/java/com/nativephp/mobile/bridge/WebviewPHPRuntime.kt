@@ -11,6 +11,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * A dedicated PHP context for one embedded php-mode webview.
@@ -79,7 +80,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
                 return
             }
 
-            Log.i(TAG, "suspending ${runtimes.size} context(s) for runtime reboot")
+            NativeLog.i(TAG) { "suspending ${runtimes.size} context(s) for runtime reboot" }
 
             // Bounded — a wedged context must not deadlock the reload.
             // Timing out means we are about to reboot with a live context
@@ -113,7 +114,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
                 rebootInFlight = false
                 rebootFinished.signalAll()
             }
-            Log.i(TAG, "reboot window closed — contexts re-boot on next request")
+            NativeLog.i(TAG) { "reboot window closed — contexts re-boot on next request" }
         }
 
         /** Park the calling lane while a persistent-runtime reboot is in flight. */
@@ -186,7 +187,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
                 val cookieHeader = LaravelCookieStore.asCookieHeader()
 
                 val start = System.currentTimeMillis()
-                Log.i(TAG, "--> ${request.method} ${request.uri}")
+                NativeLog.i(TAG) { "--> ${request.method} ${request.uri}" }
 
                 val output = bridge.nativeWebviewPhpRequestBytes(
                     request.method,
@@ -200,7 +201,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
 
                 val lineEnd = output.indexOf('\r'.code.toByte()).let { if (it < 0) minOf(output.size, 80) else minOf(it, 80) }
                 val statusLine = String(output, 0, lineEnd, Charsets.UTF_8)
-                Log.i(TAG, "<-- $statusLine (${output.size} bytes, ${System.currentTimeMillis() - start}ms)")
+                NativeLog.i(TAG) { "<-- $statusLine (${output.size} bytes, ${System.currentTimeMillis() - start}ms)" }
 
                 output
             }.get()
@@ -231,7 +232,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
             if (booted) {
                 bridge.nativeWebviewPhpShutdown()
                 booted = false
-                Log.i(TAG, "context released")
+                NativeLog.i(TAG) { "context released" }
             }
             needsBoot = false
         }
@@ -258,7 +259,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
         // Leave the door open on failure — the next request retries rather
         // than leaving the webview permanently dead.
         needsBoot = !booted
-        Log.i(TAG, if (booted) "boot OK" else "boot FAILED ($rc)")
+        if (booted) NativeLog.perf(TAG) { "boot OK" } else Log.e(TAG, "boot FAILED ($rc)")
     }
 
     /**
@@ -279,7 +280,7 @@ class WebviewPHPRuntime(private val bridge: PHPBridge) {
                 if (booted) {
                     bridge.nativeWebviewPhpShutdown()
                     booted = false
-                    Log.i(TAG, "context suspended for runtime reboot")
+                    NativeLog.i(TAG) { "context suspended for runtime reboot" }
                 }
                 needsBoot = true
             })

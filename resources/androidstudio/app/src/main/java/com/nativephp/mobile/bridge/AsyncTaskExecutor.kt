@@ -6,6 +6,7 @@ import com.nativephp.mobile.ui.nativerender.NativeElementBridge
 import org.json.JSONObject
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Runs dispatched async tasks immediately on a small pool of background PHP
@@ -144,7 +145,7 @@ class AsyncTaskExecutor(
         }
 
         shared = this
-        Log.i(TAG, "Async executor ready (0/$maxSlots threads, boot on first task, idle timeout ${idleTimeoutMs / 1000}s)")
+        NativeLog.perf(TAG) { "Async executor ready (0/$maxSlots threads, boot on first task, idle timeout ${idleTimeoutMs / 1000}s)" }
     }
 
     /**
@@ -199,7 +200,7 @@ class AsyncTaskExecutor(
         } else if (waiting >= live - busy) {
             // Never silently over-subscribe: surface when tasks are queueing
             // behind a saturated pool so the concurrency ceiling is visible.
-            Log.i(TAG, "async task $taskId queued behind $waiting others (pool=$live, max=$maxSlots)")
+            NativeLog.i(TAG) { "async task $taskId queued behind $waiting others (pool=$live, max=$maxSlots)" }
         }
 
         return true
@@ -241,8 +242,7 @@ class AsyncTaskExecutor(
             return
         }
 
-        Log.i(TAG, "async thread $index booted in ${System.currentTimeMillis() - started} ms")
-
+        NativeLog.perf(TAG) { "async thread $index booted in ${System.currentTimeMillis() - started} ms" }
         var idleSince = System.currentTimeMillis()
 
         while (true) {
@@ -284,7 +284,7 @@ class AsyncTaskExecutor(
         }
 
         if (running) {
-            Log.i(TAG, "async thread $index idle for ${idleTimeoutMs / 1000}s; shutting its context down")
+            NativeLog.i(TAG) { "async thread $index idle for ${idleTimeoutMs / 1000}s; shutting its context down" }
         }
 
         try {
@@ -361,7 +361,7 @@ class AsyncTaskExecutor(
     fun stop(): Boolean {
         if (!running) return true
 
-        Log.i(TAG, "Stopping async executor...")
+        NativeLog.i(TAG) { "Stopping async executor..." }
         running = false
 
         if (shared === this) {
@@ -412,7 +412,7 @@ class AsyncTaskExecutor(
         watchdogThread = null
         inFlight.clear()
 
-        Log.i(TAG, if (clean) "Async executor stopped" else "Async executor stop TIMED OUT")
+        NativeLog.i(TAG) { if (clean) "Async executor stopped" else "Async executor stop TIMED OUT" }
         return clean
     }
 

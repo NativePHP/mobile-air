@@ -2,7 +2,6 @@ package com.nativephp.mobile.ui.nativerender
 
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.FrameMetrics
 import android.view.Window
 import org.json.JSONArray
@@ -10,6 +9,7 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Tracks end-to-end interaction latency across the full pipeline:
@@ -137,11 +137,11 @@ object PerformanceTracker {
         lastShadowParseNanos = parseNanos
         lastShadowDiffNanos = diffNanos
         if (logRealtime) {
-            Log.d(TAG, String.format(
+            NativeLog.perf(TAG) { String.format(
                 "SHADOW parse=%.3fms diff=%.3fms total=%.3fms",
                 parseNanos / 1_000_000.0, diffNanos / 1_000_000.0,
                 (parseNanos + diffNanos) / 1_000_000.0
-            ))
+            ) }
         }
     }
 
@@ -163,11 +163,11 @@ object PerformanceTracker {
         diffMeasurements.add(m)
 
         if (logRealtime) {
-            Log.d(TAG, String.format(
+            NativeLog.perf(TAG) { String.format(
                 "DIFF diff=%s time=%.3fms reused=%d replaced=%d ratio=%.1f%%",
                 if (diffEnabled) "ON" else "OFF",
                 m.diffTimeMs, nodesReused, nodesReplaced, m.reuseRatio * 100
-            ))
+            ) }
         }
     }
 
@@ -227,11 +227,11 @@ object PerformanceTracker {
                 interactions.add(m)
 
                 if (logRealtime) {
-                    Log.d(TAG, String.format(
+                    NativeLog.perf(TAG) { String.format(
                         "INTERACTION cb=%d type=%s | event_delivery=%.2fms compose_post=%.2fms frame_paint=%.2fms | TOTAL=%.2fms%s",
                         m.callbackId, m.interactionType, m.eventDeliveryMs, m.composePostMs, m.framePaintMs, m.totalRoundTripMs,
                         if (!versionsMatch) " [approx]" else ""
-                    ))
+                    ) }
                 }
             }
         }
@@ -268,23 +268,23 @@ object PerformanceTracker {
 
             // Log slow frames (>16ms budget)
             if (logRealtime && total > 16_000_000) {
-                Log.w(TAG, String.format(
+                NativeLog.perf(TAG) { String.format(
                     "SLOW FRAME total=%.1fms layout=%.1fms draw=%.1fms sync=%.1fms",
                     fd.totalNs / 1_000_000.0, fd.layoutNs / 1_000_000.0,
                     fd.drawNs / 1_000_000.0, fd.syncNs / 1_000_000.0
-                ))
+                ) }
             }
         }
 
         window.addOnFrameMetricsAvailableListener(frameMetricsListener!!, mainHandler)
-        Log.d(TAG, "FrameMetrics listener attached")
+        NativeLog.d(TAG) { "FrameMetrics listener attached" }
     }
 
     fun detachFrameMetrics(window: Window) {
         frameMetricsListener?.let {
             window.removeOnFrameMetricsAvailableListener(it)
             frameMetricsListener = null
-            Log.d(TAG, "FrameMetrics listener detached")
+            NativeLog.d(TAG) { "FrameMetrics listener detached" }
         }
     }
 
@@ -297,7 +297,7 @@ object PerformanceTracker {
     fun startCaptureWindow() {
         captureWindowFrames.clear()
         captureWindowActive = true
-        Log.d(TAG, "Capture window started")
+        NativeLog.d(TAG) { "Capture window started" }
     }
 
     /**
@@ -306,7 +306,7 @@ object PerformanceTracker {
      */
     fun stopCaptureWindow() {
         captureWindowActive = false
-        Log.d(TAG, "Capture window stopped — ${captureWindowFrames.size} frames captured")
+        NativeLog.d(TAG) { "Capture window stopped — ${captureWindowFrames.size} frames captured" }
     }
 
     /**
@@ -479,19 +479,19 @@ object PerformanceTracker {
         lastShadowDiffNanos = 0L
         treeUpdateVersion = 0L
         treePostVersion = 0L
-        Log.d(TAG, "Reset — all data cleared")
+        NativeLog.d(TAG) { "Reset — all data cleared" }
     }
 
     /** Quick summary for logcat. */
     fun logSummary() {
         if (interactions.isEmpty() && frameData.isEmpty()) {
-            Log.d(TAG, "No data collected")
+            NativeLog.perf(TAG) { "No data collected" }
             return
         }
 
         if (interactions.isNotEmpty()) {
             val totals = interactions.map { it.totalRoundTripMs }
-            Log.d(TAG, String.format(
+            NativeLog.perf(TAG) { String.format(
                 "INTERACTIONS: n=%d avg=%.2fms p50=%.2fms p95=%.2fms p99=%.2fms worst=%.2fms",
                 totals.size,
                 totals.average(),
@@ -499,13 +499,13 @@ object PerformanceTracker {
                 percentile(totals.sorted(), 95),
                 percentile(totals.sorted(), 99),
                 totals.max()
-            ))
+            ) }
         }
 
         if (frameData.isNotEmpty()) {
             val totalMs = frameData.map { it.totalNs / 1_000_000.0 }
             val jankCount = totalMs.count { it > 16.0 }
-            Log.d(TAG, String.format(
+            NativeLog.perf(TAG) { String.format(
                 "FRAMES: n=%d avg=%.2fms p95=%.2fms jank=%d (%.1f%%) fps=%.1f",
                 totalMs.size,
                 totalMs.average(),
@@ -513,7 +513,7 @@ object PerformanceTracker {
                 jankCount,
                 jankCount * 100.0 / totalMs.size,
                 if (totalMs.average() > 0) 1000.0 / totalMs.average() else 0.0
-            ))
+            ) }
         }
     }
 

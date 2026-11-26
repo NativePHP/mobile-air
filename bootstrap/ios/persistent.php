@@ -73,7 +73,10 @@ $bootstrapMs = round(($_timing['bootstrap'] - $_timing['autoload']) * 1000, 1);
 $runtimeBootMs = round(($_timing['runtime_boot'] - $_timing['bootstrap']) * 1000, 1);
 $totalMs = round(($_timing['runtime_boot'] - $_timing['start']) * 1000, 1);
 
-error_log("PerfTiming: persistent.php opcache={$_opcacheInfo} autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms runtime_boot={$runtimeBootMs}ms TOTAL={$totalMs}ms");
+require_once __DIR__.'/../shared/perf-timing.php';
+if (nativephp_perf_timing_enabled($app ?? null)) {
+    error_log("PerfTiming: persistent.php opcache={$_opcacheInfo} autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms runtime_boot={$runtimeBootMs}ms TOTAL={$totalMs}ms");
+}
 
 // The interpreter stays alive from here.
 // All subsequent work happens via zend_eval_string() calling Runtime::dispatch().

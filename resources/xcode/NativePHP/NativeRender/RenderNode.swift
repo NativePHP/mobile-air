@@ -74,7 +74,7 @@ final class SwiftUIRendererRegistry {
         lock.unlock()
 
         if let refusal {
-            NSLog("[NativePHP] %@", refusal)
+            NativeLog.error("[NativePHP] \(refusal)")
             return false
         }
         return true

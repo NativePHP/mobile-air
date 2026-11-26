@@ -79,7 +79,10 @@ try {
     $totalMs = round(($_timing['terminate'] - $_timing['start']) * 1000, 1);
 
     // Log timing via error_log (shows in logcat)
-    error_log("PerfTiming: PHP opcache={$_opcacheInfo} autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms kernel_boot={$kernelBootMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+    require_once __DIR__.'/../shared/perf-timing.php';
+    if (nativephp_perf_timing_enabled($app ?? null)) {
+        error_log("PerfTiming: PHP opcache={$_opcacheInfo} autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms kernel={$kernelMs}ms capture={$captureMs}ms kernel_boot={$kernelBootMs}ms handle={$handleMs}ms terminate={$terminateMs}ms TOTAL={$totalMs}ms");
+    }
 
     // Send headers and body manually (for your bridge)
     $code = $response->getStatusCode();
