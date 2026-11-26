@@ -57,6 +57,112 @@ struct NativePHPApp: App {
     private func performDeferredInitialization() {
         NSLog("[NativePHP] Deferred initialization starting")
 
+        // 1–3. Prepare, extract and boot PHP, or wait for a boot that work
+        // without a screen (an App Intent, a background task) already started.
+        let booted = Self.bootRuntime(timeout: .infinity)
+
+        continueAfterBoot(booted: booted)
+    }
+
+    private enum RuntimeBoot {
+        case notStarted
+        case booting
+        case finished(Bool)
+    }
+
+    private static var runtimeBoot = RuntimeBoot.notStarted
+    private static let runtimeBootCondition = NSCondition()
+
+    /// Makes the app's PHP usable without a screen, for work iOS runs with
+    /// the app closed: an App Intent, a background task, a notification
+    /// action. Returns whether the persistent runtime is booted. To run a
+    /// command from there, use runArtisan(_:timeout:).
+    ///
+    /// PHP boots once per process, through the same steps the app takes when
+    /// its splash appears: environment, extraction of the bundle (including
+    /// a DEBUG build's and a pending update's), the persistent boot, and the
+    /// plugins' onAppReady callbacks. Whichever of the app and a caller gets
+    /// here first runs them; the other waits for that boot and gets its
+    /// result. Returns false in classic mode, which has no persistent
+    /// runtime, when the boot failed, and after `timeout` seconds of waiting
+    /// for another caller's boot.
+    ///
+    /// Blocks while PHP boots, a second or more on a cold start, so call it
+    /// off the main thread.
+    static func bootRuntime(timeout: TimeInterval = 30) -> Bool {
+        runtimeBootCondition.lock()
+
+        if case .notStarted = runtimeBoot {
+            // The app sets `shared` in init(), before iOS hands it any work.
+            guard let app = shared else {
+                runtimeBootCondition.unlock()
+                return false
+            }
+
+            runtimeBoot = .booting
+            runtimeBootCondition.unlock()
+
+            let booted = app.bootPHP()
+
+            runtimeBootCondition.lock()
+            runtimeBoot = .finished(booted)
+            runtimeBootCondition.broadcast()
+            runtimeBootCondition.unlock()
+
+            return booted
+        }
+
+        let deadline = timeout.isFinite ? Date().addingTimeInterval(timeout) : .distantFuture
+
+        while case .booting = runtimeBoot {
+            if !runtimeBootCondition.wait(until: deadline) {
+                break
+            }
+        }
+
+        defer { runtimeBootCondition.unlock() }
+
+        if case .finished(let booted) = runtimeBoot {
+            return booted
+        }
+
+        return false
+    }
+
+    /// Runs an artisan command for work without a screen, booting PHP first
+    /// as bootRuntime(timeout:) does, and returns its output. Nil when PHP
+    /// isn't available, so the command didn't run.
+    ///
+    /// The command runs in the ephemeral runtime, a PHP context beside the
+    /// app's, booted on first use. Not in the persistent runtime: while a
+    /// native screen is live, its event loop holds that runtime's only
+    /// thread, and a command sent there waits until the screen goes.
+    ///
+    /// Blocks until the command finishes, so call it off the main thread.
+    static func runArtisan(_ command: String, timeout: TimeInterval = 30) -> String? {
+        guard bootRuntime(timeout: timeout) else {
+            return nil
+        }
+
+        if ephemeral_php_is_booted() == 0 {
+            let bootstrap = AppUpdateManager.shared.getAppPath() + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
+
+            guard ephemeral_php_boot(bootstrap) == 0 else {
+                return nil
+            }
+        }
+
+        guard let result = ephemeral_php_artisan(command) else {
+            return nil
+        }
+
+        defer { free(UnsafeMutableRawPointer(mutating: result)) }
+
+        return String(cString: result)
+    }
+
+    /// Steps 1–3 of startup. Runs once per process, through bootRuntime().
+    private func bootPHP() -> Bool {
         // 1. Initialize PHP environment (env vars, php.ini, database)
         NSLog("[NativePHP] preparePhpEnvironment START")
         _ = preparePhpEnvironment()
@@ -100,6 +206,12 @@ struct NativePHPApp: App {
             }
         }
 
+        return booted
+    }
+
+    /// Steps 4–8 of startup, which only the app runs: the first screen, the
+    /// plugins' onAppLaunch callbacks, hot reload and the queue workers.
+    private func continueAfterBoot(booted: Bool) {
         // 4. Now that PHP is booted, decide the boot transport (native-first).
         // NATIVE_DIRECT: dispatch the first route straight into the persistent
         // runtime — no WKWebView, no WebContent/Networking processes — and let
@@ -153,14 +265,13 @@ struct NativePHPApp: App {
         // → applyPendingUpdates), and only when that plugin is installed
         // (NATIVEPHP_OTA). Do not re-enable a Bifrost client here.
 
-        // 8. Defer queue worker boot — start AFTER critical path completes
-        //    so it doesn't compete for CPU/memory during first page render
+        // 8. Background lanes. Neither boots PHP here: the queue worker boots
+        //    when a job is pushed (or one was left queued last run), and the
+        //    async pool boots a slot on the first AsyncTask::dispatch().
         if booted {
             NSLog("[NativePHP] PHPQueueWorker.start() (deferred)")
             PHPQueueWorker.shared.start()
 
-            // Async task lane (AsyncTask::dispatch()) — pool boots on a
-            // background thread, so this returns immediately.
             NSLog("[NativePHP] AsyncTaskExecutor.start() (deferred)")
             AsyncTaskExecutor.shared.start()
         } else {

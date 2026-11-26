@@ -8,6 +8,7 @@ import com.nativephp.mobile.bridge.functions.DialogFunctions
 import com.nativephp.mobile.bridge.functions.EventFunctions
 import com.nativephp.mobile.bridge.functions.FileFunctions
 import com.nativephp.mobile.bridge.functions.PerfFunctions
+import com.nativephp.mobile.bridge.functions.QueueWorkerFunctions
 import com.nativephp.mobile.bridge.functions.SystemFunctions
 import com.nativephp.mobile.bridge.functions.UIFunctions
 import com.nativephp.mobile.bridge.plugins.registerPluginBridgeFunctions
@@ -23,6 +24,10 @@ fun registerBridgeFunctions(activity: FragmentActivity, context: Context) {
     // (AsyncTask::dispatch()). iOS twin: Bridge/Functions/AsyncFunctions.swift.
     registry.register("AsyncTask.Dispatch", AsyncFunctions.Dispatch())
     registry.register("AsyncTask.Complete", AsyncFunctions.Complete())
+
+    // QueueWorker.Wake: a job was pushed, so boot the queue worker (or have it
+    // poll now). iOS twin: Bridge/PHPQueueWorker.swift (QueueWorkerFunctions).
+    registry.register("QueueWorker.Wake", QueueWorkerFunctions.Wake())
 
     // Event.*: carries a BroadcastsGlobally event fired on another PHP thread
     // to the native screens' runloop. Queue only, never the web sink.

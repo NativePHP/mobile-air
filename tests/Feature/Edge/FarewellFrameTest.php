@@ -75,21 +75,15 @@ beforeEach(function () {
     app('view')->addLocation(__DIR__.'/../../Fixtures/views');
 
     // `bottom_sheet` normally comes from a UI plugin.
-    $this->savedElements = ElementRegistry::all();
-    ElementRegistry::register('bottom_sheet', BottomSheet::class);
-    ElementRegistry::register('acme.sheet', FarewellPluginSheet::class);
-    ElementRegistry::register('acme.panel', FarewellPluginPanel::class);
+    ElementRegistry::swap('bottom_sheet', BottomSheet::class);
+    ElementRegistry::swap('acme.sheet', FarewellPluginSheet::class);
+    ElementRegistry::swap('acme.panel', FarewellPluginPanel::class);
 
     ComponentRegistry::reset();
     ComponentRegistry::components(['farewell-sheets-child' => FarewellSheetsChild::class]);
 });
 
 afterEach(function () {
-    ElementRegistry::reset();
-    foreach ($this->savedElements as $type => $class) {
-        ElementRegistry::register($type, $class);
-    }
-
     ComponentRegistry::reset();
 });
 

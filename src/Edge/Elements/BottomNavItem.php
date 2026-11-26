@@ -133,6 +133,11 @@ class BottomNavItem extends Element
         return $this->rawSearchItems;
     }
 
+    public function getId(): string
+    {
+        return (string) ($this->props['id'] ?? '');
+    }
+
     public function getUrl(): string
     {
         return (string) ($this->props['url'] ?? '');

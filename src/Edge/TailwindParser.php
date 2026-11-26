@@ -397,7 +397,9 @@ class TailwindParser
     public static function parse(string $classString): array
     {
         if (isset(self::$cache[$classString])) {
-            self::recordUnsupported(self::$unsupportedCache[$classString] ?? []);
+            if (self::$diagnosticScopes !== []) {
+                self::recordUnsupported(self::$unsupportedCache[$classString] ?? []);
+            }
 
             return self::$cache[$classString];
         }

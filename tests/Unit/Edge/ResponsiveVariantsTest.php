@@ -13,15 +13,15 @@ beforeEach(function () {
     NativeElementCollector::reset();
     TailwindParser::clearCache();
     TailwindParser::setBreakpoints(null);
-    ElementRegistry::reset();
-    ElementRegistry::register('text', Text::class);
-    ElementRegistry::register('lazy_grid', LazyGrid::class);
-    ElementRegistry::register('image', Image::class);
+    ElementRegistry::fake([
+        'text' => Text::class,
+        'lazy_grid' => LazyGrid::class,
+        'image' => Image::class,
+    ]);
 });
 
 afterEach(function () {
     TailwindParser::setBreakpoints(null);
-    ElementRegistry::reset();
 });
 
 function collectedVariants(array $tree): array

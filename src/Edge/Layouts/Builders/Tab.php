@@ -191,6 +191,11 @@ class Tab
         return $this;
     }
 
+    public function getId(): string
+    {
+        return $this->id;
+    }
+
     public function getUrl(): string
     {
         return $this->url;

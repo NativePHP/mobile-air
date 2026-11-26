@@ -77,14 +77,20 @@ struct NativeRootTabsRenderer: View {
         let tabs = node.children.filter { $0.type == "bottom_nav_item" }
         let accessory = node.children.first { $0.type == "tab_accessory" }
         let currentUri = node.props.getString("current_uri", default: "")
-        // Determine which tab "owns" the current URI via longest URL
+        let tabHighlight = node.props.getString("tab_highlight", default: "")
+        let highlightedIdx: Int? = tabHighlight.isEmpty
+            ? nil
+            : tabs.firstIndex { $0.props.getString("id", default: "") == tabHighlight }
+        // Determine which tab "owns" the current URI via an explicit
+        // `TabBarOptions::highlight()` override first, then longest URL
         // prefix match against tab URLs. This is what lets a pushed
         // sub-route (e.g. `/syncup-native/chat/123` under a
         // `/syncup-native` Chats tab) render INSIDE the Chats tab's
         // NavigationStack rather than full-screen-replacing the layout.
         // Falls back to `BottomNavItem.active` (TabBar::highlight set
         // the same way) so non-prefix tab layouts still pick correctly.
-        let owningIdx = owningTabIndex(for: currentUri, tabs: tabs)
+        let owningIdx = highlightedIdx
+            ?? owningTabIndex(for: currentUri, tabs: tabs)
             ?? (tabs.firstIndex { $0.props.getBool("active") } ?? 0)
         let owningId = owningIdx < tabs.count
             ? tabs[owningIdx].props.getString("id", default: "")
@@ -97,10 +103,13 @@ struct NativeRootTabsRenderer: View {
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
             let stackDepth = node.props.getInt("stack_depth", default: 0)
+            let stackUris = node.props.getString("stack_uris", default: "")
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
-                coord.receive(uri: currentUri, depth: stackDepth, rootNode: node)
+                coord.receive(uri: currentUri, depth: stackDepth, stack: stackUris, rootNode: node)
             }
         }
 
