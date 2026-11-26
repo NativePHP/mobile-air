@@ -60,6 +60,8 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         val isDarkMode = isSystemInDarkTheme()
         val safeAreaTop = LocalSafeAreaTop.current
         val safeAreaBottom = LocalSafeAreaBottom.current
+        val safeAreaLeft = LocalSafeAreaLeft.current
+        val safeAreaRight = LocalSafeAreaRight.current
         val availableWidth = LocalAvailableWidth.current
         val availableHeight = LocalAvailableHeight.current
 
@@ -317,7 +319,7 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
 
         modifier = modifier
             .nodeAccessibility(node)
-            .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight)
+            .nodeLayout(node.layout, safeAreaTop, safeAreaBottom, availableWidth, availableHeight, safeAreaLeft, safeAreaRight)
 
         // In-place text change animation (`content_transition` — numeric
         // roll / crossfade). Wraps the content in AnimatedContent keyed on
