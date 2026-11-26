@@ -284,6 +284,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Bootstrap Cache
+    |--------------------------------------------------------------------------
+    |
+    | After installing a new version of your app, the device caches its
+    | config, event listeners and compiled Blade views once, so that every
+    | launch after that skips parsing all of your config files. It is
+    | skipped for DEBUG builds.
+    |
+    | With the config cached, Laravel no longer reads your .env file, so
+    | env() called anywhere outside the config/ directory returns null for
+    | values that only live there. If your app relies on that, turn this off.
+    |
+    */
+
+    'cache_bootstrap' => env('NATIVEPHP_CACHE_BOOTSTRAP', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment Keys to Clean Up
     |--------------------------------------------------------------------------
     |

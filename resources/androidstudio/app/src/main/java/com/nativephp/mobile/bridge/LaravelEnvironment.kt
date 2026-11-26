@@ -806,17 +806,26 @@ class LaravelEnvironment(private val context: Context) {
         // worker runs once and clears it if the queue is empty.
         PHPQueueWorker.markPending(context)
 
-        // Cache the Laravel bootstrap so every subsequent cold boot skips config
-        // parsing, event discovery, and Blade compilation. Built HERE — once per app
-        // update, with the device's real paths — rather than at build time on the host
-        // (where the cached paths would be wrong, which is why we optimize:clear above
-        // first). This is the biggest Laravel-side cold-start lever; view:cache in
-        // particular precompiles every Blade view so the first page render doesn't have
-        // to. `route:cache` is intentionally omitted — NativePHP registers internal
-        // closure routes (e.g. /_native/api/events) that can't be serialized.
-        phpBridge.runArtisanCommand("config:cache")
-        phpBridge.runArtisanCommand("event:cache")
-        phpBridge.runArtisanCommand("view:cache")
+        // Cache config, event listeners and compiled views once per app update,
+        // with the device's real paths, so every later cold boot loads one file
+        // instead of parsing every config file. native:cache-bootstrap keeps the
+        // APP_KEY out of the file, records the paths so a later boot can move
+        // them, and skips DEBUG builds and apps that set
+        // nativephp.cache_bootstrap to false. Routes are never cached:
+        // Route::native() has to run to fill the native router.
+        val started = System.currentTimeMillis()
+        val output = phpBridge.runArtisanCommand("native:cache-bootstrap")
+        Log.d(TAG, "⚡ native:cache-bootstrap took ${System.currentTimeMillis() - started}ms: ${output.trim()}")
+    }
+
+    /**
+     * Drop the config and event caches. Hot reload calls this before it
+     * reboots PHP, so changed config files and listeners take effect.
+     */
+    fun clearBootstrapCache() {
+        for (name in listOf("config.php", "events.php")) {
+            File(appStorageDir, "$DIR_LARAVEL/bootstrap/cache/$name").delete()
+        }
     }
 
     private fun setupDirectories() {

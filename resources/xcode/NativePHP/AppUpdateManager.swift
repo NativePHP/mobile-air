@@ -93,9 +93,41 @@ class AppUpdateManager {
         }
         #endif
 
+        // Once per extracted version, after every cache above is gone and
+        // before the persistent runtime boots, so its boot and every one after
+        // it loads the cached config. DEBUG builds extract on every launch and
+        // are not cached (native:cache-bootstrap skips them too).
+        if didExtract && !isDebugBundle() {
+            cacheBootstrap()
+        }
+
         appReady = true
         print("✅ App is ready (didExtract=\(didExtract))")
         return didExtract
+    }
+
+    /// Cache config, event listeners and compiled views on the device. See
+    /// `native:cache-bootstrap`. Built here rather than at build time because
+    /// the config holds this device's paths. Opt out with
+    /// `nativephp.cache_bootstrap`.
+    private func cacheBootstrap() {
+        guard let app = NativePHPApp.shared else {
+            print("❌ NativePHPApp.shared not available, bootstrap not cached")
+            return
+        }
+
+        let started = Date()
+        let output = app.artisan(additionalArgs: ["native:cache-bootstrap"])
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        NSLog("[NativePHP] native:cache-bootstrap took \(ms)ms: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+    }
+
+    /// Drop the config and event caches. Hot reload calls this before it
+    /// reboots PHP, so changed config files and listeners take effect.
+    func clearBootstrapCache() {
+        for name in ["config.php", "events.php"] {
+            try? FileManager.default.removeItem(atPath: appPath + "/bootstrap/cache/" + name)
+        }
     }
 
     private func hasApp() -> Bool {
