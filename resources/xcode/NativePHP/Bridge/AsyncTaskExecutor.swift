@@ -56,20 +56,25 @@ final class AsyncTaskExecutor {
     /// All mutable state below is guarded by `lock`.
     private var running = false
 
-    /// True from `start()` until the boot loop finishes. `stop()` waits this out
-    /// rather than bailing: a stop that lands mid-boot must still tear the slots
-    /// down, or their C handles leak and the pool can never be started again.
-    private var starting = false
+    /// Incremented on every `start()` and `stop()` so a slot boot that outlives
+    /// a stop timeout can never attach itself to a later generation.
+    private var generation: UInt64 = 0
+
+    /// Resolved bootstrap path captured in `start()` for on-demand slot boots.
+    private var bootstrapPath = ""
+
+    /// Number of slots currently queued or running `_async_php_boot`.
+    /// `slotHandles.count + bootingSlots` never exceeds `poolSize`.
+    private var bootingSlots = 0
+
+    /// Serializes `_async_php_boot()` calls so two lazy boots never race inside
+    /// `setup_persistent_sapi()` / `php_embed_module.startup()`.
+    private let bootQueue = DispatchQueue(label: "nativephp-async-boot", qos: .utility)
     private let bootFinished = DispatchGroup()
 
     /// Timeout work items for dispatched tasks, keyed by task id.
     private var watchdogs: [String: DispatchWorkItem] = [:]
     private let watchdogQueue = DispatchQueue(label: "nativephp-async-watchdog")
-
-    /// Tasks dispatched while the pool is still booting, run once it's up. The
-    /// pool boots lazily after launch, and a task dispatched in that window is
-    /// worth holding for a moment rather than failing outright.
-    private var pending: [String] = []
 
     private init() {}
 
@@ -87,72 +92,22 @@ final class AsyncTaskExecutor {
         _async_php_on_lane_thread() != 0
     }
 
-    /// Boot the slot pool and begin accepting dispatches. Slots boot their PHP
-    /// context up front (each is a full Laravel boot), mirroring the queue worker.
+    /// Arm the pool to accept dispatches. Slots boot their PHP context lazily
+    /// on demand (up to `poolSize`), mirroring Android's `AsyncTaskExecutor`
+    /// so apps that never dispatch async tasks pay zero extra Laravel boots.
     func start() {
         lock.lock()
-        guard !running, !starting else {
+        guard !running else {
             lock.unlock()
             NSLog("AsyncTaskExecutor: already running")
             return
         }
-        starting = true
+        bootstrapPath = AppUpdateManager.shared.getAppPath() + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
+        generation &+= 1
+        running = true
         lock.unlock()
 
-        let appPath = AppUpdateManager.shared.getAppPath()
-        let bootstrapPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
-
-        bootFinished.enter()
-
-        // Boot on a background thread so we never block the caller (deferred init).
-        DispatchQueue.global(qos: .utility).async {
-            defer { self.bootFinished.leave() }
-
-            for i in 0..<self.poolSize {
-                // A stop() that arrived mid-boot: don't keep booting slots
-                // nobody is going to tear down.
-                self.lock.lock()
-                let aborted = !self.starting
-                self.lock.unlock()
-                if aborted {
-                    NSLog("AsyncTaskExecutor: boot aborted after %d slot(s)", i)
-                    break
-                }
-
-                let handle = bootstrapPath.withCString { _async_php_boot($0) }
-                if handle < 0 {
-                    NSLog("AsyncTaskExecutor: slot %d boot FAILED (%d)", i, handle)
-                    continue
-                }
-                self.lock.lock()
-                self.idleSlots.append(self.slotHandles.count)
-                self.slotHandles.append(handle)
-                self.queues.append(DispatchQueue(label: "nativephp-async-\(handle)", qos: .utility))
-                self.lock.unlock()
-            }
-
-            self.lock.lock()
-            let aborted = !self.starting
-            self.starting = false
-            self.running = !aborted && !self.slotHandles.isEmpty
-            let booted = self.slotHandles.count
-            let queued = self.pending
-            self.pending.removeAll()
-            let live = self.running
-            self.lock.unlock()
-
-            NSLog("AsyncTaskExecutor: started (%d/%d slots)", booted, self.poolSize)
-
-            // Anything dispatched while we were booting runs now. If the pool
-            // never came up, their watchdogs are what will unblock the UI.
-            for taskId in queued {
-                if live {
-                    _ = self.submit(taskId: taskId)
-                } else {
-                    NSLog("AsyncTaskExecutor: task %@ dropped — pool failed to boot", taskId)
-                }
-            }
-        }
+        NSLog("AsyncTaskExecutor: ready (lazy pool, max %d slots)", poolSize)
     }
 
     /// Enqueue a dispatched task id on the next slot. Returns immediately.
@@ -185,20 +140,14 @@ final class AsyncTaskExecutor {
         return true
     }
 
-    /// Hand a task to an idle slot, or hold it until one is free — or until the
-    /// pool has booted.
+    /// Hand a task to an idle slot, or queue it and boot a new slot on demand
+    /// if the pool has not yet reached `poolSize`.
     private func submit(taskId: String) -> Bool {
         lock.lock()
 
-        if starting {
-            pending.append(taskId)
+        guard running else {
             lock.unlock()
-            return true
-        }
-
-        guard running, !slotHandles.isEmpty else {
-            lock.unlock()
-            NSLog("AsyncTaskExecutor: dispatch(%@) dropped — no booted slots", taskId)
+            NSLog("AsyncTaskExecutor: dispatch(%@) dropped — executor not running", taskId)
             return false
         }
 
@@ -207,9 +156,21 @@ final class AsyncTaskExecutor {
             // behind a saturated pool, as Android does.
             let ahead = waiting.count
             waiting.append(taskId)
+            let shouldBoot = (slotHandles.count + bootingSlots) < poolSize
+            let path = bootstrapPath
+            let bootGeneration = generation
             let slotCount = slotHandles.count
+            if shouldBoot {
+                bootingSlots += 1
+                bootFinished.enter()
+            }
             lock.unlock()
-            NSLog("AsyncTaskExecutor: task %@ queued behind %d others (pool=%d)", taskId, ahead, slotCount)
+
+            if shouldBoot {
+                bootSlot(bootstrapPath: path, bootGeneration: bootGeneration)
+            } else {
+                NSLog("AsyncTaskExecutor: task %@ queued behind %d others (pool=%d)", taskId, ahead, slotCount)
+            }
             return true
         }
 
@@ -220,6 +181,66 @@ final class AsyncTaskExecutor {
         run(taskId: taskId, slot: index, handle: handle, on: queue)
 
         return true
+    }
+
+    /// Boot one slot on the serial boot queue, then take the oldest waiting
+    /// task or park the new slot in `idleSlots`.
+    private func bootSlot(bootstrapPath: String, bootGeneration: UInt64) {
+        bootQueue.async {
+            defer { self.bootFinished.leave() }
+
+            self.lock.lock()
+            let activeBeforeBoot = self.running && self.generation == bootGeneration
+            if !activeBeforeBoot {
+                self.bootingSlots -= 1
+                self.lock.unlock()
+                return
+            }
+            self.lock.unlock()
+
+            let handle = bootstrapPath.withCString { _async_php_boot($0) }
+
+            self.lock.lock()
+            self.bootingSlots -= 1
+
+            if handle < 0 {
+                let stranded = self.slotHandles.isEmpty && self.bootingSlots == 0
+                let droppedCount = stranded ? self.waiting.count : 0
+                if stranded {
+                    self.waiting.removeAll()
+                }
+                self.lock.unlock()
+                NSLog("AsyncTaskExecutor: lazy slot boot FAILED (%d)", handle)
+                if droppedCount > 0 {
+                    NSLog("AsyncTaskExecutor: %d task(s) dropped — no booted slots", droppedCount)
+                }
+                return
+            }
+
+            guard self.running && self.generation == bootGeneration else {
+                // `stop()` arrived while `_async_php_boot()` was running: tear
+                // this handle down immediately so the C slot cannot leak.
+                self.lock.unlock()
+                _async_php_stop(handle)
+                return
+            }
+
+            let index = self.slotHandles.count
+            let queue = DispatchQueue(label: "nativephp-async-\(handle)", qos: .utility)
+            self.slotHandles.append(handle)
+            self.queues.append(queue)
+
+            guard !self.waiting.isEmpty else {
+                self.idleSlots.append(index)
+                self.lock.unlock()
+                return
+            }
+
+            let next = self.waiting.removeFirst()
+            self.lock.unlock()
+
+            self.run(taskId: next, slot: index, handle: handle, on: queue)
+        }
     }
 
     /// Run one task on its slot, then give the slot the next waiting task — or
@@ -287,27 +308,24 @@ final class AsyncTaskExecutor {
         item?.cancel()
     }
 
-    /// Stop the pool and shut down every slot's context. MUST be called before a
-    /// persistent-runtime reboot (php_embed_shutdown destroys shared Zend module
-    /// state the slots' live TSRM contexts reference).
+    /// Stop the pool and shut down every booted slot's context. MUST be called
+    /// before a persistent-runtime reboot (php_embed_shutdown destroys shared
+    /// Zend module state the slots' live TSRM contexts reference).
     func stop() {
         lock.lock()
-        let wasStarting = starting
-        // Tell an in-flight boot loop to stop adding slots.
-        starting = false
+        let wasBooting = bootingSlots > 0
         let hasSlots = !slotHandles.isEmpty
-        guard running || wasStarting || hasSlots else {
+        guard running || wasBooting || hasSlots else {
             lock.unlock()
             return
         }
         running = false
+        generation &+= 1
         lock.unlock()
 
-        // A boot in progress owns C slots we can't see yet. Wait for it rather
-        // than returning early: bailing here would leave those slots allocated
-        // forever, and with `start()` refusing to run twice every later dispatch
-        // would be dropped for the life of the app.
-        if wasStarting, bootFinished.wait(timeout: .now() + bootWaitTimeout) == .timedOut {
+        // Wait for any in-flight lazy slot boot so it sees `!running` and tears
+        // down its own C handle before php_embed_shutdown() runs.
+        if wasBooting, bootFinished.wait(timeout: .now() + bootWaitTimeout) == .timedOut {
             NSLog("AsyncTaskExecutor: timed out waiting for boot to settle; stopping anyway")
         }
 
@@ -315,11 +333,10 @@ final class AsyncTaskExecutor {
         let handles = slotHandles
         let slotQueues = queues
         let pendingWatchdogs = watchdogs
-        let dropped = pending + waiting
+        let dropped = waiting
         slotHandles.removeAll()
         queues.removeAll()
         watchdogs.removeAll()
-        pending.removeAll()
         waiting.removeAll()
         idleSlots.removeAll()
         running = false

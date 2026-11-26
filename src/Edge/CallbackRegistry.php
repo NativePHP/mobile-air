@@ -116,6 +116,16 @@ class CallbackRegistry
         return $id;
     }
 
+    /**
+     * What a registered expression resolves to. A screen's registry reads
+     * `method('arg', ...)`. A subclass that registers expressions in some
+     * other encoding overrides this to read them.
+     */
+    protected function parseExpression(string $expression): array
+    {
+        return self::parse($expression);
+    }
+
     public function resolve(int $id): ?array
     {
         if (! isset($this->map[$id])) {
