@@ -7,7 +7,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -123,7 +122,8 @@ class NativeElementBridge private constructor() {
         @Volatile
         private var versionMismatch: Boolean = false
 
-        private val mainHandler = Handler(Looper.getMainLooper())
+        // Lazy so JVM unit tests can load this class without a main looper.
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
         private var cachedTypeTable: Array<String>? = null
 
         /** Previous tree for incremental diff — reuse unchanged node references (shadow thread only) */
@@ -149,9 +149,25 @@ class NativeElementBridge private constructor() {
         private val eventQueue = LinkedBlockingQueue<NativeUIEvent>()
 
         /* ── Shadow Thread ── */
+        //
+        // The PHP thread queues each frame and unparks the shadow thread. The
+        // shadow thread parses every queued frame, in order, and hands only
+        // the newest one to the main thread: Compose work is coalesced,
+        // parsing is not.
+        //
+        // Parsing can't skip a frame. PHP's subtree memo sends a REUSE marker
+        // for any node it sent in the frame before, and the reader can only
+        // splice a node it has parsed. A frame dropped unparsed left every
+        // node it brought in (a list row, say) unknown here, so the next
+        // frame's REUSE for it missed, and the memo kept reusing it until its
+        // heartbeat. A list then showed only the rows added since, and lost
+        // its scroll position.
 
-        /** Pending update — AtomicReference for lock-free coalescing */
-        private val pendingUpdate = AtomicReference<ShadowUpdate?>(null)
+        /** Frames published and not yet parsed, oldest first. */
+        private val pendingUpdates = ShadowQueue<ShadowUpdate>()
+
+        /** The newest parsed frame the main thread hasn't taken yet. */
+        private val mainSlot = MainSlot<Settled>()
 
         /** Shadow thread reference */
         private var shadowThread: Thread? = null
@@ -221,37 +237,20 @@ class NativeElementBridge private constructor() {
                 }
                 val propDirect = nativeGetPropBuffer()
 
-                // Phase 3 — when NPHP_FLAG_DOUBLE_BUFFER is on, skip the
-                // heap copy entirely. The producer alternates between
-                // buffer A and B per publish, so the buffer we're about
-                // to parse is guaranteed to be untouched until the
-                // publish AFTER the next one — plenty of time for the
-                // shadow thread to finish parse, assuming parse < 2×
-                // average publish interval. Re-read runtime_flags here
-                // (not the latched startWatching value) so the toggle
-                // takes effect on the next frame.
-                //
-                // When the flag is off, fall back to the original byte[]
-                // copy — single-buffer + zero-copy is use-after-overwrite
-                // unsafe.
-                val zeroCopy = (nativeGetRuntimeFlags() and 0x04) != 0
-
-                val flatBuf = if (zeroCopy) {
-                    flatDirect.order(ByteOrder.LITTLE_ENDIAN)
-                } else {
-                    val flatBytes = ByteArray(flatDirect.capacity())
-                    flatDirect.get(flatBytes)
-                    ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
-                }
+                // Always copy the buffers. With NPHP_FLAG_DOUBLE_BUFFER this
+                // used to read the extension's buffer half without copying,
+                // which only holds until the publish after next. A parse that
+                // took longer than two publishes read a half-overwritten
+                // frame, and a queued frame waits longer than that. The copy
+                // is one memcpy of the frame on the PHP thread.
+                val flatBytes = ByteArray(flatDirect.capacity())
+                flatDirect.duplicate().apply { clear() }.get(flatBytes)
+                val flatBuf = ByteBuffer.wrap(flatBytes).order(ByteOrder.LITTLE_ENDIAN)
 
                 val propBuf = if (propDirect != null && propDirect.capacity() > 0) {
-                    if (zeroCopy) {
-                        propDirect.order(ByteOrder.LITTLE_ENDIAN)
-                    } else {
-                        val propBytes = ByteArray(propDirect.capacity())
-                        propDirect.get(propBytes)
-                        ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
-                    }
+                    val propBytes = ByteArray(propDirect.capacity())
+                    propDirect.duplicate().apply { clear() }.get(propBytes)
+                    ByteBuffer.wrap(propBytes).order(ByteOrder.LITTLE_ENDIAN)
                 } else null
 
                 // Snapshot navigation flag on PHP thread (avoid race with next update)
@@ -271,9 +270,9 @@ class NativeElementBridge private constructor() {
                     }
                 }
 
-                // Hand off to shadow thread — overwrites any pending update (coalescing)
+                // Queue it behind any frame the shadow thread hasn't parsed yet.
                 val update = ShadowUpdate(flatBuf, propBuf, typeTable, nodeCount, isNav, t0, t1)
-                pendingUpdate.set(update)
+                pendingUpdates.push(update)
                 shadowThread?.let { LockSupport.unpark(it) }
             } catch (e: Throwable) {
                 Log.e(TAG, "postTreeUpdate failed: ${e.message}", e)
@@ -282,135 +281,178 @@ class NativeElementBridge private constructor() {
 
         /**
          * Shadow thread main loop. Parks when idle, wakes on signal from
-         * postTreeUpdate(). Grabs the latest pending update (coalescing),
-         * parses the tree, diffs against previous, posts to main thread.
+         * postTreeUpdate(). Takes every queued frame, parses and diffs each
+         * in order so the next frame's REUSE markers find what they name,
+         * then offers only the newest to the main thread.
          */
         private fun shadowThreadLoop() {
             Log.d(TAG, "Shadow thread started")
             while (shadowRunning) {
-                val update = pendingUpdate.getAndSet(null)
-                if (update == null) {
+                val batch = pendingUpdates.drain()
+                if (batch.isEmpty()) {
                     LockSupport.park()
                     continue
                 }
 
-                try {
-                    val tParseStart = System.nanoTime()
-                    val tree = readTreeFromFlatBuffer(update.flatBuf, update.propBuf, update.typeTable, update.nodeCount)
-                    val tParseEnd = System.nanoTime()
-
-                    if (tree != null) {
-                        val nc = countNodes(tree.root)
-                        val prev = previousTree
-                        val isDiffOn = diffEnabled
-
-                        // Detect native-chrome continuation — same root sentinel
-                        // type across publishes. Drives both diff baseline
-                        // selection and screenKey suppression.
-                        val prevRootType = prev?.root?.type
-                        val newRootType = tree.root.type
-                        val nativeChromeContinuation =
-                            (prevRootType == "native_root_stack" && newRootType == "native_root_stack") ||
-                            (prevRootType == "native_root_tabs"  && newRootType == "native_root_tabs")
-
-                        // A `native_root_stack` renderer is about to COLD-mount
-                        // (previous publish was a different root sentinel —
-                        // tabs, WebView, or nothing). NavigationCoordinator is
-                        // a singleton that survives renderer teardown, so it
-                        // still holds the PREVIOUS stack session's rootUri and
-                        // per-URI tree cache. Without a reset, the new stack's
-                        // first publish falls through receive()'s seed/root
-                        // checks into the PUSH branch — stacking the new screen
-                        // on a stale root — and every subsequent pop animates
-                        // through the OLD page. Reset on main below, atomically
-                        // with the tree swap.
-                        val isFreshStackMount =
-                            newRootType == "native_root_stack" && prevRootType != "native_root_stack"
-
-                        val newUri = tree.root.props.getString("current_uri", "")
-                        val diffedTree: NativeUITree
-
-                        if (prev != null && !update.isNav && isDiffOn) {
-                            // State change — diff against immediate previous.
-                            val stats = DiffStats()
-                            val tDiffStart = System.nanoTime()
-                            val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
-                            val tDiffEnd = System.nanoTime()
-                            diffedTree = tree.copy(root = diffedRoot)
-                            PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
-                            PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
-                        } else if (update.isNav && nativeChromeContinuation && isDiffOn) {
-                            // Nav within native chrome — prefer the prev tree at
-                            // the SAME URI when available (pop-back to a cached
-                            // URI re-uses every unchanged ref). Fall back to the
-                            // immediate previous (tab switch / push within the
-                            // same chrome — shared chrome subtrees still match).
-                            // `prev` is non-null here — nativeChromeContinuation
-                            // requires prev?.root?.type to match a sentinel.
-                            val baseline = if (newUri.isNotEmpty()) {
-                                nativeChromePrevTrees[newUri] ?: prev
-                            } else {
-                                prev
-                            }
-                            val stats = DiffStats()
-                            val tDiffStart = System.nanoTime()
-                            val diffedRoot = diffNodeWithStats(baseline.root, tree.root, stats)
-                            val tDiffEnd = System.nanoTime()
-                            diffedTree = tree.copy(root = diffedRoot)
-                            PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
-                            PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
-                        } else {
-                            diffedTree = tree
-                            PerformanceTracker.onTreeDiffed(0, 0, nc, false)
-                            PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
-                        }
-                        previousTree = diffedTree
-
-                        // Track per-URI for native chrome so future publishes
-                        // back to the same URI can diff against it.
-                        if (newRootType == "native_root_stack" || newRootType == "native_root_tabs") {
-                            val uri = diffedTree.root.props.getString("current_uri", "")
-                            if (uri.isNotEmpty()) {
-                                nativeChromePrevTrees[uri] = diffedTree
-                            }
-                        }
-
-                        Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation")
-
-                        val isNav = update.isNav
-                        mainHandler.post {
-                            PerformanceTracker.onTreePostedToMain()
-                            NativeUIBridge.isActive.value = true
-                            val prevKey = NativeUIBridge.screenKey.intValue
-                            // Suppress screen-level screenKey bump when both
-                            // trees are the same kind of native chrome — the
-                            // NavigationStack / TabView already animates the
-                            // push / pop / tab switch internally, and bumping
-                            // screenKey would trigger the AnimatedContent at
-                            // NativeUIContent's root, replacing the system
-                            // animation with a slide overlay.
-                            if (isFreshStackMount) NavigationCoordinator.reset()
-                            if (isNav && !nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
-                            NativeUIBridge.publishTree(diffedTree)
-                            // First publish after a hot-reload dismisses
-                            // the "Reloading…" pill and clears the
-                            // tree-preservation flag. Both are set by
-                            // MainActivity::startHotReloadWatcher at the
-                            // top of the reboot sequence.
-                            if (NativeUIBridge.isReloading.value) {
-                                NativeUIBridge.isReloading.value = false
-                                preserveTreeOnStop = false
-                            }
-                            Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
-                        }
-                    } else {
-                        Log.e(TAG, "Shadow: failed to parse tree (nodeCount=${update.nodeCount})")
+                var newest: Settled? = null
+                for (update in batch) {
+                    try {
+                        newest = settle(update) ?: newest
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Shadow thread processing failed: ${e.message}", e)
                     }
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Shadow thread processing failed: ${e.message}", e)
                 }
+
+                // A navigation in a frame the main thread never saw is still
+                // a navigation from what it shows.
+                newest?.let { post(it.copy(isNav = batch.any { u -> u.isNav })) }
             }
             Log.d(TAG, "Shadow thread stopped")
+        }
+
+        /**
+         * Parse one frame and diff it against the frame before, which it
+         * then replaces as the reader's previous tree. Shadow thread only.
+         */
+        private fun settle(update: ShadowUpdate): Settled? {
+            val tParseStart = System.nanoTime()
+            val reuseMisses = IntArray(1)
+            val tree = readTreeFromFlatBuffer(
+                update.flatBuf, update.propBuf, update.typeTable, update.nodeCount,
+                previousTree, reuseMisses
+            )
+            val tParseEnd = System.nanoTime()
+
+            if (reuseMisses[0] > 0) {
+                // PHP shouldn't send REUSE for an id that wasn't in the
+                // previous tree. Each miss drops only that node.
+                Log.w(TAG, "REUSE named ${reuseMisses[0]} node(s) not in the previous tree — dropped them")
+            }
+
+            if (tree == null) {
+                Log.e(TAG, "Shadow: failed to parse tree (nodeCount=${update.nodeCount})")
+                return null
+            }
+
+            val nc = countNodes(tree.root)
+            val prev = previousTree
+            val isDiffOn = diffEnabled
+
+            // Detect native-chrome continuation — same root sentinel
+            // type across publishes. Drives both diff baseline
+            // selection and screenKey suppression.
+            val prevRootType = prev?.root?.type
+            val newRootType = tree.root.type
+            val nativeChromeContinuation =
+                (prevRootType == "native_root_stack" && newRootType == "native_root_stack") ||
+                (prevRootType == "native_root_tabs"  && newRootType == "native_root_tabs")
+
+            // A `native_root_stack` renderer is about to COLD-mount
+            // (previous publish was a different root sentinel —
+            // tabs, WebView, or nothing). NavigationCoordinator is
+            // a singleton that survives renderer teardown, so it
+            // still holds the PREVIOUS stack session's rootUri and
+            // per-URI tree cache. Without a reset, the new stack's
+            // first publish falls through receive()'s seed/root
+            // checks into the PUSH branch — stacking the new screen
+            // on a stale root — and every subsequent pop animates
+            // through the OLD page. Reset on main below, atomically
+            // with the tree swap.
+            val isFreshStackMount =
+                newRootType == "native_root_stack" && prevRootType != "native_root_stack"
+
+            val newUri = tree.root.props.getString("current_uri", "")
+            val diffedTree: NativeUITree
+
+            if (prev != null && !update.isNav && isDiffOn) {
+                // State change — diff against immediate previous.
+                val stats = DiffStats()
+                val tDiffStart = System.nanoTime()
+                val diffedRoot = diffNodeWithStats(prev.root, tree.root, stats)
+                val tDiffEnd = System.nanoTime()
+                diffedTree = tree.copy(root = diffedRoot)
+                PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
+                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
+            } else if (update.isNav && nativeChromeContinuation && isDiffOn) {
+                // Nav within native chrome — prefer the prev tree at
+                // the SAME URI when available (pop-back to a cached
+                // URI re-uses every unchanged ref). Fall back to the
+                // immediate previous (tab switch / push within the
+                // same chrome — shared chrome subtrees still match).
+                // `prev` is non-null here — nativeChromeContinuation
+                // requires prev?.root?.type to match a sentinel.
+                val baseline = if (newUri.isNotEmpty()) {
+                    nativeChromePrevTrees[newUri] ?: prev
+                } else {
+                    prev
+                }
+                val stats = DiffStats()
+                val tDiffStart = System.nanoTime()
+                val diffedRoot = diffNodeWithStats(baseline!!.root, tree.root, stats)
+                val tDiffEnd = System.nanoTime()
+                diffedTree = tree.copy(root = diffedRoot)
+                PerformanceTracker.onTreeDiffed(tDiffEnd - tDiffStart, stats.reused, stats.replaced, true)
+                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, tDiffEnd - tDiffStart)
+            } else {
+                diffedTree = tree
+                PerformanceTracker.onTreeDiffed(0, 0, nc, false)
+                PerformanceTracker.onShadowThreadWork(tParseEnd - tParseStart, 0)
+            }
+            previousTree = diffedTree
+
+            // Track per-URI for native chrome so future publishes
+            // back to the same URI can diff against it.
+            if (newRootType == "native_root_stack" || newRootType == "native_root_tabs") {
+                val uri = diffedTree.root.props.getString("current_uri", "")
+                if (uri.isNotEmpty()) {
+                    nativeChromePrevTrees[uri] = diffedTree
+                }
+            }
+
+            Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation")
+
+            return Settled(diffedTree, nativeChromeContinuation, isFreshStackMount, update.isNav)
+        }
+
+        /**
+         * Offer a parsed frame to the main thread. A runnable is only posted
+         * when the slot was empty; one already on its way takes this newer
+         * frame instead of the one it was posted for.
+         */
+        private fun post(settled: Settled) {
+            if (!mainSlot.offer(settled, Settled::mergeInto)) return
+            mainHandler.post {
+                mainSlot.take()?.let { apply(it) }
+            }
+        }
+
+        /** Show a parsed frame. Main thread only. */
+        private fun apply(settled: Settled) {
+            val diffedTree = settled.tree
+            val isNav = settled.isNav
+            PerformanceTracker.onTreePostedToMain()
+            NativeUIBridge.isActive.value = true
+            val prevKey = NativeUIBridge.screenKey.intValue
+            // Suppress screen-level screenKey bump when both
+            // trees are the same kind of native chrome — the
+            // NavigationStack / TabView already animates the
+            // push / pop / tab switch internally, and bumping
+            // screenKey would trigger the AnimatedContent at
+            // NativeUIContent's root, replacing the system
+            // animation with a slide overlay.
+            if (settled.isFreshStackMount) NavigationCoordinator.reset()
+            if (isNav && !settled.nativeChromeContinuation) NativeUIBridge.screenKey.intValue++
+            NativeUIBridge.publishTree(diffedTree)
+            // First publish after a hot-reload dismisses
+            // the "Reloading…" pill and clears the
+            // tree-preservation flag. Both are set by
+            // MainActivity::startHotReloadWatcher at the
+            // top of the reboot sequence.
+            if (NativeUIBridge.isReloading.value) {
+                NativeUIBridge.isReloading.value = false
+                preserveTreeOnStop = false
+            }
+            Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
         }
 
         /**
@@ -455,7 +497,8 @@ class NativeElementBridge private constructor() {
             cachedTypeTable = null
             previousTree = null
             nativeChromePrevTrees.clear()
-            pendingUpdate.set(null)
+            pendingUpdates.clear()
+            mainSlot.take()
 
             // Start shadow thread
             shadowRunning = true
@@ -485,7 +528,8 @@ class NativeElementBridge private constructor() {
             shadowRunning = false
             shadowThread?.let { LockSupport.unpark(it) }
             shadowThread = null
-            pendingUpdate.set(null)
+            pendingUpdates.clear()
+            mainSlot.take()
 
             clearEvents()
             cachedTypeTable = null
@@ -505,11 +549,18 @@ class NativeElementBridge private constructor() {
 
         /* ── Flat Buffer Tree Reader ── */
 
-        private fun readTreeFromFlatBuffer(
+        /**
+         * `previous` is the tree REUSE markers splice from: the last frame
+         * parsed. Each REUSE marker naming a node it doesn't hold adds one to
+         * `reuseMisses[0]` and drops only that node.
+         */
+        internal fun readTreeFromFlatBuffer(
             flatBuf: ByteBuffer,
             propBuf: ByteBuffer?,
             typeTable: Array<String>,
-            nodeCount: Int
+            nodeCount: Int,
+            previous: NativeUITree?,
+            reuseMisses: IntArray? = null
         ): NativeUITree? {
             if (nodeCount == 0) return null
 
@@ -524,9 +575,9 @@ class NativeElementBridge private constructor() {
             // Phase 2 — build an id → node index of the previous tree so
             // REUSE markers in this frame can splice prior subtrees in O(1).
             // Built lazily / cheaply: a single DFS walk over the prev tree.
-            val prevIndex = buildIdNodeIndex(previousTree)
+            val prevIndex = buildIdNodeIndex(previous)
 
-            val root = readNodeDFS(flatBuf, propBuf, typeTable, NODE_SIZE, prevIndex) ?: return null
+            val root = readNodeDFS(flatBuf, propBuf, typeTable, NODE_SIZE, prevIndex, reuseMisses) ?: return null
             return NativeUITree(0, 0, root)
         }
 
@@ -549,7 +600,8 @@ class NativeElementBridge private constructor() {
             propBuf: ByteBuffer?,
             typeTable: Array<String>,
             stride: Int,
-            prevIndex: Map<Int, NativeUINode>
+            prevIndex: Map<Int, NativeUINode>,
+            reuseMisses: IntArray?
         ): NativeUINode? {
             if (buf.remaining() < stride) return null
 
@@ -567,10 +619,9 @@ class NativeElementBridge private constructor() {
                     return prior
                 }
                 // PHP shouldn't emit REUSE for an id that wasn't in the
-                // previous tree — that's a forceFullFrame oversight. Log
-                // and drop this subtree; renders an empty hole as a
-                // visible "something went wrong" signal.
-                Log.w(TAG, "REUSE flag set for id=$reuseId but no prior node in index — skipping")
+                // previous tree. Drop this node only; the caller logs the
+                // count once per frame.
+                if (reuseMisses != null) reuseMisses[0]++
                 return null
             }
 
@@ -660,7 +711,17 @@ class NativeElementBridge private constructor() {
 
             val children = ArrayList<NativeUINode>(childCount)
             for (i in 0 until childCount) {
-                val child = readNodeDFS(buf, propBuf, typeTable, stride, prevIndex) ?: break
+                val childStart = buf.position()
+                val child = readNodeDFS(buf, propBuf, typeTable, stride, prevIndex, reuseMisses)
+                if (child == null) {
+                    // A REUSE marker for a node this reader doesn't hold is
+                    // one fixed-size record with nothing under it, so the
+                    // siblings after it still read. Only running out of
+                    // buffer ends the list. (It used to `break` here, which
+                    // dropped every row after a miss and collapsed a list.)
+                    if (buf.position() > childStart) continue
+                    break
+                }
                 children.add(child)
             }
 
@@ -925,6 +986,13 @@ class NativeElementBridge private constructor() {
          * (reference equality = fast Compose skip).
          */
         private fun diffNodeWithStats(old: NativeUINode, new: NativeUINode, stats: DiffStats): NativeUINode {
+            // A REUSE marker hands back the previous tree's own node, so
+            // there is nothing under it to compare.
+            if (old === new) {
+                stats.reused++
+                return old
+            }
+
             // Structural mismatch — use new node entirely
             if (old.id != new.id || old.type != new.type || old.children.size != new.children.size) {
                 stats.replaced += countNodes(new)
@@ -979,10 +1047,81 @@ class NativeElementBridge private constructor() {
 }
 
 /**
+ * Frames published and not yet parsed, oldest first. The PHP thread pushes,
+ * the shadow thread drains.
+ */
+internal class ShadowQueue<T> {
+    private val frames = ArrayList<T>()
+
+    @Synchronized fun push(frame: T) {
+        frames.add(frame)
+    }
+
+    /** Every queued frame, oldest first, leaving the queue empty. */
+    @Synchronized fun drain(): List<T> {
+        if (frames.isEmpty()) return emptyList()
+        val out = ArrayList(frames)
+        frames.clear()
+        return out
+    }
+
+    @Synchronized fun clear() {
+        frames.clear()
+    }
+}
+
+/**
+ * Holds at most one frame for the main thread. The shadow thread overwrites
+ * it and only posts a runnable when it was empty, so a busy main thread takes
+ * the newest tree once instead of working through every tree posted while it
+ * was busy.
+ */
+internal class MainSlot<T : Any> {
+    private var waiting: T? = null
+
+    /**
+     * Put a frame in the slot. Returns true when the slot was empty, so the
+     * caller has to post a runnable to take it. When a frame is waiting,
+     * `merge(new, waiting)` decides what replaces it.
+     */
+    @Synchronized fun offer(frame: T, merge: (T, T) -> T): Boolean {
+        val old = waiting
+        waiting = if (old == null) frame else merge(frame, old)
+        return old == null
+    }
+
+    /** Take the frame waiting for the main thread, if any. */
+    @Synchronized fun take(): T? {
+        val frame = waiting
+        waiting = null
+        return frame
+    }
+}
+
+/** One parsed frame, ready for the main thread. */
+internal data class Settled(
+    val tree: NativeUITree,
+    val nativeChromeContinuation: Boolean,
+    val isFreshStackMount: Boolean,
+    val isNav: Boolean,
+) {
+    /**
+     * This newer frame standing in for `waiting`, which the main thread never
+     * saw. It keeps the waiting frame's navigation and fresh-stack flags,
+     * since the main thread still has to treat the newer frame as that
+     * navigation.
+     */
+    fun mergeInto(waiting: Settled): Settled = copy(
+        isFreshStackMount = isFreshStackMount || waiting.isFreshStackMount,
+        isNav = isNav || waiting.isNav,
+    )
+}
+
+/**
  * Snapshot of raw buffer data passed from PHP thread to shadow thread.
  * Heap-copied ByteBuffers are safe to read on any thread.
  */
-private data class ShadowUpdate(
+internal data class ShadowUpdate(
     val flatBuf: ByteBuffer,
     val propBuf: ByteBuffer?,
     val typeTable: Array<String>,
