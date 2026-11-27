@@ -68,11 +68,16 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -534,6 +539,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     }
                 }
 
+                val tabLabels = rememberRootTabLabels(
+                    labels = visibleTabEntries.map { (_, tab) -> tab.props.getString("label", "") },
+                    maxLines = 1,
+                    minScale = 0.3f,
+                    fontFamily = chromeFontFamily,
+                )
+
                 if (customPresenter != null && presentationConfiguration != null) {
                     customPresenter(
                         NativeTabPresentationContext(
@@ -579,14 +591,15 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                     MaterialIcon(name = icon, contentDescription = label)
                                 }
                             },
-                            // One line with an ellipsis. Android Material design wants labels
+                            // Shrunk with the other labels to fit (see rememberRootTabLabels), then
+                            // cut off with an ellipsis on its last line. Android Material design wants labels
                             // short enough to neither wrap nor truncate, but it's not always
                             // possible to do that. This is the best of a limited set of options.
                             label = if (labelVisibility == "unlabeled") null else {
                                 {
                                     Text(
                                         label,
-                                        fontFamily = chromeFontFamily,
+                                        style = tabLabels.style,
                                         maxLines = 1,
                                         softWrap = false,
                                         overflow = TextOverflow.Ellipsis,
@@ -1135,3 +1148,63 @@ private fun tabUriPath(uri: String): String {
     val path = uri.substringBefore('#').substringBefore('?')
     return "/" + path.trim('/')
 }
+
+/**
+ * The style every root tab label shares, and the labels to keep on one line.
+ * NavigationBar gives each item the same width, so when a label won't fit in
+ * [maxLines] lines without breaking a word, every label shrinks by the same
+ * amount until it does, down to [minScale]. A label with a word that still
+ * won't fit stays on one line, so it's cut off rather than broken mid-word.
+ */
+@Composable
+private fun rememberRootTabLabels(
+    labels: List<String>,
+    maxLines: Int,
+    minScale: Float,
+    fontFamily: FontFamily?,
+): RootTabLabels {
+    val base = MaterialTheme.typography.labelMedium.let { if (fontFamily != null) it.copy(fontFamily = fontFamily) else it }
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val insets = NavigationBarDefaults.windowInsets
+    // The bar spans the window, less its insets, with 8dp between items.
+    val barPx = LocalWindowInfo.current.containerSize.width -
+        insets.getLeft(density, layoutDirection) - insets.getRight(density, layoutDirection)
+
+    return remember(labels, maxLines, minScale, base, barPx, density) {
+        val gapsPx = with(density) { 8.dp.roundToPx() } * (labels.size - 1)
+        val itemPx = ((barPx - gapsPx) / labels.size.coerceAtLeast(1)).coerceAtLeast(0)
+
+        fun wordsFit(label: String, style: TextStyle) =
+            label.split(' ').all { measurer.measure(it, style, softWrap = false).size.width <= itemPx }
+
+        fun fits(style: TextStyle) = labels.all {
+            wordsFit(it, style) &&
+                !measurer.measure(it, style, maxLines = maxLines, constraints = Constraints(maxWidth = itemPx)).hasVisualOverflow
+        }
+
+        // Scaled in pixels, since Android scales large sp sizes non-linearly.
+        fun scaled(scale: Float) = with(density) {
+            base.copy(
+                fontSize = (base.fontSize.toPx() * scale).toSp(),
+                lineHeight = if (base.lineHeight.isSp) (base.lineHeight.toPx() * scale).toSp() else base.lineHeight,
+            )
+        }
+
+        var style = base
+        if (minScale < 1f && !fits(base)) {
+            // The largest scale that fits, to within about 1%.
+            var fitting = minScale
+            var tooBig = 1f
+            repeat(6) {
+                val scale = (fitting + tooBig) / 2
+                if (fits(scaled(scale))) fitting = scale else tooBig = scale
+            }
+            style = scaled(fitting)
+        }
+        RootTabLabels(style, labels.filterNot { wordsFit(it, style) }.toSet())
+    }
+}
+
+private class RootTabLabels(val style: TextStyle, val oneLine: Set<String>)
