@@ -57,6 +57,10 @@ class TabBar
 
     private ?string $labelVisibility = null;
 
+    private ?int $labelMaxLines = null;
+
+    private ?float $labelMinScale = null;
+
     private bool $dark = false;
 
     private bool $minimizeOnScroll = false;
@@ -91,6 +95,8 @@ class TabBar
 
         $bar->dark = (bool) ($props['dark'] ?? false);
         $bar->labelVisibility = $props['label_visibility'] ?? null;
+        $bar->labelMaxLines = $props['label_max_lines'] ?? null;
+        $bar->labelMinScale = $props['label_min_scale'] ?? null;
         $bar->activeColor = $props['active_color'] ?? null;
         $bar->backgroundColor = $props['background_color'] ?? null;
         $bar->textColor = $props['text_color'] ?? null;
@@ -194,6 +200,28 @@ class TabBar
     public function labelVisibility(string $mode): self
     {
         $this->labelVisibility = $mode;
+
+        return $this;
+    }
+
+    /**
+     * Android only. The most lines a label may wrap onto, between words: 1 by default.
+     */
+    public function labelMaxLines(int $lines): self
+    {
+        $this->labelMaxLines = max(1, $lines);
+
+        return $this;
+    }
+
+    /**
+     * Android only. How far labels may shrink together to fit before they're
+     * cut off, as a share of their size: 0.3 by default, and 1 never shrinks.
+     * Android never shrinks them below 0.1.
+     */
+    public function labelMinScale(float $scale): self
+    {
+        $this->labelMinScale = max(0.0, min(1.0, $scale));
 
         return $this;
     }
@@ -401,6 +429,12 @@ class TabBar
         if ($this->labelVisibility !== null) {
             $attrs['labelVisibility'] = $this->labelVisibility;
         }
+        if ($this->labelMaxLines !== null) {
+            $attrs['labelMaxLines'] = $this->labelMaxLines;
+        }
+        if ($this->labelMinScale !== null) {
+            $attrs['labelMinScale'] = $this->labelMinScale;
+        }
         if ($this->activeColor !== null) {
             $attrs['activeColor'] = $this->activeColor;
         }
@@ -464,6 +498,12 @@ class TabBar
         }
         if ($this->labelVisibility !== null) {
             $attrs['labelVisibility'] = $this->labelVisibility;
+        }
+        if ($this->labelMaxLines !== null) {
+            $attrs['labelMaxLines'] = $this->labelMaxLines;
+        }
+        if ($this->labelMinScale !== null) {
+            $attrs['labelMinScale'] = $this->labelMinScale;
         }
         if ($this->activeColor !== null) {
             $attrs['activeColor'] = $this->activeColor;

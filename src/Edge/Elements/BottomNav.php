@@ -22,6 +22,8 @@ class BottomNav extends Element
         // keys the builder path (TabBar::toElement) already sends.
         foreach ([
             'label-visibility' => 'labelVisibility',
+            'label-max-lines' => 'labelMaxLines',
+            'label-min-scale' => 'labelMinScale',
             'active-color' => 'activeColor',
             'background-color' => 'backgroundColor',
             'text-color' => 'textColor',
@@ -43,6 +45,14 @@ class BottomNav extends Element
 
         if (isset($attrs['labelVisibility'])) {
             $this->props['label_visibility'] = $attrs['labelVisibility'];
+        }
+
+        if (isset($attrs['labelMaxLines'])) {
+            $this->props['label_max_lines'] = (int) $attrs['labelMaxLines'];
+        }
+
+        if (isset($attrs['labelMinScale'])) {
+            $this->props['label_min_scale'] = (float) $attrs['labelMinScale'];
         }
 
         if (isset($attrs['activeColor'])) {

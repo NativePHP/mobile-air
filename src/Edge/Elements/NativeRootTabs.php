@@ -76,6 +76,12 @@ class NativeRootTabs extends Element
         if (isset($attrs['labelVisibility'])) {
             $this->props['label_visibility'] = $attrs['labelVisibility'];
         }
+        if (isset($attrs['labelMaxLines'])) {
+            $this->props['label_max_lines'] = (int) $attrs['labelMaxLines'];
+        }
+        if (isset($attrs['labelMinScale'])) {
+            $this->props['label_min_scale'] = (float) $attrs['labelMinScale'];
+        }
         if (isset($attrs['minimizeOnScroll'])) {
             $this->props['minimize_on_scroll'] = (bool) $attrs['minimizeOnScroll'];
         }
