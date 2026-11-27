@@ -71,6 +71,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -575,7 +577,19 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                     MaterialIcon(name = icon, contentDescription = label)
                                 }
                             },
-                            label = { Text(label, fontFamily = chromeFontFamily) },
+                            // One line with an ellipsis. Android Material design wants labels
+                            // short enough to neither wrap nor truncate, but it's not always
+                            // possible to do that. This is the best of a limited set of options.
+                            label = {
+                                Text(
+                                    label,
+                                    fontFamily = chromeFontFamily,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                )
+                            },
                             // `active_color` (TabBar::activeColor) tints the selected
                             // tab; `text_color` (TabBar::textColor) tints the inactive
                             // icons + labels. Layer both onto the M3 defaults via copy()
