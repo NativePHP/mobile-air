@@ -143,8 +143,10 @@ class NativeElementCollector
      * element — e.g. an analytics plugin capturing `track="signup-cta"`
      * into a prop its device SDK reads — without every Element subclass
      * having to know about it. Registered attributes are lifted into
-     * props in createElement() and stripped before native attribute
-     * handling, so they never leak onto the wire as junk.
+     * props and stripped before native attribute handling, so they never
+     * leak onto the wire as junk. That happens on both render paths: the
+     * Element tree (createElement()) and streamView() (openStreaming() /
+     * leafStreaming()), through takeCapturedAttributes().
      *
      * The reserved name 'class' captures the author's RAW class string
      * as written (Tailwind parsing still runs and is unaffected) — for
@@ -169,6 +171,41 @@ class NativeElementCollector
     public static function stopCapturingAttributes(): void
     {
         static::$capturedAttributes = [];
+    }
+
+    /**
+     * The registered attributes on an element, as props, stripped from
+     * `$attrs`. `$rawClass` is the element's class string as written, read
+     * before Tailwind parsing consumes it, for the reserved 'class' capture.
+     * Empty strings are stripped but not captured: an attribute left blank
+     * means "not set".
+     *
+     * @return array<string, mixed> prop name => value
+     */
+    protected static function takeCapturedAttributes(array &$attrs, ?string $rawClass): array
+    {
+        if (static::$capturedAttributes === []) {
+            return [];
+        }
+
+        $props = [];
+        if ($rawClass !== null && isset(static::$capturedAttributes['class'])) {
+            $props[static::$capturedAttributes['class']] = $rawClass;
+        }
+
+        foreach (static::$capturedAttributes as $attribute => $prop) {
+            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
+                continue;
+            }
+
+            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
+                $props[$prop] = $attrs[$attribute];
+            }
+
+            unset($attrs[$attribute]);
+        }
+
+        return $props;
     }
 
     // ── Streaming control ────────────────────────────
@@ -505,6 +542,9 @@ class NativeElementCollector
 
     public static function openStreaming(string $type, array $attrs): void
     {
+        // Raw-class capture happens BEFORE parsing consumes the attribute.
+        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
+
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
             if (count($attrs) === 1) {
@@ -519,6 +559,10 @@ class NativeElementCollector
         static::$keyPathStack[] = $myKeyPath;
         static::enterContainer();
 
+        // Registered capture attributes, lifted as createElement() lifts
+        // them, so they work on a streamView() screen too.
+        $captured = static::takeCapturedAttributes($attrs, $rawClass);
+
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
         if (in_array($type, $builtinTypes, true)) {
@@ -532,6 +576,8 @@ class NativeElementCollector
                 + static::buildHeroProps($attrs)
                 + static::buildLayoutAnimationProps($attrs)
                 + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
+            // Lowest precedence, as a setProp() before everything else is.
+            $props += $captured;
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -567,6 +613,10 @@ class NativeElementCollector
             $element = ElementRegistry::resolve($type);
             if (! $element) {
                 throw UnknownElementException::forType($type);
+            }
+
+            foreach ($captured as $prop => $value) {
+                $element->setProp($prop, $value);
             }
 
             $element->applyAttributes($attrs);
@@ -611,6 +661,9 @@ class NativeElementCollector
 
     public static function leafStreaming(string $type, array $attrs): void
     {
+        // Raw-class capture happens BEFORE parsing consumes the attribute.
+        $rawClass = isset(static::$capturedAttributes['class']) ? ($attrs['class'] ?? null) : null;
+
         if (isset($attrs['class'])) {
             $classAttrs = TailwindParser::parse($attrs['class']);
             if (count($attrs) === 1) {
@@ -625,6 +678,10 @@ class NativeElementCollector
         // push onto the path stack (no children to inherit it).
         [$nodeId/* $myKeyPath unused for leaves */] = static::resolveStreamingKey($attrs);
 
+        // Registered capture attributes, lifted as createElement() lifts
+        // them, so they work on a streamView() screen too.
+        $captured = static::takeCapturedAttributes($attrs, $rawClass);
+
         $builtinTypes = ['column', 'row', 'stack', 'scroll_view', 'pressable', 'canvas'];
 
         if (in_array($type, $builtinTypes, true)) {
@@ -638,6 +695,8 @@ class NativeElementCollector
                 + static::buildHeroProps($attrs)
                 + static::buildLayoutAnimationProps($attrs)
                 + (isset($attrs['variants']) ? static::buildVariantProps($attrs, fn () => static::makeElement($type)) : []);
+            // Lowest precedence, as a setProp() before everything else is.
+            $props += $captured;
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -668,6 +727,10 @@ class NativeElementCollector
             $element = ElementRegistry::resolve($type);
             if (! $element) {
                 throw UnknownElementException::forType($type);
+            }
+
+            foreach ($captured as $prop => $value) {
+                $element->setProp($prop, $value);
             }
 
             $element->applyAttributes($attrs);
@@ -1933,23 +1996,10 @@ class NativeElementCollector
         $element = static::makeElement($type)
             ?? throw UnknownElementException::forType($type);
 
-        if ($rawClass !== null) {
-            $element->setProp(static::$capturedAttributes['class'], $rawClass);
-        }
-
         // Registered capture attributes: lift into props, strip from the
-        // attrs the native pipeline sees. Empty strings are stripped but
-        // not captured — an attribute left blank means "not set".
-        foreach (static::$capturedAttributes as $attribute => $prop) {
-            if ($attribute === 'class' || ! isset($attrs[$attribute])) {
-                continue;
-            }
-
-            if (! is_string($attrs[$attribute]) || $attrs[$attribute] !== '') {
-                $element->setProp($prop, $attrs[$attribute]);
-            }
-
-            unset($attrs[$attribute]);
+        // attrs the native pipeline sees.
+        foreach (static::takeCapturedAttributes($attrs, $rawClass) as $prop => $value) {
+            $element->setProp($prop, $value);
         }
 
         // Let plugin elements apply their own attributes
