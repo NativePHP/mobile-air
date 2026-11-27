@@ -5,6 +5,7 @@ namespace Tests\Unit\Concerns;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Concerns\InstallsSplashScreen;
 use Orchestra\Testbench\TestCase;
+use Tests\Support\AnimatedWebpFixture;
 
 /**
  * The launch image set is generated from the app's own splash artwork on every
@@ -129,5 +130,62 @@ class InstallsSplashScreenTest extends TestCase
         $this->assertFalse(is_link($this->imageSet));
         $this->assertFileExists($this->imageSet.'/splash.png');
         $this->assertFileDoesNotExist($this->imageSet.'/keep-me.png');
+    }
+
+    public function test_it_ships_an_animated_splash_as_a_data_set_beside_the_launch_image(): void
+    {
+        $this->writeSplash('splash.png');
+        AnimatedWebpFixture::write($this->projectPath.'/public/splash.webp');
+
+        $this->installIosSplashScreen();
+
+        $dataSet = $this->assets().'/SplashAnimation.dataset';
+        $this->assertFileEquals($this->projectPath.'/public/splash.webp', $dataSet.'/splash.webp');
+        $this->assertSame('splash.webp', json_decode(File::get($dataSet.'/Contents.json'), true)['data'][0]['filename']);
+        $this->assertFileExists($this->imageSet.'/splash.png');
+    }
+
+    public function test_it_ships_an_animated_dark_splash_as_its_own_data_set(): void
+    {
+        AnimatedWebpFixture::write($this->projectPath.'/public/splash-dark.webp');
+
+        $this->installIosSplashScreen();
+
+        $this->assertFileEquals($this->projectPath.'/public/splash-dark.webp', $this->assets().'/SplashAnimationDark.dataset/splash.webp');
+        $this->assertDirectoryDoesNotExist($this->assets().'/SplashAnimation.dataset');
+    }
+
+    public function test_it_drops_the_animation_the_app_no_longer_ships(): void
+    {
+        AnimatedWebpFixture::write($this->assets().'/SplashAnimation.dataset/splash.webp');
+
+        $this->installIosSplashScreen();
+
+        $this->assertDirectoryDoesNotExist($this->assets().'/SplashAnimation.dataset');
+    }
+
+    public function test_it_leaves_a_still_splash_webp_to_android(): void
+    {
+        $image = imagecreatetruecolor(375, 667);
+        imagewebp($image, $this->projectPath.'/public/splash.webp');
+        imagedestroy($image);
+
+        $this->installIosSplashScreen();
+
+        $this->assertDirectoryDoesNotExist($this->assets().'/SplashAnimation.dataset');
+    }
+
+    public function test_it_skips_an_animated_splash_smaller_than_a_launch_image(): void
+    {
+        AnimatedWebpFixture::write($this->projectPath.'/public/splash.webp', 320, 480);
+
+        $this->installIosSplashScreen();
+
+        $this->assertDirectoryDoesNotExist($this->assets().'/SplashAnimation.dataset');
+    }
+
+    protected function assets(): string
+    {
+        return dirname($this->imageSet);
     }
 }

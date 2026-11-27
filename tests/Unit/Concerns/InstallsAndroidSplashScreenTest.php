@@ -5,6 +5,7 @@ namespace Tests\Unit\Concerns;
 use Illuminate\Support\Facades\File;
 use Native\Mobile\Concerns\InstallsAndroidSplashScreen;
 use Native\Mobile\Concerns\InstallsAppIcon;
+use Tests\Support\AnimatedWebpFixture;
 use Tests\TestCase;
 
 class InstallsAndroidSplashScreenTest extends TestCase
@@ -219,6 +220,62 @@ class InstallsAndroidSplashScreenTest extends TestCase
             $darkPath = $this->androidResPath."/drawable-night-{$density}/splash.png";
             $this->assertFileDoesNotExist($darkPath, "Dark mode splash should not exist for {$density} (invalid image)");
         }
+    }
+
+    public function test_copies_animated_webp_splash_unscaled_to_nodpi()
+    {
+        AnimatedWebpFixture::write($this->publicPath.'/splash.webp');
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileEquals($this->publicPath.'/splash.webp', $this->androidResPath.'/drawable-nodpi/splash.webp');
+        foreach (['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi'] as $density) {
+            $this->assertFileDoesNotExist($this->androidResPath."/drawable-{$density}/splash.png");
+            $this->assertFileDoesNotExist($this->androidResPath."/drawable-{$density}/splash.webp");
+        }
+    }
+
+    public function test_copies_animated_dark_splash_to_night_nodpi()
+    {
+        AnimatedWebpFixture::write($this->publicPath.'/splash-dark.webp');
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileEquals($this->publicPath.'/splash-dark.webp', $this->androidResPath.'/drawable-night-nodpi/splash.webp');
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-nodpi/splash.webp');
+    }
+
+    public function test_animated_splash_removes_scaled_copies_from_an_earlier_build()
+    {
+        $this->createTestSplashImage();
+        $this->installAndroidSplashScreen();
+        File::delete($this->publicPath.'/splash.png');
+        AnimatedWebpFixture::write($this->publicPath.'/splash.webp');
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileExists($this->androidResPath.'/drawable-nodpi/splash.webp');
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-xxhdpi/splash.png');
+    }
+
+    public function test_still_splash_removes_animated_copy_from_an_earlier_build()
+    {
+        AnimatedWebpFixture::write($this->androidResPath.'/drawable-nodpi/splash.webp');
+        $this->createTestSplashImage();
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileExists($this->androidResPath.'/drawable-xxhdpi/splash.png');
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-nodpi/splash.webp');
+    }
+
+    public function test_skips_animated_splash_smaller_than_the_minimum()
+    {
+        AnimatedWebpFixture::write($this->publicPath.'/splash.webp', 160, 240);
+
+        $this->installAndroidSplashScreen();
+
+        $this->assertFileDoesNotExist($this->androidResPath.'/drawable-nodpi/splash.webp');
     }
 
     /**
