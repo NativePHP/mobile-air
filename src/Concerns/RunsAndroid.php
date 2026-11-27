@@ -1055,11 +1055,13 @@ XML;
             $currentBuildNumber = 1;
             // Initialize build number silently
             $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+            config(['nativephp.version_code' => $currentBuildNumber]);
         } else {
             // Increment the existing build number for packaging builds
             $currentBuildNumber = (int) $currentBuildNumber + 1;
             // Increment build number silently
             $this->updateEnvFile('NATIVEPHP_APP_VERSION_CODE', $currentBuildNumber);
+            config(['nativephp.version_code' => $currentBuildNumber]);
         }
     }
 
