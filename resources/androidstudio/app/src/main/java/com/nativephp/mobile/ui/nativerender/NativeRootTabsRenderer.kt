@@ -186,6 +186,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
     // `TabBar::labelVisibility('labeled'|'selected'|'unlabeled')`, as on iOS.
     val labelVisibility = node.props.getString("label_visibility", "labeled")
+    // `TabBar::labelMaxLines()` and `labelMinScale()`: Android only.
+    val labelMaxLines = node.props.getInt("label_max_lines", 1).coerceAtLeast(1)
+    val labelMinScale = node.props.getFloat("label_min_scale", 0.3f).coerceIn(0.1f, 1f)
     val activeColorArgb = node.props.getColor("active_color", 0)
     val textColorArgb = node.props.getColor("text_color", 0)
     val bgArgb = node.props.getColor("background_color", 0)
@@ -541,8 +544,8 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
 
                 val tabLabels = rememberRootTabLabels(
                     labels = visibleTabEntries.map { (_, tab) -> tab.props.getString("label", "") },
-                    maxLines = 1,
-                    minScale = 0.3f,
+                    maxLines = labelMaxLines,
+                    minScale = labelMinScale,
                     fontFamily = chromeFontFamily,
                 )
 
@@ -600,8 +603,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                                     Text(
                                         label,
                                         style = tabLabels.style,
-                                        maxLines = 1,
-                                        softWrap = false,
+                                        maxLines = if (label in tabLabels.oneLine) 1 else labelMaxLines,
                                         overflow = TextOverflow.Ellipsis,
                                         textAlign = TextAlign.Center,
                                     )
