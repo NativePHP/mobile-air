@@ -1622,16 +1622,20 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         // solid black (identical to the theme's windowBackground, so there's no
         // visible seam) and the image fades in as soon as the decode lands.
         var splashBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+        var splashAnimation by remember { mutableStateOf<android.graphics.drawable.Drawable?>(null) }
         LaunchedEffect(splashResourceId) {
             if (splashResourceId != 0) {
-                splashBitmap = withContext(Dispatchers.IO) {
-                    try {
-                        android.graphics.BitmapFactory
-                            .decodeResource(resources, splashResourceId)
-                            ?.asImageBitmap()
-                    } catch (t: Throwable) {
-                        Log.w("Splash", "Failed to decode splash: ${t.message}")
-                        null
+                splashAnimation = withContext(Dispatchers.IO) { decodeAnimatedSplash(splashResourceId) }
+                if (splashAnimation == null) {
+                    splashBitmap = withContext(Dispatchers.IO) {
+                        try {
+                            android.graphics.BitmapFactory
+                                .decodeResource(resources, splashResourceId)
+                                ?.asImageBitmap()
+                        } catch (t: Throwable) {
+                            Log.w("Splash", "Failed to decode splash: ${t.message}")
+                            null
+                        }
                     }
                 }
             }
@@ -1643,8 +1647,23 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
+            val animation = splashAnimation
             val bitmap = splashBitmap
-            if (bitmap != null) {
+            if (animation != null) {
+                // No fade-in, so the animation shows from its first frame; the file's loop count is kept.
+                AndroidView(
+                    factory = { context ->
+                        android.widget.ImageView(context).apply {
+                            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                            contentDescription = "App splash screen"
+                            setImageDrawable(animation)
+                            (animation as? android.graphics.drawable.Animatable)?.start()
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    onRelease = { (animation as? android.graphics.drawable.Animatable)?.stop() }
+                )
+            } else if (bitmap != null) {
                 // MutableTransitionState(false) → targetState = true makes the
                 // fade-in play on the Image's FIRST composition (plain
                 // AnimatedVisibility(visible = true) would skip it).
@@ -1665,6 +1684,27 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
             } else if (splashResourceId == 0) {
                 SplashText()
             }
+        }
+    }
+
+    /** An animated WebP splash ready to play (API 28+), or null so a still splash is decoded only once. */
+    private fun decodeAnimatedSplash(resId: Int): android.graphics.drawable.Drawable? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.P) return null
+
+        return try {
+            val header = ByteArray(21)
+            resources.openRawResource(resId).use { java.io.DataInputStream(it).readFully(header) }
+            val animated = String(header, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+                String(header, 8, 8, Charsets.US_ASCII) == "WEBPVP8X" &&
+                (header[20].toInt() and 0x02) != 0
+            if (!animated) return null
+
+            android.graphics.ImageDecoder.decodeDrawable(
+                android.graphics.ImageDecoder.createSource(resources, resId)
+            ) as? android.graphics.drawable.AnimatedImageDrawable
+        } catch (t: Throwable) {
+            Log.w("Splash", "Failed to decode animated splash: ${t.message}")
+            null
         }
     }
 

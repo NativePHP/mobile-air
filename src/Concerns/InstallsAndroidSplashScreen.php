@@ -41,36 +41,31 @@ trait InstallsAndroidSplashScreen
                 'xxxhdpi' => [1280, 1920],
             ];
 
-            if ($hasLightSplash && $this->validateSplashImage($lightSplashPath)) {
-                $this->logToFile("  Generating light splash variants (.$format)...");
-                foreach ($sizes as $density => $dimensions) {
-                    try {
-                        $dstDir = $resDir."drawable-{$density}";
-                        File::ensureDirectoryExists($dstDir);
-
-                        $this->cleanStaleSplash($dstDir, $format);
-
-                        $dstPath = $dstDir.DIRECTORY_SEPARATOR.'splash.'.$format;
-                        $this->resizeImage($lightSplashPath, $dstPath, $dimensions[0], $dimensions[1], $format);
-                    } catch (\Exception $e) {
-                        $this->logToFile("    Failed to generate $density: ".$e->getMessage());
-                    }
+            foreach (['' => $lightSplashPath, 'night-' => $darkSplashPath] as $qualifier => $sourcePath) {
+                if ($sourcePath === null || ! $this->validateSplashImage($sourcePath)) {
+                    continue;
                 }
-            }
 
-            if ($hasDarkSplash && $this->validateSplashImage($darkSplashPath)) {
-                $this->logToFile("  Generating dark splash variants (.$format)...");
+                if ($this->animatedWebpSize($sourcePath) !== null) {
+                    $this->installAnimatedSplash($sourcePath, $resDir.'drawable-'.$qualifier, array_keys($sizes));
+
+                    continue;
+                }
+
+                $this->logToFile('  Generating '.($qualifier === '' ? 'light' : 'dark')." splash variants (.$format)...");
+                File::delete($resDir."drawable-{$qualifier}nodpi".DIRECTORY_SEPARATOR.'splash.webp');
+
                 foreach ($sizes as $density => $dimensions) {
                     try {
-                        $dstDir = $resDir."drawable-night-{$density}";
+                        $dstDir = $resDir."drawable-{$qualifier}{$density}";
                         File::ensureDirectoryExists($dstDir);
 
                         $this->cleanStaleSplash($dstDir, $format);
 
                         $dstPath = $dstDir.DIRECTORY_SEPARATOR.'splash.'.$format;
-                        $this->resizeImage($darkSplashPath, $dstPath, $dimensions[0], $dimensions[1], $format);
+                        $this->resizeImage($sourcePath, $dstPath, $dimensions[0], $dimensions[1], $format);
                     } catch (\Exception $e) {
-                        $this->logToFile("    Failed to generate night-$density: ".$e->getMessage());
+                        $this->logToFile("    Failed to generate {$qualifier}{$density}: ".$e->getMessage());
                     }
                 }
             }
@@ -88,7 +83,7 @@ trait InstallsAndroidSplashScreen
     private function locateSplashSource(string $name): ?string
     {
         $webp = public_path($name.'.webp');
-        if (File::exists($webp) && function_exists('imagecreatefromwebp')) {
+        if (File::exists($webp) && (function_exists('imagecreatefromwebp') || $this->animatedWebpSize($webp) !== null)) {
             return $webp;
         }
 
@@ -112,8 +107,52 @@ trait InstallsAndroidSplashScreen
         }
     }
 
+    /**
+     * GD cannot decode an animated WebP, so it ships unscaled in drawable-nodpi
+     * and the per-density copies an earlier build wrote are removed.
+     */
+    private function installAnimatedSplash(string $sourcePath, string $drawablePrefix, array $densities): void
+    {
+        $this->logToFile('  Copying animated '.basename($sourcePath).' to '.basename($drawablePrefix).'nodpi...');
+
+        foreach ($densities as $density) {
+            File::delete([
+                $drawablePrefix.$density.DIRECTORY_SEPARATOR.'splash.png',
+                $drawablePrefix.$density.DIRECTORY_SEPARATOR.'splash.webp',
+            ]);
+        }
+
+        File::ensureDirectoryExists($drawablePrefix.'nodpi');
+        File::copy($sourcePath, $drawablePrefix.'nodpi'.DIRECTORY_SEPARATOR.'splash.webp');
+    }
+
+    /**
+     * Canvas size from the VP8X header of an animated WebP, or null for any other file.
+     */
+    private function animatedWebpSize(string $path): ?array
+    {
+        $header = @file_get_contents($path, false, null, 0, 30);
+
+        if (! is_string($header) || strlen($header) < 30
+            || ! str_starts_with($header, 'RIFF')
+            || substr($header, 8, 8) !== 'WEBPVP8X'
+            || (ord($header[20]) & 0x02) === 0) {
+            return null;
+        }
+
+        return [
+            unpack('V', substr($header, 24, 3)."\0")[1] + 1,
+            unpack('V', substr($header, 27, 3)."\0")[1] + 1,
+        ];
+    }
+
     private function validateSplashImage(string $splashPath): bool
     {
+        $animatedSize = $this->animatedWebpSize($splashPath);
+        if ($animatedSize !== null) {
+            return $animatedSize[0] >= 320 && $animatedSize[1] >= 480;
+        }
+
         $ext = strtolower(pathinfo($splashPath, PATHINFO_EXTENSION));
 
         if ($ext === 'webp' && function_exists('imagecreatefromwebp')) {
