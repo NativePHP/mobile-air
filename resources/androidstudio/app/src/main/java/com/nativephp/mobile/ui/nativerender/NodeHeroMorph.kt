@@ -88,17 +88,32 @@ fun Modifier.heroMorph(node: NativeUINode): Modifier {
     // moving one registration between scopes as a transition starts loses
     // them and the element just appears at its destination.
     //
-    // The chain is built so that it only ever changes at the end while a
-    // chrome morph is in play, because Compose matches modifier nodes by
-    // position and class, and both registrations are the same class:
+    // While the renderer's `morphing` holds, the chain is built so that it
+    // only changes at the end, because Compose matches modifier nodes by
+    // position and class, and all three registrations are the same class.
+    // The front changes twice, outside that window. When `morphing` turns
+    // true, the inert registration joins at the front in the same
+    // composition as the chrome registration, and the root registration's
+    // node passes to it and a new one is made for the root. That's safe
+    // because the root transition is idle while a chrome morph starts. When
+    // `morphing` turns false (a later level change that doesn't morph, even
+    // one that interrupts a running morph), the inert registration leaves
+    // the front and the root takes its node, while that flight is being
+    // dropped anyway.
     //
-    // 1. An inert chrome registration, always present inside chrome: a key
-    //    private to the pane, so it never matches, with no enter or exit
+    // 1. An inert chrome registration, present while `morphing` holds: from
+    //    a level change that morphs until the next one that doesn't, a tab
+    //    switch or the first screen (see ChromeMorphTracker). It has a key
+    //    private to the pane, so it never matches, and no enter or exit
     //    animation. In testing, two chrome registrations only matched when
     //    another shared-bounds modifier sat in front of the live one on the
     //    same node. On a bare node they often never matched (stack pops
     //    where PHP had restaged before the pop, so no root registration was
-    //    there). A plain pass-through approach modifier did not help.
+    //    there). A plain pass-through approach modifier did not help. It is
+    //    left off otherwise: provided on every pane, it made ref'd lazy
+    //    lists and pagers crash while scrolling with "measure is called on a
+    //    deactivated node" in the lookahead pass, and removing it from
+    //    panes reached without a morph stops that (#753).
     // 2. The root registration, frozen while the pane is in the chrome scope
     //    (ChromeMorphPane) and otherwise coming and going with the staged
     //    transition, as it always has.
@@ -291,9 +306,9 @@ internal fun rememberChromeTransitionKey(target: String, morphing: Boolean): Str
  * Publishes the chrome shared-element scopes to one pane of a native-chrome
  * renderer's `AnimatedContent`. While the pane stays out of a chrome morph
  * the root scopes pass through untouched, so a full-screen morph into or out
- * of this chrome behaves as it did before chrome morphs existed. (Each ref'd
- * node in chrome also carries an inert chrome registration; see
- * `Modifier.heroMorph`.)
+ * of this chrome behaves as it did before chrome morphs existed. (While
+ * [morphing] holds, each ref'd node in chrome also carries an inert chrome
+ * registration; see `Modifier.heroMorph`.)
  *
  * The pane joins the chrome scope only while it takes part in a morphing
  * level change: while that change is held so the outgoing pane is laid out
@@ -334,7 +349,7 @@ internal fun ChromeMorphPane(
 
     val scopes = remember(sharedScope, paneScope) { ChromeMorphScopes(sharedScope, paneScope) }
     CompositionLocalProvider(
-        LocalInertChromeScopes provides scopes,
+        LocalInertChromeScopes provides if (morphing) scopes else null,
         LocalSharedTransitionScope provides root,
         LocalChromeMorphScopes provides if (joins) scopes else null,
         content = content,

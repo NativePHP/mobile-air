@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeFunction
 import java.io.File
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Functions related to file operations
@@ -116,7 +117,7 @@ object FileFunctions {
             val from = parameters["from"] as? String
             val to = parameters["to"] as? String
 
-            Log.d("FileFunctions.Move", "Move requested - from: $from, to: $to")
+            NativeLog.d("FileFunctions.Move") { "Move requested - from: $from, to: $to" }
 
             if (from.isNullOrEmpty()) {
                 return mapOf("success" to false, "error" to "'from' parameter is required")
@@ -153,7 +154,7 @@ object FileFunctions {
                 val success = sourceFile.renameTo(destFile)
 
                 if (success) {
-                    Log.d("FileFunctions.Move", "File moved successfully")
+                    NativeLog.d("FileFunctions.Move") { "File moved successfully" }
                     return mapOf("success" to true)
                 } else {
                     sourceFile.inputStream().use { input ->
@@ -164,7 +165,7 @@ object FileFunctions {
 
                     if (destFile.exists() && destFile.length() == sourceFile.length()) {
                         sourceFile.delete()
-                        Log.d("FileFunctions.Move", "File moved via copy + delete")
+                        NativeLog.d("FileFunctions.Move") { "File moved via copy + delete" }
                         return mapOf("success" to true)
                     } else {
                         return mapOf("success" to false, "error" to "Failed to verify file copy")
@@ -191,7 +192,7 @@ object FileFunctions {
             val from = parameters["from"] as? String
             val to = parameters["to"] as? String
 
-            Log.d("FileFunctions.Copy", "Copy requested - from: $from, to: $to")
+            NativeLog.d("FileFunctions.Copy") { "Copy requested - from: $from, to: $to" }
 
             if (from.isNullOrEmpty()) {
                 return mapOf("success" to false, "error" to "'from' parameter is required")
@@ -232,7 +233,7 @@ object FileFunctions {
                 }
 
                 if (destFile.exists() && destFile.length() == sourceFile.length()) {
-                    Log.d("FileFunctions.Copy", "File copied successfully")
+                    NativeLog.d("FileFunctions.Copy") { "File copied successfully" }
                     return mapOf("success" to true)
                 } else {
                     return mapOf("success" to false, "error" to "Failed to verify file copy")

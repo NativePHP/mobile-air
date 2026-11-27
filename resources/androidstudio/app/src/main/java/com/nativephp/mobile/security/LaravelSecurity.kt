@@ -2,6 +2,7 @@ package com.nativephp.mobile.security
 
 import android.util.Log
 import org.json.JSONObject
+import com.nativephp.mobile.utils.NativeLog
 
 object LaravelSecurity {
     private const val TAG = "LaravelSecurity"
@@ -10,14 +11,14 @@ object LaravelSecurity {
     fun extractFromPostBody(body: String?) {
         if (body.isNullOrEmpty()) return
 
-        Log.d(TAG, "🔎 Extracting CSRF token from body")
+        NativeLog.d(TAG) { "🔎 Extracting CSRF token from body" }
 
         try {
             if (body.startsWith("{")) {
                 val json = JSONObject(body)
                 if (json.has("_token")) {
                     csrfToken = json.getString("_token")
-                    Log.d(TAG, "🔑 Extracted CSRF token from JSON")
+                    NativeLog.d(TAG) { "🔑 Extracted CSRF token from JSON" }
                 }
             } else if (body.contains("_token=")) {
                 val token = body.split("&")
@@ -25,11 +26,11 @@ object LaravelSecurity {
                     ?.substringAfter("=")
                 if (!token.isNullOrEmpty()) {
                     csrfToken = token
-                    Log.d(TAG, "🔑 Extracted CSRF token from form")
+                    NativeLog.d(TAG) { "🔑 Extracted CSRF token from form" }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error parsing CSRF token: ${e.message}")
+            Log.e(TAG, "❌ Error parsing CSRF token: ${e.javaClass.simpleName}")
         }
     }
 
@@ -37,7 +38,7 @@ object LaravelSecurity {
         csrfToken?.let {
             headers["X-CSRF-TOKEN"] = it
             headers["X-XSRF-TOKEN"] = it
-            Log.d(TAG, "🛡️ Applied CSRF token to headers")
+            NativeLog.d(TAG) { "🛡️ Applied CSRF token to headers" }
         }
     }
 
@@ -45,11 +46,11 @@ object LaravelSecurity {
 
     fun set(token: String) {
         csrfToken = token
-        Log.d(TAG, "📥 Stored CSRF token manually")
+        NativeLog.d(TAG) { "📥 Stored CSRF token manually" }
     }
 
     fun clear() {
         csrfToken = null
-        Log.d(TAG, "🧹 Cleared CSRF token")
+        NativeLog.d(TAG) { "🧹 Cleared CSRF token" }
     }
 }

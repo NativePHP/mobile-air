@@ -13,16 +13,10 @@ use Native\Mobile\Validation\ValidationResult;
 
 beforeEach(function () {
     $this->analyzer = new BladeTemplateAnalyzer;
-    $this->savedElements = ElementRegistry::all();
     $this->savedComponents = ComponentRegistry::all();
 });
 
 afterEach(function () {
-    ElementRegistry::reset();
-    foreach ($this->savedElements as $type => $class) {
-        ElementRegistry::register($type, $class);
-    }
-
     ComponentRegistry::reset();
     ComponentRegistry::components($this->savedComponents);
 });
@@ -117,7 +111,7 @@ it('accepts element types registered by plugins', function () {
 });
 
 it('reads the element registry by default', function () {
-    ElementRegistry::register('outlined_text_input', TextInput::class);
+    ElementRegistry::swap('outlined_text_input', TextInput::class);
 
     expect(analyzeErrors(new BladeTemplateAnalyzer(unregisteredPluginTypes: []), '<native:outlined-text-input />'))->toBe([]);
 });

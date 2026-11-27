@@ -43,7 +43,7 @@ enum PerfFunctions {
     class Summary: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
             let json = buildExportJson()
-            print("PERF SUMMARY: \(json)")
+            NSLog("%@", "PERF SUMMARY: \(json)")
             return ["success": true]
         }
     }

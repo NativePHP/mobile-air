@@ -171,26 +171,36 @@ class Runtime
 
         $output = new BufferedOutput;
 
-        // Parse command and arguments
-        $parts = str_getcsv($command, ' ', '"', '\\');
-        $commandName = array_shift($parts);
-
-        $params = ['command' => $commandName];
-        foreach ($parts as $part) {
-            if (str_starts_with($part, '--')) {
-                $kv = explode('=', substr($part, 2), 2);
-                $params['--'.$kv[0]] = $kv[1] ?? true;
-            } else {
-                $params[] = $part;
-            }
-        }
-
-        $run = fn () => Artisan::call($commandName, array_slice($params, 1), $output);
+        // Artisan parses the whole line as the console does, so positional
+        // arguments bind by name and quoted values keep their spaces.
+        $commandName = strtok($command, ' ');
+        $run = fn () => Artisan::call($command, [], $output);
 
         // The queue worker lane runs its jobs in here. What a job
         // does is marked as work of a background lane, so that
         // a marked event it fires crosses to the main lane.
-        $commandName === 'queue:work' ? Lane::background($run) : $run();
+        // Symfony Console keeps a command's verbosity in the process-wide
+        // SHELL_VERBOSITY while it runs, and reads it for every command
+        // that sets none, so the queue worker's --quiet would silence a
+        // command on another lane. A lane's own $_ENV and $_SERVER are
+        // read first, so pin them for the call and put them back after.
+        $verbosity = [$_ENV['SHELL_VERBOSITY'] ?? null, $_SERVER['SHELL_VERBOSITY'] ?? null];
+        $_ENV['SHELL_VERBOSITY'] = $_SERVER['SHELL_VERBOSITY'] = 0;
+
+        try {
+            $commandName === 'queue:work' ? Lane::background($run) : $run();
+        } finally {
+            [$_ENV['SHELL_VERBOSITY'], $_SERVER['SHELL_VERBOSITY']] = $verbosity;
+
+            if ($verbosity[0] === null) {
+                unset($_ENV['SHELL_VERBOSITY']);
+            }
+
+            if ($verbosity[1] === null) {
+                unset($_SERVER['SHELL_VERBOSITY']);
+            }
+        }
+
         $result = $output->fetch();
 
         return $result;

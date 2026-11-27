@@ -23,6 +23,7 @@ if (function_exists('opcache_get_status')) {
     if ($opcacheStatus) {
         $_opcacheInfo = 'enabled='.($opcacheStatus['opcache_enabled'] ? 'YES' : 'NO');
         $_opcacheInfo .= ',cached='.($opcacheStatus['opcache_statistics']['num_cached_scripts'] ?? 0);
+        $_opcacheInfo .= ',file_cache='.(isset($opcacheStatus['file_cache']) ? 'on' : 'off');
     } else {
         $_opcacheInfo = 'disabled';
     }
@@ -49,13 +50,23 @@ nativephp_devtools_install_handlers($app->storagePath());
 Runtime::boot($app);
 $_timing['runtime_boot'] = microtime(true);
 
+// What opcache holds once Laravel has booted, to size its shared memory.
+if (function_exists('opcache_get_status') && ($opcacheStatus = @opcache_get_status(false))) {
+    $_opcacheInfo .= ',cached_after_boot='.($opcacheStatus['opcache_statistics']['num_cached_scripts'] ?? 0);
+    $_opcacheInfo .= ',free_mb='.round(($opcacheStatus['memory_usage']['free_memory'] ?? 0) / 1048576, 1);
+    $_opcacheInfo .= ',strings_free_mb='.round(($opcacheStatus['interned_strings_usage']['free_memory'] ?? 0) / 1048576, 1);
+}
+
 // Calculate timing
 $autoloadMs = round(($_timing['autoload'] - $_timing['start']) * 1000, 1);
 $bootstrapMs = round(($_timing['bootstrap'] - $_timing['autoload']) * 1000, 1);
 $runtimeBootMs = round(($_timing['runtime_boot'] - $_timing['bootstrap']) * 1000, 1);
 $totalMs = round(($_timing['runtime_boot'] - $_timing['start']) * 1000, 1);
 
-error_log("PerfTiming: persistent.php opcache={$_opcacheInfo} autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms runtime_boot={$runtimeBootMs}ms TOTAL={$totalMs}ms");
+require_once __DIR__.'/../shared/perf-timing.php';
+if (nativephp_perf_timing_enabled($app ?? null)) {
+    error_log("PerfTiming: persistent.php opcache={$_opcacheInfo} autoload={$autoloadMs}ms bootstrap={$bootstrapMs}ms runtime_boot={$runtimeBootMs}ms TOTAL={$totalMs}ms");
+}
 
 // The interpreter stays alive from here.
 // All subsequent work happens via zend_eval_string() calling Runtime::dispatch().

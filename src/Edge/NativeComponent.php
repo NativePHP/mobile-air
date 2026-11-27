@@ -9,6 +9,7 @@ use Native\Mobile\Edge\Concerns\InteractsWithAppShell;
 use Native\Mobile\Edge\Concerns\RestartsOnHotReload;
 use Native\Mobile\Edge\Concerns\RunsAsyncTasks;
 use Native\Mobile\Edge\Concerns\WrapsScreensInNativeChrome;
+use Native\Mobile\Edge\Contracts\RunloopExtension;
 use Native\Mobile\Facades\System as SystemFacade;
 use Native\Mobile\Support\GlobalEventTransport;
 use Native\Mobile\System;
@@ -72,6 +73,50 @@ abstract class NativeComponent extends CoreNativeComponent
      * that never returns and the main thread hangs (ANR).
      */
     const EVENT_SHUTDOWN = 16;
+
+    /**
+     * Packages hooked into every screen's runloop, in the order they were
+     * registered. See {@see extend()}.
+     *
+     * @var list<RunloopExtension>
+     */
+    private static array $nativeExtensions = [];
+
+    /**
+     * Hook a package into every screen's runloop. See RunloopExtension for
+     * what each hook is called for. Usually called from a service
+     * provider's boot(). Registering the same instance twice does nothing.
+     */
+    public static function extend(RunloopExtension $extension): void
+    {
+        if (! in_array($extension, self::$nativeExtensions, true)) {
+            self::$nativeExtensions[] = $extension;
+        }
+    }
+
+    /** @return list<RunloopExtension> The registered runloop extensions, in order. */
+    public static function extensions(): array
+    {
+        return self::$nativeExtensions;
+    }
+
+    /** @internal Forget every runloop extension. For tests. */
+    public static function forgetExtensions(): void
+    {
+        self::$nativeExtensions = [];
+    }
+
+    /**
+     * The extensions extend() registered, in order,
+     * for core's hooks. They are kept here since
+     * their contract names this screen class.
+     *
+     * @return list<RunloopExtension>
+     */
+    protected static function runloopExtensions(): array
+    {
+        return self::$nativeExtensions;
+    }
 
     /**
      * The host as this package's concrete router.
@@ -170,10 +215,15 @@ abstract class NativeComponent extends CoreNativeComponent
      * them: a deep link arriving warm, then an event of another lane,
      * and then an async task completing. Whichever claims an event
      * returns true, and core does nothing more with that event.
+     *
+     * A runloop extension gets its turn right after a deep
+     * link, so it can claim an event of another lane or
+     * a task completion before the shell handles it.
      */
     protected function handlePlatformNativeEvent(string $eventName, mixed $payload): bool
     {
         return $this->handleDeepLinkEvent($eventName, $payload)
+            || $this->extensionClaimsNativeEvent($eventName, $payload)
             || $this->handleEventOfAnotherLane($eventName, $payload)
             || $this->handleAsyncCompletionEvent($eventName, $payload);
     }
@@ -392,6 +442,16 @@ abstract class NativeComponent extends CoreNativeComponent
             }
 
             // A handler that navigated ends the loop, as any interaction does.
+            if (! $this->nativeRunning) {
+                break;
+            }
+
+            // Runloop extensions take their turn: timers that came due
+            // while the loop slept, work that finished without an event.
+            if ($this->tickExtensions()) {
+                $skipRender = false;
+            }
+
             if (! $this->nativeRunning) {
                 break;
             }

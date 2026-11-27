@@ -110,13 +110,14 @@ class DispatchEventFromAppController
     {
         $id = $payload['id'] ?? null;
 
-        // Exact correlation by id first. If that misses — either no id came back
-        // (some native paths drop it across a lifecycle bounce, and some events
-        // never carry one) or it didn't match — fall back to the single
-        // in-flight callback for this event class, mirroring the Edge loop.
+        // Exact correlation by id first. Only when no id came back (some native
+        // paths drop it across a lifecycle bounce, and some events never carry
+        // one) fall back to the single in-flight callback for this event class,
+        // mirroring the Edge loop. An id that matches nothing must not take
+        // another operation's callback.
         $peek = ($id !== null) ? NativeCallbacks::resolve($id, $eventClass, consume: false) : null;
 
-        if ($peek === null) {
+        if ($peek === null && blank($id)) {
             [$id, $peek] = NativeCallbacks::resolveByEvent($eventClass) ?? [null, null];
         }
 

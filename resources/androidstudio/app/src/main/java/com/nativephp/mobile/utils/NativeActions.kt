@@ -20,7 +20,7 @@ object NativeActions {
         Handler(Looper.getMainLooper()).post {
             try {
                 Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                Log.d(TAG, "✅ Toast displayed")
+                NativeLog.d(TAG) { "✅ Toast displayed" }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error showing toast: ${e.message}", e)
             }
@@ -81,7 +81,7 @@ object NativeActions {
                     }
                 }
 
-                Log.d(TAG, "✅ Alert displayed with ${order.size} buttons")
+                NativeLog.d(TAG) { "✅ Alert displayed with ${order.size} buttons" }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error showing alert: ${e.message}", e)
             }
@@ -121,7 +121,7 @@ object NativeActions {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
-        Log.d(TAG, "🌐 Opened URL in system browser: $url")
+        NativeLog.d(TAG) { "🌐 Opened URL in system browser: $url" }
     }
 
     fun openAuthBrowser(context: Context, url: String) {
@@ -130,6 +130,6 @@ object NativeActions {
             .setUrlBarHidingEnabled(false)
             .build()
         intent.launchUrl(context, Uri.parse(url))
-        Log.d(TAG, "🔐 Opened URL in auth browser: $url")
+        NativeLog.d(TAG) { "🔐 Opened URL in auth browser: $url" }
     }
 }

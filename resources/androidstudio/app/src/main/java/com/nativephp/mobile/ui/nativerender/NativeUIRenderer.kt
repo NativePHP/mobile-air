@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -18,6 +19,10 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.Composable
@@ -32,6 +37,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -97,9 +103,19 @@ fun NativeUIContent() {
         val safeAreaTopDp = if (insets != null) insets.top / density.density else 0f
         val safeAreaBottomDp = if (insets != null) insets.bottom / density.density else 0f
 
+        // In landscape the 3-button navigation bar and the camera cutout sit
+        // on a side. Read through Compose's observable insets: turning the
+        // phone from one landscape to the other moves them to the other side
+        // without changing the size, so nothing else would recompose.
+        val sideInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+        val safeAreaLeftDp = sideInsets.getLeft(density, LayoutDirection.Ltr) / density.density
+        val safeAreaRightDp = sideInsets.getRight(density, LayoutDirection.Ltr) / density.density
+
         CompositionLocalProvider(
             LocalSafeAreaTop provides safeAreaTopDp,
             LocalSafeAreaBottom provides safeAreaBottomDp,
+            LocalSafeAreaLeft provides safeAreaLeftDp,
+            LocalSafeAreaRight provides safeAreaRightDp,
             LocalAvailableWidth provides maxWidth.value,
             LocalAvailableHeight provides maxHeight.value
         ) {
@@ -188,6 +204,15 @@ internal fun transitionFor(type: String?): ContentTransform {
             slideOutHorizontally(intSpec) { it }
         "slide_from_bottom" -> slideInVertically(intSpec) { it } togetherWith
             slideOutVertically(intSpec) { -it }
+        // Inverse of slide_from_bottom, for dismissing a screen presented
+        // that way: the incoming screen is in place beneath from the first
+        // frame (no enter motion) while the outgoing screen slides off the
+        // bottom edge on top of it. A negative targetContentZIndex draws the
+        // outgoing pane above the incoming one. 300 ms like iOS's slide-down
+        // (ScreenExitModifier in ScreenTransitions.swift).
+        "slide_to_bottom" -> (EnterTransition.None togetherWith
+            slideOutVertically(tween(durationMillis = 300)) { it })
+            .apply { targetContentZIndex = -1f }
         "fade" -> fadeIn(spec) togetherWith fadeOut(spec)
         // Short upward drift (1/8 screen height) + fade over the HELD
         // outgoing screen — the conventional "fade from bottom" (React

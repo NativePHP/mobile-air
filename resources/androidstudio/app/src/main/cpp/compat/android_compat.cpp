@@ -14,12 +14,17 @@
 #include <langinfo.h>
 #include <glob.h>
 
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "Compat", __VA_ARGS__)
+// Debug-only, see php_bridge.c
+#ifdef NDEBUG
+#define LOGD(...) ((void) 0)
+#else
+#define LOGD(...) ((void) __android_log_print(ANDROID_LOG_DEBUG, "Compat", __VA_ARGS__))
+#endif
 
 
 __attribute__((visibility("default")))
 extern "C" int getdtablesize(void) {
-    __android_log_print(ANDROID_LOG_INFO, "Compat", "getdtablesize called");
+    LOGD("getdtablesize called");
     struct rlimit rlim;
     if (getrlimit(RLIMIT_NOFILE, &rlim) == 0) {
         return rlim.rlim_cur;

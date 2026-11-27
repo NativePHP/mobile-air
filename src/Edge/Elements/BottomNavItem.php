@@ -9,6 +9,15 @@ use Native\Mobile\Icon\IosSymbol;
 use SupaNative\Core\Edge\CallbackRegistry;
 use SupaNative\Core\Edge\Element;
 
+/**
+ * One item in a bottom tab bar (`<native:bottom-nav-item>` or the
+ * `Tab` builder).
+ *
+ * `ref="tab-home"` names the item for UI tests. iOS sets it as the tab
+ * button's accessibility identifier, so XCUITest finds it with
+ * `app.tabBars.buttons["tab-home"]`. Android sets it as the item's
+ * Compose `testTag`, which UiAutomator and Maestro see as the resource-id.
+ */
 class BottomNavItem extends Element
 {
     protected string $type = 'bottom_nav_item';
@@ -69,6 +78,15 @@ class BottomNavItem extends Element
         // accept kebab and camel forms.
         $this->iosIcon = $attrs['ios-icon'] ?? $attrs['iosIcon'] ?? $attrs['ios'] ?? $this->iosIcon;
         $this->androidIcon = $attrs['android-icon'] ?? $attrs['androidIcon'] ?? $attrs['android'] ?? $this->androidIcon;
+
+        // UI-test handle. Blade's `ref="tab-home"` already reaches
+        // Element::ref() through the collector; this covers the Tab builder
+        // and direct applyAttributes() callers. Renderers apply it to the
+        // tab button itself: iOS as the accessibility identifier, Android
+        // as the Compose testTag (exposed as the resource-id).
+        if (isset($attrs['ref']) && $attrs['ref'] !== '') {
+            $this->ref((string) $attrs['ref']);
+        }
 
         if (isset($attrs['active'])) {
             $this->props['active'] = filter_var($attrs['active'], FILTER_VALIDATE_BOOLEAN);
@@ -131,6 +149,11 @@ class BottomNavItem extends Element
     public function getRawSearchItems(): ?array
     {
         return $this->rawSearchItems;
+    }
+
+    public function getId(): string
+    {
+        return (string) ($this->props['id'] ?? '');
     }
 
     public function getUrl(): string

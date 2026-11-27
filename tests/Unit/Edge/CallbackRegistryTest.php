@@ -160,3 +160,14 @@ it('still parses method handlers as before', function () {
     expect(CallbackRegistry::parse('save'))->toBe(['method' => 'save', 'args' => []])
         ->and(CallbackRegistry::parse("open('a', 2)"))->toBe(['method' => 'open', 'args' => ['a', 2]]);
 });
+
+it('lazily parses registered expressions on resolve and caches the result', function () {
+    $r = new CallbackRegistry;
+    $id = $r->register("selectItem(42, 'order-42')");
+
+    $first = $r->resolve($id);
+    $second = $r->resolve($id);
+
+    expect($first)->toBe(['method' => 'selectItem', 'args' => [42, 'order-42']])
+        ->and($second)->toBe($first);
+});

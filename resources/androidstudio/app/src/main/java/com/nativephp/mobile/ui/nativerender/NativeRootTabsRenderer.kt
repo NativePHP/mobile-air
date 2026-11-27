@@ -50,17 +50,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -115,8 +121,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // analogue of iOS's `.safeAreaInset(.bottom)`.
     val bottomBarNode = node.children.firstOrNull { it.type == "bottom_bar" }
 
-    // Activeness flows from `BottomNavItem.active` (TabBar::highlight() set it).
-    val activeTabIdx = tabs.indexOfFirst { it.props.getBool("active") }.coerceAtLeast(0)
+    // Activeness flows from `tab_highlight` (TabBarOptions::highlight()) or
+    // `BottomNavItem.active` (TabBar::highlight() set it).
+    val tabHighlight = node.props.getString("tab_highlight", "")
+    val highlightedTabIdx = if (tabHighlight.isNotEmpty()) {
+        tabs.indexOfFirst { it.props.getString("id", "") == tabHighlight }.takeIf { it >= 0 }
+    } else null
+    val activeTabIdx = (highlightedTabIdx ?: tabs.indexOfFirst { it.props.getBool("active") }).coerceAtLeast(0)
 
     // Stable per-tab identity for the in-flight-navigation trackers below —
     // FlatBuffer node ids regenerate every publish, so use the PHP-side slug.
@@ -184,16 +195,74 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // even when the tab index doesn't change.
     val currentUri = node.props.getString("current_uri", "")
 
+    // Whether this screen was pushed inside the active tab (e.g. chats list
+    // → chat detail). Mirrors iOS, where the per-tab NavigationStack gives
+    // pushed levels a back button and `HideTabBarOnPushModifier` hides the
+    // tab bar. Same depth reconciliation as `PerTabNavigationCoordinator`:
+    // each tab remembers the router depth seen at its own URL (1 until
+    // learned), and a deeper `stack_depth` is a pushed level. A screen
+    // swapped in at the root depth (a cold deep link, a `replace()`)
+    // stays a root.
+    val stackDepth = node.props.getInt("stack_depth", 0)
+    val activeTabUrl = tabs.getOrNull(activeTabIdx)?.props?.getString("url", "").orEmpty()
+    val atTabRoot = activeTabUrl.isNotEmpty() && tabUriPath(currentUri) == tabUriPath(activeTabUrl)
+    val tabRootDepths = remember { mutableStateMapOf<String, Int>() }
+    SideEffect {
+        if (atTabRoot && stackDepth > 0) tabRootDepths[activeTabId] = stackDepth
+    }
+    val isPushed = !atTabRoot && stackDepth > (tabRootDepths[activeTabId] ?: 1)
+    // `TabBar::hideOnPush()`: unset hides the bar on pushed screens, the
+    // same as iOS. `hideOnPush(false)` keeps it, and so does
+    // `tabBarOptions()->hidden(false)` (show_tab_bar) on this screen.
+    val hidesOnPush = !node.props.has("hide_on_push") || node.props.getBool("hide_on_push")
+    val hiddenForPush = isPushed && hidesOnPush && !node.props.getBool("show_tab_bar")
+
     // Folded NavBar config — present when the layout supplied both bars.
-    val navBack = node.props.getBool("nav_back")
+    // Pushed levels always get a back button, as on iOS.
+    val navBack = node.props.getBool("nav_back") || isPushed
     val navTitle = node.props.getString("nav_title", "")
     val navSubtitle = node.props.getString("nav_subtitle", "")
     val navBgArgb = node.props.getColor("nav_background_color", 0)
     val navTextArgb = node.props.getColor("nav_text_color", 0)
 
-    // a bar carrying only actions must still render.
+    // Search config folded from the NavBar (`nav_search_*`). With a
+    // search-role tab, these props are that tab's config (see below);
+    // without one, they're the screen's inline search field, which the
+    // top bar draws like the stack renderer does. iOS makes the same
+    // split before applying `SearchableNavBarModifier` to each tab.
+    val searchTabIdx = tabs.indexOfFirst { it.props.getBool("search") }
+    val searchPlaceholder = node.props.getString("nav_search_placeholder", "")
+    val searchMode = node.props.getString("nav_search_mode", "static")
+    val searchDebounceMs = node.props.getInt("nav_search_debounce_ms", 250)
+    val searchOnQueryCb = node.props.getCallbackId("nav_search_on_query")
+    val searchOnSubmitCb = node.props.getCallbackId("nav_search_on_submit")
+    val hasInlineSearch = searchTabIdx < 0 && searchPlaceholder.isNotEmpty()
+
+    // a bar carrying only actions (or only a search field) must still render.
     val hasNavActions = node.children.any { it.type == "top_bar_action" }
-    val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null || hasNavActions
+    val hasNavBar = navBack || navTitle.isNotEmpty() || titleNode != null || hasNavActions || hasInlineSearch
+    // With no title of any kind the field takes the title slot; otherwise
+    // it sits under the bar, as on the stack path.
+    val searchInTitleSlot = hasInlineSearch && titleNode == null &&
+        navTitle.isEmpty() && navSubtitle.isEmpty()
+
+    // Inline search text per stack level (see InlineNavSearchField). PHP
+    // keeps a pushed-over screen alive and shows it again on back, so its
+    // query outlives the push. A level's query goes when PHP pops or
+    // replaces that level, and a tab change replaces the whole stack.
+    val searchLevel = "$stackDepth|$currentUri"
+    val searchQueries = remember { mutableStateMapOf<String, String>() }
+    val searchLevels = remember { HashMap<Int, String>() }
+    var searchLevelsTabId by remember { mutableStateOf(activeTabId) }
+    LaunchedEffect(activeTabId, searchLevel) {
+        if (activeTabId != searchLevelsTabId) {
+            searchLevels.clear()
+            searchLevelsTabId = activeTabId
+        }
+        searchLevels.keys.removeAll { it > stackDepth }
+        searchLevels[stackDepth] = searchLevel
+        searchQueries.keys.retainAll(searchLevels.values.toSet())
+    }
     val reservesNavigationBarSlot = NativeRootHostRegistry.reservesNavigationBarSlot(node)
 
     // `nav_display_mode` / `nav_scroll_behavior` map the same way the stack
@@ -234,13 +303,6 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     //   - the active screen declared static items
     //   - the user is currently on the search tab (sticky — keeps the
     //     tab from yanking itself out the instant they tap it)
-    val searchTabIdx = tabs.indexOfFirst { it.props.getBool("search") }
-    val searchPlaceholder = node.props.getString("nav_search_placeholder", "")
-    val searchMode = node.props.getString("nav_search_mode", "static")
-    val searchDebounceMs = node.props.getInt("nav_search_debounce_ms", 250)
-    val searchOnQueryCb = node.props.getCallbackId("nav_search_on_query")
-    val searchOnSubmitCb = node.props.getCallbackId("nav_search_on_submit")
-
     val shouldShowSearchTab = searchMode == "dynamic"
         || searchItemNodes.isNotEmpty()
         || (searchTabIdx >= 0 && selection == searchTabIdx)
@@ -346,11 +408,24 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         },
         topBar = {
             if (hasNavBar && !hideNavBar && !isOnSearchTab) {
+                val searchField: @Composable (Modifier) -> Unit = { fieldModifier ->
+                    InlineNavSearchField(
+                        placeholder = searchPlaceholder,
+                        callbackId = searchOnQueryCb,
+                        nodeId = node.id,
+                        debounceMs = searchDebounceMs,
+                        queries = searchQueries,
+                        level = searchLevel,
+                        modifier = fieldModifier,
+                    )
+                }
                 val titleContent: @Composable () -> Unit = {
                     if (titleNode != null) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             titleNode.children.forEach { child -> NodeView(node = child) }
                         }
+                    } else if (searchInTitleSlot) {
+                        searchField(Modifier)
                     } else if (navSubtitle.isNotEmpty()) {
                         Column {
                             // Large mode lets the bar drive the headline title
@@ -394,32 +469,49 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                 } else {
                     TopAppBarDefaults.topAppBarColors()
                 }
-                if (useLargeTitle) {
-                    LargeTopAppBar(
-                        title = titleContent,
-                        navigationIcon = navIconContent,
-                        actions = { actions.forEach { action -> TopBarActionView(action) } },
-                        colors = barColors,
-                        scrollBehavior = scrollBehavior,
-                    )
-                } else {
-                    TopAppBar(
-                        title = titleContent,
-                        navigationIcon = navIconContent,
-                        actions = { actions.forEach { action -> TopBarActionView(action) } },
-                        colors = barColors,
-                        scrollBehavior = scrollBehavior,
-                    )
+                val barContainerColor = if (navBgArgb != 0) argbToComposeColor(navBgArgb)
+                    else MaterialTheme.colorScheme.surface
+                Column(modifier = Modifier.background(barContainerColor)) {
+                    if (useLargeTitle) {
+                        LargeTopAppBar(
+                            title = titleContent,
+                            navigationIcon = navIconContent,
+                            actions = { actions.forEach { action -> TopBarActionView(action) } },
+                            colors = barColors,
+                            scrollBehavior = scrollBehavior,
+                        )
+                    } else {
+                        TopAppBar(
+                            title = titleContent,
+                            navigationIcon = navIconContent,
+                            actions = { actions.forEach { action -> TopBarActionView(action) } },
+                            colors = barColors,
+                            scrollBehavior = scrollBehavior,
+                        )
+                    }
+                    // Under a titled bar, the same full-width pill as the
+                    // stack renderer (iOS draws `.searchable` below the title).
+                    if (hasInlineSearch && !searchInTitleSlot) {
+                        searchField(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .clip(RoundedCornerShape(28.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                        )
+                    }
                 }
             }
         },
         bottomBar = bottomBar@{
             // Mirror iOS's `HideTabBarOnPushModifier`: pushed-detail
             // screens hide the tab strip entirely (iMessage / Music /
-            // Mail pattern). Driven by the `hide_tab_bar` wire prop set
-            // by the screen via `$hidesTabBar` or
-            // `tabBarOptions()->hidden()`.
-            if (hideTabBar) return@bottomBar
+            // Mail pattern). Driven by the push depth above (unless the bar
+            // or this screen keeps it, see `hiddenForPush`), or by the
+            // `hide_tab_bar` wire prop set by the screen via `$hidesTabBar`
+            // or `tabBarOptions()->hidden()`.
+            if (hideTabBar || hiddenForPush) return@bottomBar
 
             Column {
                 // Persistent accessory pinned above the NavigationBar
@@ -462,9 +554,14 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         val icon = tab.props.getString("icon", "circle")
                         val badge = tab.props.getString("badge", "")
                         val news = tab.props.getBool("news")
+                        // PHP `ref` (`Tab::ref()` / `ref="…"`) → testTag on the
+                        // item, published as its resource-id by the
+                        // `testTagsAsResourceId` set at the NativeUIContent root.
+                        val ref = tab.props.getString("ref", "")
                         NavigationBarItem(
                             selected = actualIdx == selection,
                             onClick = { activateTabAt(actualIdx) },
+                            modifier = if (ref.isNotEmpty()) Modifier.testTag(ref) else Modifier,
                             icon = {
                                 if (badge.isNotEmpty() || news) {
                                     BadgedBox(badge = {
@@ -932,17 +1029,23 @@ private fun androidSearchableText(item: NativeUINode): String? {
 }
 
 /**
- * Inline search field placed in a `TopAppBar` title slot when a
- * stack-only chrome screen carries `search_placeholder` /
- * `search_on_query` props (set via `NavBarOptions::searchBar()`).
- * Used by `NativeRootStackRenderer` for the legacy in-NavBar search
- * pattern; the new tab-based search experience uses
+ * Inline search field drawn in or under the `TopAppBar` when a chrome
+ * screen carries `search_placeholder` / `search_on_query` props (set via
+ * `NavBarOptions::searchBar()`), folded to `nav_search_*` on the tabs
+ * root. Used by `NativeRootStackRenderer`, and by this renderer when the
+ * layout has no search-role tab; a search-role tab uses
  * `AndroidSearchTabRoot` instead.
  *
  * Debounce semantics mirror iOS's `SearchableNavBarModifier`: changes
  * are coalesced over `debounceMs` ms before firing the bridge event.
  * `LaunchedEffect(text)` cancels the in-flight delay on the next
  * keystroke.
+ *
+ * The text lives in `queries` under `level`, the stack level showing
+ * the field, so going back to a level shows the query PHP still holds
+ * for it, as iOS keeps each level's `.searchable` text. Returning to a
+ * level doesn't resend its query. The renderer drops a level's entry
+ * once PHP's stack no longer holds that level.
  */
 @Composable
 internal fun InlineNavSearchField(
@@ -950,9 +1053,11 @@ internal fun InlineNavSearchField(
     callbackId: Int,
     nodeId: Int,
     debounceMs: Int,
+    queries: SnapshotStateMap<String, String>,
+    level: String,
     modifier: Modifier = Modifier,
-) {
-    var text by remember { mutableStateOf("") }
+) = key(level) {
+    val text = queries[level] ?: ""
     var hasInteracted by remember { mutableStateOf(false) }
 
     LaunchedEffect(text) {
@@ -976,7 +1081,7 @@ internal fun InlineNavSearchField(
         )
         BasicTextField(
             value = text,
-            onValueChange = { text = it },
+            onValueChange = { queries[level] = it },
             modifier = Modifier
                 .padding(start = 8.dp)
                 .fillMaxWidth(),
@@ -1000,4 +1105,14 @@ internal fun InlineNavSearchField(
             },
         )
     }
+}
+
+/**
+ * The path a navigation URI addresses, without its query string, fragment
+ * or trailing slash — so `/chats?x=1` and `/chats/` both read as `/chats`.
+ * Mirrors iOS's `PerTabNavigationCoordinator.path(of:)`.
+ */
+private fun tabUriPath(uri: String): String {
+    val path = uri.substringBefore('#').substringBefore('?')
+    return "/" + path.trim('/')
 }

@@ -2,6 +2,7 @@ package com.nativephp.mobile.bridge
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import com.nativephp.mobile.bridge.plugins.PluginFeatures
 import com.nativephp.mobile.security.AppKeyStore
@@ -14,6 +15,7 @@ import java.util.zip.ZipInputStream
 import org.json.JSONObject
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import com.nativephp.mobile.utils.NativeLog
 
 class LaravelEnvironment(private val context: Context) {
     private val appStorageDir = context.getDir("storage", Context.MODE_PRIVATE)
@@ -33,7 +35,10 @@ class LaravelEnvironment(private val context: Context) {
         // What this shell ships with, so a lane cannot offer it a release that
         // predates its own code.
         val shellBuiltAt: String? = null,
-        val shellCommit: String? = null
+        val shellCommit: String? = null,
+        // nativephp.opcache.file_cache from the app's config. On unless the
+        // app turned it off.
+        val opcacheFileCache: Boolean = true
     )
 
     companion object {
@@ -92,6 +97,7 @@ class LaravelEnvironment(private val context: Context) {
         private const val DIR_APP = "persisted_data/storage/app"
         private const val DIR_PUBLIC = "persisted_data/storage/app/public"
         private const val DIR_DATABASE = "persisted_data/database/"
+        private const val DIR_OPCACHE = "opcache"
 
         // Version constants
         private const val VERSION_DEBUG = "DEBUG"
@@ -145,7 +151,7 @@ class LaravelEnvironment(private val context: Context) {
             val envFile = File(laravelDir, ".env")
 
             if (!envFile.exists()) {
-                Log.d(TAG, "⚙️ No .env file found, using default start URL")
+                NativeLog.d(TAG) { "⚙️ No .env file found, using default start URL" }
                 return "/"
             }
 
@@ -164,7 +170,7 @@ class LaravelEnvironment(private val context: Context) {
                         if (!value.startsWith("/")) {
                             value = "/$value"
                         }
-                        Log.d(TAG, "⚙️ Found start URL in .env: $value")
+                        NativeLog.d(TAG) { "⚙️ Found start URL in .env: $value" }
                         return value
                     }
                 }
@@ -172,7 +178,7 @@ class LaravelEnvironment(private val context: Context) {
                 Log.e(TAG, "⚠️ Error reading .env file", e)
             }
 
-            Log.d(TAG, "⚙️ No NATIVEPHP_START_URL found, using default: /")
+            NativeLog.d(TAG) { "⚙️ No NATIVEPHP_START_URL found, using default: /" }
             return "/"
         }
     }
@@ -187,7 +193,7 @@ class LaravelEnvironment(private val context: Context) {
             // caches — the next request dies with "PHP Startup: stat
             // failed" on files that exist on disk. Skip entirely.
             if (phpBridge.isPersistentMode()) {
-                Log.d(TAG, "⚡ Persistent runtime alive — skipping bundle extraction (process reuse)")
+                NativeLog.d(TAG) { "⚡ Persistent runtime alive — skipping bundle extraction (process reuse)" }
                 return
             }
 
@@ -207,14 +213,14 @@ class LaravelEnvironment(private val context: Context) {
                 val didPending = applyPendingUpdatesUnlocked()
                 val didExtract = didBundle || didPending
 
-                setupEnvironment(didExtract)
+                setupEnvironment(forceCertRefresh = didExtract, opcacheFileCache = !didExtract)
 
                 // Only run artisan commands when files were actually extracted/changed
                 if (didExtract) {
-                    Log.d(TAG, "📦 Running post-extraction artisan commands...")
+                    NativeLog.d(TAG) { "📦 Running post-extraction artisan commands..." }
                     runBaseArtisanCommands()
                 } else {
-                    Log.d(TAG, "⚡ Skipping artisan commands — no extraction needed")
+                    NativeLog.d(TAG) { "⚡ Skipping artisan commands — no extraction needed" }
                 }
             }
         } catch (e: Exception) {
@@ -266,7 +272,7 @@ class LaravelEnvironment(private val context: Context) {
             return false
         }
 
-        Log.d(TAG, "🔍 DEBUG: embeddedId from bundle = '$embeddedId'")
+        NativeLog.d(TAG) { "🔍 DEBUG: embeddedId from bundle = '$embeddedId'" }
 
         // Identity of what's currently extracted. The .version marker written
         // after extraction is authoritative — it records the embedded composite
@@ -289,36 +295,36 @@ class LaravelEnvironment(private val context: Context) {
             null
         }
 
-        Log.d(TAG, "🔍 DEBUG: currentId = '${currentId ?: "none"}'")
+        NativeLog.d(TAG) { "🔍 DEBUG: currentId = '${currentId ?: "none"}'" }
 
         // If DEBUG mode, ALWAYS extract. Otherwise, only extract if composites don't match.
         val isDebug = embeddedId.equals(VERSION_DEBUG, ignoreCase = true)
         val isUpToDate = currentId == embeddedId
         val shouldExtract = isDebug || !isUpToDate
 
-        Log.d(TAG, "🔍 DEBUG: isUpToDate = $isUpToDate, isDebug = $isDebug, shouldExtract = $shouldExtract")
+        NativeLog.d(TAG) { "🔍 DEBUG: isUpToDate = $isUpToDate, isDebug = $isDebug, shouldExtract = $shouldExtract" }
 
         if (!shouldExtract) {
-            Log.d(TAG, "✅ Laravel already up to date (id $embeddedId)")
+            NativeLog.d(TAG) { "✅ Laravel already up to date (id $embeddedId)" }
 
             // A queued payload is the caller's second question, not this one's.
             return false
         }
 
-        Log.d(TAG, "📦 Extracting Laravel bundle — current: ${currentId ?: "none"}, embedded: $embeddedId")
+        NativeLog.d(TAG) { "📦 Extracting Laravel bundle — current: ${currentId ?: "none"}, embedded: $embeddedId" }
 
         // Delete entire laravel directory - persisted_data is separate and safe
         if (laravelDir.exists()) {
             // Check for symlinks before deletion
             val laravelStorage = File(laravelDir, "storage")
 
-            Log.d(TAG, "🗑️ CALLING BASH RM NOW...")
+            NativeLog.d(TAG) { "🗑️ CALLING BASH RM NOW..." }
             // WORKAROUND: Kotlin's deleteRecursively() has a bug that deletes persisted_data!
             // Use system rm command instead
             try {
                 val process = Runtime.getRuntime().exec(arrayOf("rm", "-rf", laravelDir.absolutePath))
                 process.waitFor()
-                Log.d(TAG, "✅ BASH RM COMPLETED (exit code: ${process.exitValue()})")
+                NativeLog.d(TAG) { "✅ BASH RM COMPLETED (exit code: ${process.exitValue()})" }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ BASH RM FAILED: ${e.message}")
                 // Fallback - try to delete what we can
@@ -347,20 +353,20 @@ class LaravelEnvironment(private val context: Context) {
             // re-extraction loop.
             File(laravelDir, VERSION_FILE).writeText(embeddedId)
             clearCompiledCaches()
-            Log.d(TAG, "✅ Updated .version file to: $embeddedId")
+            NativeLog.d(TAG) { "✅ Updated .version file to: $embeddedId" }
 
-            Log.d(TAG, "✅ Extraction complete to ${laravelDir.absolutePath}")
+            NativeLog.d(TAG) { "✅ Extraction complete to ${laravelDir.absolutePath}" }
 
             // Create storage structure for hot reload compatibility
             // Even though we use persisted_data/storage, hot reload needs laravel/storage/framework to exist
             val laravelStorageFramework = File(laravelDir, "storage/framework")
             laravelStorageFramework.mkdirs()
-            Log.d(TAG, "✅ Created laravel/storage/framework for hot reload")
+            NativeLog.d(TAG) { "✅ Created laravel/storage/framework for hot reload" }
 
             // Create bootstrap/cache directory (required for Laravel's cache operations)
             val bootstrapCache = File(laravelDir, "bootstrap/cache")
             bootstrapCache.mkdirs()
-            Log.d(TAG, "✅ Created laravel/bootstrap/cache for Laravel cache operations")
+            NativeLog.d(TAG) { "✅ Created laravel/bootstrap/cache for Laravel cache operations" }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to extract Laravel zip", e)
         }
@@ -389,12 +395,13 @@ class LaravelEnvironment(private val context: Context) {
             val runtimeMode = if (obj.has("runtime_mode") && !obj.isNull("runtime_mode")) obj.getString("runtime_mode") else null
             val shellBuiltAt = if (obj.has("shell_built_at") && !obj.isNull("shell_built_at")) obj.getString("shell_built_at") else null
             val shellCommit = if (obj.has("shell_commit") && !obj.isNull("shell_commit")) obj.getString("shell_commit") else null
-            Log.d(TAG, "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode")
-            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit)
+            val opcacheFileCache = obj.optBoolean("opcache_file_cache", true)
+            NativeLog.d(TAG) { "⚡ Read bundle_meta.json: version=$version, version_code=$versionCode, bifrost=$bifrostAppId, runtime_mode=$runtimeMode" }
+            val metadata = BundleMetadata(version, versionCode, bifrostAppId, runtimeMode, shellBuiltAt, shellCommit, opcacheFileCache)
             bundleMetadataCache = metadata
             return metadata
         } catch (e: Exception) {
-            Log.d(TAG, "bundle_meta.json not found, falling back to ZIP scan")
+            NativeLog.d(TAG) { "bundle_meta.json not found, falling back to ZIP scan" }
         }
 
         // Slow fallback: scan ZIP for .env and .version
@@ -495,7 +502,7 @@ class LaravelEnvironment(private val context: Context) {
         // and do not apply a leftover pending OTA on top — otherwise developers
         // never see the PHP they just shipped. Versioned builds still apply pending.
         if (isDebugBundle()) {
-            Log.d(TAG, "🚧 DEBUG bundle: skipping pending OTA apply so local changes show")
+            NativeLog.d(TAG) { "🚧 DEBUG bundle: skipping pending OTA apply so local changes show" }
             return false
         }
 
@@ -555,7 +562,7 @@ class LaravelEnvironment(private val context: Context) {
 
         envFile.writeText((kept + restored).joinToString("\n", postfix = "\n"))
 
-        Log.d(TAG, "📝 Restored shell version ${version}b${meta.versionCode ?: "0"} into the payload's .env")
+        NativeLog.d(TAG) { "📝 Restored shell version ${version}b${meta.versionCode ?: "0"} into the payload's .env" }
     }
 
     /**
@@ -586,7 +593,7 @@ class LaravelEnvironment(private val context: Context) {
             }
 
             manifestFile.writeText(merged.toString(2))
-            Log.d(TAG, "📌 Recorded release ${merged.optString("release_uuid", "?")} from the server's answer")
+            NativeLog.d(TAG) { "📌 Recorded release ${merged.optString("release_uuid", "?")} from the server's answer" }
         } catch (e: Exception) {
             Log.w(TAG, "Could not merge the server's release manifest: ${e.message}")
         } finally {
@@ -623,7 +630,72 @@ class LaravelEnvironment(private val context: Context) {
             }
         }
 
-        Log.d(TAG, "🧹 Cleared $removed compiled cache entries after extraction")
+        // Compiled scripts of the app that was just replaced. Release builds
+        // don't check timestamps (see opcacheSettings), so they must go before
+        // any PHP runs against the new files.
+        clearOpcacheFileCache()
+
+        NativeLog.d(TAG) { "🧹 Cleared $removed compiled cache entries after extraction" }
+    }
+
+    /** cacheDir/opcache: opcache's file cache, a second level behind its shared memory. */
+    private fun opcacheFileCacheDir(): File = File(context.cacheDir, DIR_OPCACHE)
+
+    private fun clearOpcacheFileCache() {
+        val dir = opcacheFileCacheDir()
+        if (dir.exists() && !dir.deleteRecursively()) {
+            Log.e(TAG, "❌ Could not fully clear the opcache file cache")
+        }
+    }
+
+    /**
+     * Opcache's shared memory lives only as long as the process, so without a
+     * file cache every cold start compiles all of Laravel again. The file cache
+     * keeps compiled scripts on disk between launches.
+     *
+     * Shared memory stays at PHP's default 128 MB (only touched pages cost
+     * memory); interned strings get 16 MB, because Laravel outgrows the
+     * default 8 MB. JIT stays off, as on iOS.
+     *
+     * A release build's PHP files only change when a bundle is extracted, and
+     * every extraction empties the file cache (clearCompiledCaches), so
+     * opcache needn't stat each file it includes. Debuggable builds and the
+     * DEBUG bundle keep checking timestamps, because hot reload rewrites files
+     * in place.
+     */
+    private fun opcacheSettings(fileCache: Boolean): String {
+        val lines = mutableListOf(
+            "opcache.enable=1",
+            "opcache.memory_consumption=128",
+            "opcache.interned_strings_buffer=16",
+            "opcache.max_accelerated_files=4000",
+            "opcache.jit=disable",
+            "opcache.jit_buffer_size=0"
+        )
+
+        val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable || isDebugBundle()) {
+            lines += "opcache.validate_timestamps=1"
+            lines += "opcache.revalidate_freq=0"
+        } else {
+            lines += "opcache.validate_timestamps=0"
+        }
+
+        if (fileCache && readBundleMetadata().opcacheFileCache) {
+            // Opcache turns the file cache off at startup when the directory
+            // is missing.
+            val dir = opcacheFileCacheDir()
+            if (dir.isDirectory || dir.mkdirs()) {
+                lines += "opcache.file_cache=\"${dir.absolutePath}\""
+                // With timestamp checks off nothing else would notice a
+                // damaged .bin; the checksum costs a few ms per launch.
+                lines += "opcache.file_cache_consistency_checks=1"
+            } else {
+                Log.e(TAG, "❌ Could not create ${dir.absolutePath}; opcache file cache off")
+            }
+        }
+
+        return lines.joinToString("\n")
     }
 
     /**
@@ -642,7 +714,7 @@ class LaravelEnvironment(private val context: Context) {
             return false
         }
 
-        Log.d(TAG, "📦 Applying queued OTA payload (${pendingZip.length()} bytes)")
+        NativeLog.d(TAG) { "📦 Applying queued OTA payload (${pendingZip.length()} bytes)" }
 
         val envFile = File(laravelDir, ENV_FILE)
         val stashFile = File(File(appStorageDir, DIR_UPDATES), ".env.stash")
@@ -653,7 +725,7 @@ class LaravelEnvironment(private val context: Context) {
             if (envFile.isFile) {
                 envFile.copyTo(stashFile, overwrite = true)
                 hadEnv = true
-                Log.d(TAG, "📦 Stashed existing .env before the pending update")
+                NativeLog.d(TAG) { "📦 Stashed existing .env before the pending update" }
             }
 
             // The payload replaces the app tree; persisted_data is a sibling
@@ -668,7 +740,7 @@ class LaravelEnvironment(private val context: Context) {
             if (hadEnv && stashFile.isFile) {
                 stashFile.copyTo(envFile, overwrite = true)
                 stashFile.delete()
-                Log.d(TAG, "📦 Restored stashed .env over extracted payload")
+                NativeLog.d(TAG) { "📦 Restored stashed .env over extracted payload" }
             }
 
             // The payload says which release it is; record it so the client can
@@ -683,7 +755,7 @@ class LaravelEnvironment(private val context: Context) {
 
             pendingZip.delete()
             clearCompiledCaches()
-            Log.d(TAG, "✅ OTA payload applied${release?.let { " (release $it)" } ?: ""}")
+            NativeLog.d(TAG) { "✅ OTA payload applied${release?.let { " (release $it)" } ?: ""}" }
             true
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to apply queued OTA payload", e)
@@ -717,7 +789,7 @@ class LaravelEnvironment(private val context: Context) {
         while (ze != null) {
             // Skip storage directory - we use persisted_data/storage instead
             if (ze.name.startsWith("storage/") || ze.name == "storage") {
-                Log.d(TAG, "⏭️ Skipping storage directory from bundle: ${ze.name}")
+                NativeLog.d(TAG) { "⏭️ Skipping storage directory from bundle: ${ze.name}" }
                 zis.closeEntry()
                 ze = zis.nextEntry
                 continue
@@ -748,18 +820,18 @@ class LaravelEnvironment(private val context: Context) {
 
         if (!outFile.exists()) {
             // File doesn't exist, copy it
-            Log.d(TAG, "📋 Copying asset $assetName to ${outFile.absolutePath} (new file)")
+            NativeLog.d(TAG) { "📋 Copying asset $assetName to ${outFile.absolutePath} (new file)" }
             copyAssetFile(assetName, outFile)
         } else if (forceUpdate) {
             // Forced refresh (DEBUG build, or the Laravel bundle was just
             // re-extracted for an app update), copy without checksum verification
-            Log.d(TAG, "📋 Force updating asset $assetName")
+            NativeLog.d(TAG) { "📋 Force updating asset $assetName" }
             copyAssetFile(assetName, outFile)
         } else {
             // File exists and no forced refresh — trust it. This asset only changes
             // with an app update, which re-extracts the bundle and forces a refresh
             // above. Avoids MD5-hashing two ~200KB streams on every cold boot.
-            Log.d(TAG, "📋 Asset $assetName present — skipping (no forced refresh)")
+            NativeLog.d(TAG) { "📋 Asset $assetName present — skipping (no forced refresh)" }
         }
 
         return outFile
@@ -773,7 +845,7 @@ class LaravelEnvironment(private val context: Context) {
                     input.copyTo(output)
                 }
             }
-            Log.d(TAG, "✅ Successfully copied $assetName")
+            NativeLog.d(TAG) { "✅ Successfully copied $assetName" }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to copy asset $assetName", e)
             throw e
@@ -782,17 +854,17 @@ class LaravelEnvironment(private val context: Context) {
 
     private fun runBaseArtisanCommands() {
         if (baseArtisanRanThisProcess) {
-            Log.d(TAG, "⚡ Base artisan already ran in this process — skipping (classic embed can't re-init after persistent shutdown)")
+            NativeLog.d(TAG) { "⚡ Base artisan already ran in this process — skipping (classic embed can't re-init after persistent shutdown)" }
             return
         }
         baseArtisanRanThisProcess = true
 
         val dbFile = File(appStorageDir, "persisted_data/database/database.sqlite")
         if (!dbFile.exists()) {
-            Log.d(TAG, "📄 Creating empty SQLite file: ${dbFile.absolutePath}")
+            NativeLog.d(TAG) { "📄 Creating empty SQLite file: ${dbFile.absolutePath}" }
             dbFile.createNewFile()
         } else {
-            Log.d(TAG, "✅ SQLite file already exists: ${dbFile.absolutePath}")
+            NativeLog.d(TAG) { "✅ SQLite file already exists: ${dbFile.absolutePath}" }
         }
 
         File(appStorageDir, "persisted_data/storage/app/public")
@@ -800,6 +872,11 @@ class LaravelEnvironment(private val context: Context) {
         phpBridge.runArtisanCommand("storage:unlink")
         phpBridge.runArtisanCommand("storage:link")
         phpBridge.runArtisanCommand("migrate --force")
+
+        // A new bundle may come from a version that started the queue worker at
+        // every launch and never wrote the pending-jobs marker. Write it, so the
+        // worker runs once and clears it if the queue is empty.
+        PHPQueueWorker.markPending(context)
 
         // Cache the Laravel bootstrap so every subsequent cold boot skips config
         // parsing, event discovery, and Blade compilation. Built HERE — once per app
@@ -835,7 +912,15 @@ class LaravelEnvironment(private val context: Context) {
         }
     }
 
-    private fun setupEnvironment(forceCertRefresh: Boolean = false) {
+    /**
+     * opcacheFileCache is false when artisan is about to run (after an
+     * extraction). Opcache names its cache directory after a system id, and
+     * this PHP build computes a different one each time the embed SAPI starts
+     * again in the same process, so the persistent runtime booting after
+     * artisan would fill a directory the next launch never reads. That launch
+     * starts PHP once and fills the right one.
+     */
+    private fun setupEnvironment(forceCertRefresh: Boolean = false, opcacheFileCache: Boolean = true) {
         try {
             val appKeys = AppKeyStore(context).load(File(appStorageDir, LEGACY_APP_KEY_FILE)) {
                 laravelSupportsPreviousKeys()
@@ -889,6 +974,7 @@ class LaravelEnvironment(private val context: Context) {
                 // false and routes/mobile.php never loads on device.
                 "NATIVEPHP_RUNNING" to "true",
                 "NATIVEPHP_PLATFORM" to "android",
+                "NATIVEPHP_OS_VERSION" to android.os.Build.VERSION.RELEASE,
                 "NATIVEPHP_TEMPDIR" to context.cacheDir.absolutePath
             )
 
@@ -919,7 +1005,7 @@ class LaravelEnvironment(private val context: Context) {
                 "REQUEST_SCHEME" to "http"
             )
 
-            Log.d(TAG, "✅ Environment variables configured")
+            NativeLog.d(TAG) { "✅ Environment variables configured" }
 
             try {
                 // Check if we're in DEBUG mode to force certificate refresh
@@ -930,7 +1016,7 @@ class LaravelEnvironment(private val context: Context) {
                     false
                 }
 
-                Log.d(TAG, "🔍 Certificate copy - DEBUG mode: $isDebugMode")
+                NativeLog.d(TAG) { "🔍 Certificate copy - DEBUG mode: $isDebugMode" }
                 // Force a refresh in DEBUG, or when the Laravel bundle was just
                 // re-extracted (app update). Otherwise trust the existing copy —
                 // see copyAssetToInternalStorage — so we don't MD5 two ~200KB
@@ -953,9 +1039,10 @@ openssl.cafile="${context.filesDir.absolutePath}/$CACERT_FILE"
 post_max_size=16M
 upload_max_filesize=16M
 memory_limit=128M
+${opcacheSettings(opcacheFileCache)}
 """
                 File(context.filesDir, PHP_INI_FILE).writeText(phpIni)
-                Log.d(TAG, "✅ PHP ini configured with certificate path")
+                NativeLog.d(TAG) { "✅ PHP ini configured with certificate path" }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Failed to copy or set CURL_CA_BUNDLE", e)
             }
@@ -1028,7 +1115,7 @@ memory_limit=128M
             // Same process-reuse guard as initialize(): never re-extract
             // under a live persistent runtime (poisons its stat caches).
             if (phpBridge.isPersistentMode()) {
-                Log.d(TAG, "⚡ Persistent runtime alive — skipping background extraction (process reuse)")
+                NativeLog.d(TAG) { "⚡ Persistent runtime alive — skipping background extraction (process reuse)" }
                 return
             }
 
@@ -1047,14 +1134,14 @@ memory_limit=128M
             extractionLock.withLock {
                 val didExtract = extractLaravelBundleUnlocked()
 
-                setupEnvironment(didExtract)
+                setupEnvironment(forceCertRefresh = didExtract, opcacheFileCache = !didExtract)
 
                 if (didExtract) {
-                    Log.d(TAG, "📦 Running post-extraction artisan commands (background path)...")
+                    NativeLog.d(TAG) { "📦 Running post-extraction artisan commands (background path)..." }
                     runBaseArtisanCommands()
                 }
             }
-            Log.d(TAG, "Background environment initialized")
+            NativeLog.d(TAG) { "Background environment initialized" }
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing background environment", e)
             throw RuntimeException("Failed to initialize background environment", e)

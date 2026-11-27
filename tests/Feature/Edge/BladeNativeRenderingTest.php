@@ -1,7 +1,10 @@
 <?php
 
+use Illuminate\Support\MessageBag;
+use Illuminate\Support\ViewErrorBag;
 use Illuminate\View\ViewException;
 use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements\TextInput;
 use Native\Mobile\Edge\NativeElementCollector;
@@ -164,6 +167,218 @@ it('renders conditionals', function () {
     expect($tree['children'][0]['props']['text'])->toBe('Always');
 });
 
+/**
+ * Render a view through the Element-tree path and, with the collector
+ * streaming into stand-ins for the C writer, through the streaming path.
+ * Returns the ids of the root's children for each path.
+ *
+ * @return array{tree: list<int>, streamed: list<int>}
+ */
+function childIdsOf(string $view, array $data): array
+{
+    NativeElementCollector::reset();
+    view($view, $data)->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    $GLOBALS['nphpStreamed'] = [];
+    NativeElementCollector::reset();
+    NativeElementCollector::setCallbacks(new CallbackRegistry);
+    NativeElementCollector::setStreaming(true);
+    try {
+        view($view, $data)->render();
+    } finally {
+        NativeElementCollector::setStreaming(false);
+    }
+
+    // The root opened first and closed last; its children are the nodes
+    // streamed at depth 1.
+    $depth = 0;
+    $streamed = [];
+    foreach ($GLOBALS['nphpStreamed'] as [$call, $id]) {
+        if ($call !== 'close' && $depth === 1) {
+            $streamed[] = $id;
+        }
+        $depth += match ($call) {
+            'open' => 1,
+            'close' => -1,
+            default => 0,
+        };
+    }
+
+    return ['tree' => array_column($tree['children'] ?? [], 'id'), 'streamed' => $streamed];
+}
+
+if (! function_exists('nphp_node_open')) {
+    function nphp_node_open(string $type, ?array $layout, ?array $style, ?array $props, int $onPress, int $onLongPress, int $id): void
+    {
+        $GLOBALS['nphpStreamed'][] = ['open', $id];
+    }
+
+    function nphp_node_leaf(string $type, ?array $layout, ?array $style, ?array $props, int $onPress, int $onLongPress, int $id): void
+    {
+        $GLOBALS['nphpStreamed'][] = ['leaf', $id];
+    }
+
+    function nphp_node_close(): void
+    {
+        $GLOBALS['nphpStreamed'][] = ['close', 0];
+    }
+}
+
+it('keeps the ids of elements after an @if when the @if stops rendering', function () {
+    // #647: with ids counted across the screen, removing the banner gave
+    // "Animated" the id "Plain" had, and the renderers reused Plain's state
+    // for it.
+    file_put_contents(__DIR__.'/views/test-banner.blade.php', <<<'BLADE'
+<native:column>
+    @if($banner)
+        <native:pressable @press="pressed"><native:text>Banner</native:text></native:pressable>
+    @endif
+    <native:pressable @press="pressed"><native:text>Plain</native:text></native:pressable>
+    <native:pressable :press-scale="0.9" @press="pressed"><native:text>Animated</native:text></native:pressable>
+</native:column>
+BLADE);
+
+    $shown = childIdsOf('test-banner', ['banner' => true]);
+    $hidden = childIdsOf('test-banner', ['banner' => false]);
+
+    expect($hidden['tree'])->toBe(array_slice($shown['tree'], 1))
+        ->and($hidden['streamed'])->toBe(array_slice($shown['streamed'], 1))
+        ->and($shown['streamed'])->toBe($shown['tree']);
+});
+
+it('keeps the ids of elements after a loop when the loop changes length', function () {
+    file_put_contents(__DIR__.'/views/test-loop-footer.blade.php', <<<'BLADE'
+<native:column>
+    <native:text>Header</native:text>
+    @foreach($items as $item)
+        <native:text>{{ $item }}</native:text>
+        <native:divider />
+    @endforeach
+    <native:text>Footer</native:text>
+</native:column>
+BLADE);
+
+    $three = childIdsOf('test-loop-footer', ['items' => ['a', 'b', 'c']])['tree'];
+    $one = childIdsOf('test-loop-footer', ['items' => ['a']])['tree'];
+
+    // Header, the first row's two elements, and Footer keep their ids.
+    expect($one)->toBe([$three[0], $three[1], $three[2], $three[7]]);
+});
+
+it('gives each branch of an @if its own ids', function () {
+    // Otherwise the else branch's element takes the if branch's state.
+    file_put_contents(__DIR__.'/views/test-branches.blade.php', <<<'BLADE'
+<native:column>
+    @if($signedIn)
+        <native:text>Welcome back</native:text>
+    @else
+        <native:text>Sign in</native:text>
+    @endif
+    <native:text>Footer</native:text>
+</native:column>
+BLADE);
+
+    $in = childIdsOf('test-branches', ['signedIn' => true]);
+    $out = childIdsOf('test-branches', ['signedIn' => false]);
+
+    expect($in['tree'][0])->not->toBe($out['tree'][0])
+        ->and($in['tree'][1])->toBe($out['tree'][1])
+        ->and($in['streamed'])->toBe($in['tree'])
+        ->and($out['streamed'])->toBe($out['tree']);
+});
+
+it('keeps the ids of elements after an @include whose partial renders fewer elements', function () {
+    file_put_contents(__DIR__.'/views/two-rows.blade.php', '<native:text>One</native:text><native:text>Two</native:text>');
+    file_put_contents(__DIR__.'/views/one-row.blade.php', '<native:text>One</native:text>');
+    file_put_contents(__DIR__.'/views/test-include-ids.blade.php', <<<'BLADE'
+<native:column>
+    @include($rows)
+    <native:text>After</native:text>
+</native:column>
+BLADE);
+
+    $two = childIdsOf('test-include-ids', ['rows' => 'two-rows'])['tree'];
+    $one = childIdsOf('test-include-ids', ['rows' => 'one-row'])['tree'];
+
+    expect($one)->toBe([$two[0], $two[2]]);
+});
+
+it('keeps the ids keyed elements had, under their key alone', function () {
+    file_put_contents(__DIR__.'/views/test-keyed.blade.php', <<<'BLADE'
+<native:column>
+    @if($banner)<native:text>Banner</native:text>@endif
+    @foreach(['b', 'c'] as $key)
+        <native:text native:key="{{ $key }}">{{ $key }}</native:text>
+    @endforeach
+</native:column>
+BLADE);
+
+    $ids = childIdsOf('test-keyed', ['banner' => true]);
+
+    expect(array_slice($ids['tree'], 1))->toBe([Element::fnv1a32('/b'), Element::fnv1a32('/c')])
+        ->and($ids['streamed'])->toBe($ids['tree']);
+});
+
+it('marks @switch cases without putting anything before the first case', function () {
+    file_put_contents(__DIR__.'/views/test-switch.blade.php', <<<'BLADE'
+<native:column>
+    @switch($state)
+        @case('loading')
+            <native:text>Loading</native:text>
+            @break
+        @default
+            <native:text>Done</native:text>
+    @endswitch
+    <native:text>Footer</native:text>
+</native:column>
+BLADE);
+
+    $loading = childIdsOf('test-switch', ['state' => 'loading'])['tree'];
+    $done = childIdsOf('test-switch', ['state' => 'done'])['tree'];
+
+    expect($loading[0])->not->toBe($done[0])
+        ->and($loading[1])->toBe($done[1]);
+});
+
+it('finds the end of directive arguments past comments holding quotes and brackets', function () {
+    // A quote or bracket inside a comment isn't PHP. Counting it ended the
+    // block marker after the directive's name, and Blade then compiled
+    // `$__env->make(, ...)`.
+    file_put_contents(__DIR__.'/views/commented-row.blade.php', '<native:text>{{ $label }}</native:text>');
+    file_put_contents(__DIR__.'/views/test-directive-comments.blade.php', <<<'BLADE'
+<native:column>
+    @include('commented-row', [
+        // the partial's own label
+        'label' => 'Included',
+        # a "quoted" word (and an open bracket
+        /* it's closed ) here */
+    ])
+    @if(
+        $show // don't render it when "hidden"
+        && true /* the 'rest' ( */
+    )
+        <native:text>Shown</native:text>
+    @endif
+    <native:text>Footer</native:text>
+</native:column>
+BLADE);
+
+    NativeElementCollector::reset();
+    view('test-directive-comments', ['show' => true])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect(array_map(fn ($child) => $child['props']['text'], $tree['children']))
+        ->toBe(['Included', 'Shown', 'Footer']);
+
+    // The @if is still a block of its own, so Footer keeps its id when it
+    // stops rendering.
+    $shown = childIdsOf('test-directive-comments', ['show' => true])['tree'];
+    $hidden = childIdsOf('test-directive-comments', ['show' => false])['tree'];
+
+    expect($hidden)->toBe([$shown[0], $shown[2]]);
+});
+
 it('renders all core self-closing element types', function () {
     $viewPath = __DIR__.'/views/test-all-leaf.blade.php';
     file_put_contents($viewPath, <<<'BLADE'
@@ -297,7 +512,7 @@ BLADE);
 // ── native:model ────────────────────────────────────────────────────
 
 it('reads native:model bindings from the variable and a path into it', function () {
-    ElementRegistry::register('text_input', TextInput::class);
+    ElementRegistry::swap('text_input', TextInput::class);
 
     file_put_contents(__DIR__.'/views/test-model-read.blade.php', <<<'BLADE'
 <native:column>
@@ -321,7 +536,7 @@ BLADE);
 });
 
 it('fails on a native:model binding to a variable the view does not have', function () {
-    ElementRegistry::register('text_input', TextInput::class);
+    ElementRegistry::swap('text_input', TextInput::class);
 
     file_put_contents(__DIR__.'/views/test-model-typo.blade.php', '<native:text-input native:model="usrname.first" />');
 
@@ -433,3 +648,23 @@ BLADE);
     expect($errorNode['props'])->not->toHaveKey('dark_color');
     expect($errorNode['props']['font_size'])->toBe(12.0);
 });
+
+it('reads the error from a ValidatesInput error bag', function (Closure $errors) {
+    $viewPath = __DIR__.'/views/test-error-bag.blade.php';
+    file_put_contents($viewPath, <<<'BLADE'
+<native:column>
+    @nativeError('name')
+    @nativeError('email')
+</native:column>
+BLADE);
+
+    NativeElementCollector::reset();
+    view('test-error-bag', ['errors' => $errors()])->render();
+    $tree = NativeElementCollector::collect()->toArray(new CallbackRegistry);
+
+    expect($tree['children'])->toHaveCount(1)
+        ->and($tree['children'][0]['props']['text'])->toBe('Name is required');
+})->with([
+    'view error bag' => fn () => (new ViewErrorBag)->put('default', new MessageBag(['name' => ['Name is required', 'Too short']])),
+    'message bag' => fn () => new MessageBag(['name' => ['Name is required', 'Too short']]),
+]);

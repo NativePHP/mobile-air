@@ -1,0 +1,575 @@
+{
+    "namespace": "NativeUI",
+    "platforms": [
+        "android",
+        "ios"
+    ],
+    "components": [
+        {
+            "type": "text",
+            "element": "Native\\Mobile\\Edge\\Elements\\Text",
+            "blade": "Native\\Mobile\\Edge\\Components\\Text",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.TextRenderer",
+            "ios_renderer": "NativeUITextRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "image",
+            "element": "Native\\Mobile\\Edge\\Elements\\Image",
+            "blade": "Native\\Mobile\\Edge\\Components\\Image",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ImageRenderer",
+            "ios_renderer": "NativeUIImageRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "column",
+            "element": "Native\\Mobile\\Edge\\Elements\\Column",
+            "blade": "Native\\Mobile\\Edge\\Components\\Column",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ColumnRenderer",
+            "ios_renderer": "NativeUIColumnRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "row",
+            "element": "Native\\Mobile\\Edge\\Elements\\Row",
+            "blade": "Native\\Mobile\\Edge\\Components\\Row",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.RowRenderer",
+            "ios_renderer": "NativeUIRowRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "stack",
+            "element": "Native\\Mobile\\Edge\\Elements\\Stack",
+            "blade": "Native\\Mobile\\Edge\\Components\\Stack",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.StackRenderer",
+            "ios_renderer": "NativeUIStackRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "scroll_view",
+            "element": "Native\\Mobile\\Edge\\Elements\\ScrollView",
+            "blade": "Native\\Mobile\\Edge\\Components\\ScrollView",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ScrollViewRenderer",
+            "ios_renderer": "NativeUIScrollViewRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "lazy_grid",
+            "element": "Native\\Mobile\\Edge\\Elements\\LazyGrid",
+            "blade": "Native\\Mobile\\Edge\\Components\\LazyGrid",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.LazyGridRenderer",
+            "ios_renderer": "NativeUILazyGridRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "gesture_area",
+            "element": "Native\\Mobile\\Edge\\Elements\\GestureArea",
+            "blade": "Native\\Mobile\\Edge\\Components\\GestureArea",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.GestureAreaRenderer",
+            "ios_renderer": "NativeUIGestureAreaRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "refreshable",
+            "element": "Native\\Mobile\\Edge\\Elements\\Refreshable",
+            "blade": "Native\\Mobile\\Edge\\Components\\Refreshable",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.RefreshableRenderer",
+            "ios_renderer": "NativeUIRefreshableRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "pressable",
+            "element": "Native\\Mobile\\Edge\\Elements\\Pressable",
+            "blade": "Native\\Mobile\\Edge\\Components\\Pressable",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.PressableRenderer",
+            "ios_renderer": "NativeUIPressableRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "canvas",
+            "element": "Native\\Mobile\\Edge\\Elements\\Canvas",
+            "blade": "Native\\Mobile\\Edge\\Components\\Canvas",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.CanvasRenderer",
+            "ios_renderer": "NativeUICanvasRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "spacer",
+            "element": "Native\\Mobile\\Edge\\Elements\\Spacer",
+            "blade": "Native\\Mobile\\Edge\\Components\\Spacer",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.SpacerRenderer",
+            "ios_renderer": "NativeUISpacerRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "divider",
+            "element": "Native\\Mobile\\Edge\\Elements\\Divider",
+            "blade": "Native\\Mobile\\Edge\\Components\\Divider",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.DividerRenderer",
+            "ios_renderer": "NativeUIDividerRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "rect",
+            "element": "Native\\Mobile\\Edge\\Elements\\Rect",
+            "blade": "Native\\Mobile\\Edge\\Components\\Rect",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.RectRenderer",
+            "ios_renderer": "NativeUIRectRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "circle",
+            "element": "Native\\Mobile\\Edge\\Elements\\Circle",
+            "blade": "Native\\Mobile\\Edge\\Components\\Circle",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.CircleRenderer",
+            "ios_renderer": "NativeUICircleRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "line",
+            "element": "Native\\Mobile\\Edge\\Elements\\Line",
+            "blade": "Native\\Mobile\\Edge\\Components\\Line",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.LineRenderer",
+            "ios_renderer": "NativeUILineRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "top_bar",
+            "element": "Native\\Mobile\\Edge\\Elements\\TopBar",
+            "blade": "Native\\Mobile\\Edge\\Components\\TopBar",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.TopBarRenderer",
+            "ios_renderer": "NativeUITopBarRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "top_bar_action",
+            "element": "Native\\Mobile\\Edge\\Elements\\TopBarAction",
+            "blade": "Native\\Mobile\\Edge\\Components\\TopBarAction",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "bottom_nav",
+            "element": "Native\\Mobile\\Edge\\Elements\\BottomNav",
+            "blade": "Native\\Mobile\\Edge\\Components\\BottomNav",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.BottomNavRenderer",
+            "ios_renderer": "NativeUIBottomNavRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "bottom_nav_item",
+            "element": "Native\\Mobile\\Edge\\Elements\\BottomNavItem",
+            "blade": "Native\\Mobile\\Edge\\Components\\BottomNavItem",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "side_nav",
+            "element": "Native\\Mobile\\Edge\\Elements\\SideNav",
+            "blade": "Native\\Mobile\\Edge\\Components\\SideNav",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.SideNavRenderer",
+            "ios_renderer": "NativeUISideNavRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "side_nav_item",
+            "element": "Native\\Mobile\\Edge\\Elements\\SideNavItem",
+            "blade": "Native\\Mobile\\Edge\\Components\\SideNavItem",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "side_nav_group",
+            "element": "Native\\Mobile\\Edge\\Elements\\SideNavGroup",
+            "blade": "Native\\Mobile\\Edge\\Components\\SideNavGroup",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "side_nav_header",
+            "element": "Native\\Mobile\\Edge\\Elements\\SideNavHeader",
+            "blade": "Native\\Mobile\\Edge\\Components\\SideNavHeader",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "horizontal_divider",
+            "element": "Native\\Mobile\\Edge\\Elements\\HorizontalDivider",
+            "blade": "Native\\Mobile\\Edge\\Components\\HorizontalDivider",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.DividerRenderer",
+            "ios_renderer": "NativeUIDividerRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "list",
+            "element": "Native\\Mobile\\UI\\Elements\\NativeList",
+            "blade": "Native\\Mobile\\UI\\Components\\NativeList",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ListRenderer",
+            "ios_renderer": "NativeUIListRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "virtual_list",
+            "element": "Native\\Mobile\\UI\\Elements\\NativeVirtualList",
+            "blade": "Native\\Mobile\\UI\\Components\\NativeVirtualList",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.VirtualListRenderer",
+            "ios_renderer": "NativeUIVirtualListRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "modal",
+            "element": "Native\\Mobile\\UI\\Elements\\Modal",
+            "blade": "Native\\Mobile\\UI\\Components\\Modal",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ModalRenderer",
+            "ios_renderer": "NativeUIModalRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "popover",
+            "element": "Native\\Mobile\\UI\\Elements\\Popover",
+            "blade": "Native\\Mobile\\UI\\Components\\Popover",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.PopoverRenderer",
+            "ios_renderer": "NativeUIPopoverRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "button",
+            "element": "Native\\Mobile\\UI\\Elements\\Button",
+            "blade": "Native\\Mobile\\UI\\Components\\Button",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ButtonRenderer",
+            "ios_renderer": "NativeUIButtonRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "progress_bar",
+            "element": "Native\\Mobile\\UI\\Elements\\ProgressBar",
+            "blade": "Native\\Mobile\\UI\\Components\\ProgressBar",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ProgressBarRenderer",
+            "ios_renderer": "NativeUIProgressBarRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "activity_indicator",
+            "element": "Native\\Mobile\\UI\\Elements\\ActivityIndicator",
+            "blade": "Native\\Mobile\\UI\\Components\\ActivityIndicator",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ActivityIndicatorRenderer",
+            "ios_renderer": "NativeUIActivityIndicatorRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "icon",
+            "element": "Native\\Mobile\\Edge\\Elements\\Icon",
+            "blade": "Native\\Mobile\\UI\\Components\\Icon",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.IconRenderer",
+            "ios_renderer": "NativeUIIconRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "outlined_text_input",
+            "element": "Native\\Mobile\\UI\\Elements\\OutlinedTextInput",
+            "blade": "Native\\Mobile\\UI\\Components\\OutlinedTextInput",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.OutlinedTextInputRenderer",
+            "ios_renderer": "NativeUIOutlinedTextInputRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "bare_text_input",
+            "element": "Native\\Mobile\\UI\\Elements\\BareTextInput",
+            "blade": "Native\\Mobile\\UI\\Components\\BareTextInput",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.BareTextInputRenderer",
+            "ios_renderer": "NativeUIBareTextInputRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "filled_text_input",
+            "element": "Native\\Mobile\\UI\\Elements\\FilledTextInput",
+            "blade": "Native\\Mobile\\UI\\Components\\FilledTextInput",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.FilledTextInputRenderer",
+            "ios_renderer": "NativeUIFilledTextInputRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "toggle",
+            "element": "Native\\Mobile\\UI\\Elements\\Toggle",
+            "blade": "Native\\Mobile\\UI\\Components\\Toggle",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ToggleRenderer",
+            "ios_renderer": "NativeUIToggleRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "checkbox",
+            "element": "Native\\Mobile\\UI\\Elements\\Checkbox",
+            "blade": "Native\\Mobile\\UI\\Components\\Checkbox",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.CheckboxRenderer",
+            "ios_renderer": "NativeUICheckboxRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "slider",
+            "element": "Native\\Mobile\\UI\\Elements\\Slider",
+            "blade": "Native\\Mobile\\UI\\Components\\Slider",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.SliderRenderer",
+            "ios_renderer": "NativeUISliderRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "select",
+            "element": "Native\\Mobile\\UI\\Elements\\Select",
+            "blade": "Native\\Mobile\\UI\\Components\\Select",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.SelectRenderer",
+            "ios_renderer": "NativeUISelectRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "date_picker",
+            "element": "Native\\Mobile\\UI\\Elements\\DatePicker",
+            "blade": "Native\\Mobile\\UI\\Components\\DatePicker",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.DatePickerRenderer",
+            "ios_renderer": "NativeUIDatePickerRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "emoji_picker",
+            "element": "Native\\Mobile\\UI\\Elements\\EmojiPicker",
+            "blade": "Native\\Mobile\\UI\\Components\\EmojiPicker",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmojiPickerRenderer",
+            "ios_renderer": "NativeUIEmojiPickerRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "radio_group",
+            "element": "Native\\Mobile\\UI\\Elements\\RadioGroup",
+            "blade": "Native\\Mobile\\UI\\Components\\RadioGroup",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.RadioGroupRenderer",
+            "ios_renderer": "NativeUIRadioGroupRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "radio",
+            "element": "Native\\Mobile\\UI\\Elements\\Radio",
+            "blade": "Native\\Mobile\\UI\\Components\\Radio",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.RadioRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "badge",
+            "element": "Native\\Mobile\\UI\\Elements\\Badge",
+            "blade": "Native\\Mobile\\UI\\Components\\Badge",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.BadgeRenderer",
+            "ios_renderer": "NativeUIBadgeRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "chip",
+            "element": "Native\\Mobile\\UI\\Elements\\Chip",
+            "blade": "Native\\Mobile\\UI\\Components\\Chip",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ChipRenderer",
+            "ios_renderer": "NativeUIChipRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "list_item",
+            "element": "Native\\Mobile\\UI\\Elements\\ListItem",
+            "blade": "Native\\Mobile\\UI\\Components\\ListItem",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ListItemRenderer",
+            "ios_renderer": "NativeUIListItemRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "list_section",
+            "element": "Native\\Mobile\\UI\\Elements\\ListSection",
+            "blade": "Native\\Mobile\\UI\\Components\\ListSection",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "list_placeholder",
+            "element": "Native\\Mobile\\UI\\Elements\\ListPlaceholder",
+            "blade": "Native\\Mobile\\UI\\Components\\ListPlaceholder",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "sticky_header",
+            "element": "Native\\Mobile\\UI\\Elements\\StickyHeader",
+            "blade": "Native\\Mobile\\UI\\Components\\StickyHeader",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ColumnRenderer",
+            "ios_renderer": "NativeUIColumnRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "tab_row",
+            "element": "Native\\Mobile\\UI\\Elements\\TabRow",
+            "blade": "Native\\Mobile\\UI\\Components\\TabRow",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.TabRowRenderer",
+            "ios_renderer": "NativeUITabRowRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "tab",
+            "element": "Native\\Mobile\\UI\\Elements\\Tab",
+            "blade": "Native\\Mobile\\UI\\Components\\Tab",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.TabRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "bottom_sheet",
+            "element": "Native\\Mobile\\UI\\Elements\\BottomSheet",
+            "blade": "Native\\Mobile\\UI\\Components\\BottomSheet",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.BottomSheetRenderer",
+            "ios_renderer": "NativeUIBottomSheetRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "button_group",
+            "element": "Native\\Mobile\\UI\\Elements\\ButtonGroup",
+            "blade": "Native\\Mobile\\UI\\Components\\ButtonGroup",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.ButtonGroupRenderer",
+            "ios_renderer": "NativeUIButtonGroupRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "pager",
+            "element": "Native\\Mobile\\UI\\Elements\\Pager",
+            "blade": "Native\\Mobile\\UI\\Components\\Pager",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.PagerRenderer",
+            "ios_renderer": "NativeUIPagerRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "pager_header",
+            "element": "Native\\Mobile\\UI\\Elements\\PagerHeader",
+            "blade": "Native\\Mobile\\UI\\Components\\PagerHeader",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "pager_overlay",
+            "element": "Native\\Mobile\\UI\\Elements\\PagerOverlay",
+            "blade": "Native\\Mobile\\UI\\Components\\PagerOverlay",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "carousel",
+            "element": "Native\\Mobile\\UI\\Elements\\Carousel",
+            "blade": "Native\\Mobile\\UI\\Components\\Carousel",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.CarouselRenderer",
+            "ios_renderer": "NativeUICarouselRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "native_drawer",
+            "element": "Native\\Mobile\\UI\\Elements\\NativeDrawer",
+            "blade": "Native\\Mobile\\UI\\Components\\NativeDrawer",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "floating_overlay",
+            "element": "Native\\Mobile\\UI\\Elements\\FloatingOverlay",
+            "blade": "Native\\Mobile\\UI\\Components\\FloatingOverlay",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "webview",
+            "element": "Native\\Mobile\\UI\\Elements\\Webview",
+            "blade": "Native\\Mobile\\UI\\Components\\Webview",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.WebviewRenderer",
+            "ios_renderer": "NativeUIWebviewRenderer",
+            "self_closing": true
+        },
+        {
+            "type": "accordion",
+            "element": "Native\\Mobile\\UI\\Elements\\Accordion",
+            "blade": "Native\\Mobile\\UI\\Components\\Accordion",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.AccordionRenderer",
+            "ios_renderer": "NativeUIAccordionRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "accordion_content",
+            "element": "Native\\Mobile\\UI\\Elements\\AccordionContent",
+            "blade": "Native\\Mobile\\UI\\Components\\AccordionContent",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "accordion_header",
+            "element": "Native\\Mobile\\UI\\Elements\\AccordionHeader",
+            "blade": "Native\\Mobile\\UI\\Components\\AccordionHeader",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "background_layer",
+            "element": "Native\\Mobile\\UI\\Elements\\BackgroundLayer",
+            "blade": "Native\\Mobile\\UI\\Components\\BackgroundLayer",
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.EmptyRenderer",
+            "ios_renderer": "NativeUIEmptyRenderer",
+            "self_closing": false
+        },
+        {
+            "type": "sheet_pane",
+            "element": "Native\\Mobile\\UI\\Elements\\SheetPane",
+            "blade": "Native\\Mobile\\UI\\Components\\SheetPane",
+            "ios_renderer": "NativeUISheetPaneRenderer",
+            "self_closing": false,
+            "android_renderer": "com.nativephp.plugins.native_ui.ui.SheetPaneRenderer"
+        }
+    ],
+    "bridge_functions": [
+        {
+            "name": "NativeUI.Theme.Set",
+            "android": "com.nativephp.plugins.native_ui.NativeUIThemeFunctions.Set",
+            "ios": "NativeUIThemeFunctions.Set",
+            "description": "Apply theme tokens (colors, radii, typography) to the runtime store"
+        },
+        {
+            "name": "NativeUI.Transition.Set",
+            "android": "com.nativephp.plugins.native_ui.NativeUITransitionFunctions.Set",
+            "ios": "NativeUITransitionFunctions.Set",
+            "description": "Stage an inter-screen transition for the next published element tree"
+        }
+    ],
+    "android": {
+        "min_version": 26,
+        "init_function": "com.nativephp.plugins.native_ui.registerNativeUIChrome",
+        "dependencies": {
+            "implementation": [
+                "io.coil-kt.coil3:coil-compose:3.1.0",
+                "io.coil-kt.coil3:coil-network-okhttp:3.1.0",
+                "androidx.compose.material:material-icons-core",
+                "androidx.compose.material:material-icons-extended",
+                "androidx.emoji2:emoji2-emojipicker:1.7.0"
+            ]
+        }
+    },
+    "ios": {
+        "min_version": 18.2,
+        "init_function": "registerNativeUIChrome",
+        "dependencies": {
+            "swift_packages": [],
+            "pods": []
+        }
+    },
+    "hooks": {
+        "copy_assets": "nativephp:native-ui:copy-fonts"
+    }
+}

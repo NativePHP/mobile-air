@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Icon\Svg\SvgConversionException;
+use Native\Mobile\Support\AsyncPoolConfig;
 use Native\Mobile\Support\BuildFingerprint;
 use Native\Mobile\Support\BuildState;
 use Native\Mobile\Support\BundleExclusions;
@@ -263,7 +264,7 @@ trait PreparesBuild
             ! $reuseUnchanged || $isWindows,
         );
 
-        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::excludes($configExcludes, $source));
+        $stagingFingerprint = BuildFingerprint::of(BundleFileManager::filterRules($configExcludes, $source));
         $incremental = ! $isWindows
             && $state->matches('staging', $stagingFingerprint)
             && is_dir($tempDir.DIRECTORY_SEPARATOR.'vendor');
@@ -446,8 +447,14 @@ trait PreparesBuild
                 'version_code' => (int) $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+                // Read by the shell when it writes php.ini (see PHPIni.swift and
+                // LaravelEnvironment.kt).
+                'opcache_file_cache' => (bool) config('nativephp.opcache.file_cache', true),
                 'entry_mode' => $entryMode,
                 'native_routes' => $nativeRoutes,
+                // How the async task lane sizes itself (see config nativephp.async).
+                'async_max_slots' => AsyncPoolConfig::maxSlots(),
+                'async_idle_timeout' => AsyncPoolConfig::idleTimeout(),
                 // What this shell ships with, so a lane cannot offer it a release
                 // that predates its own code. Written here because .env is
                 // replaced wholesale by a payload and this has to outlive one.

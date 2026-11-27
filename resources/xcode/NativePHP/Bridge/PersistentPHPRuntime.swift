@@ -73,6 +73,7 @@ final class PersistentPHPRuntime {
         setenv("DB_DATABASE", "\(databaseDir)/database.sqlite", 1)
         setenv("NATIVEPHP_TEMPDIR", tempDir, 1)
         setenv("NATIVEPHP_PLATFORM", "ios", 1)
+        setenv("NATIVEPHP_OS_VERSION", NativeOSVersion.string, 1)
         setenv("REMOTE_ADDR", "0.0.0.0", 1)
 
         // Composer autoloader and bootstrap paths (used by persistent.php)
@@ -81,26 +82,29 @@ final class PersistentPHPRuntime {
 
         // PHP INI
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? ""
-        setenv("PHPRC", createPhpIni(caPath: caPath), 1)
+        // Only the first PHP start-up in the process can use the file cache;
+        // see PHPIni.write.
+        setenv("PHPRC", PHPIni.write(caPath: caPath, fileCache: !PHPIni.hasStarted), 1)
+        PHPIni.noteStartup()
 
         // APP_KEY from Keychain
-        if let appKey = getAppKey() {
+        if let appKey = NativePHPApp.getOrGenerateAppKey() {
             setenv("APP_KEY", appKey, 1)
         }
 
         let bootstrapPath = appPath + "/vendor/nativephp/mobile/bootstrap/ios/persistent.php"
 
-        print("PersistentPHPRuntime: booting with \(bootstrapPath)")
+        NativeLog.debug("PersistentPHPRuntime: booting with \(bootstrapPath)")
 
         // This blocks until the C worker thread completes boot
         let result = _persistent_php_boot(bootstrapPath)
 
         if result == 0 {
             isBooted = true
-            print("PersistentPHPRuntime: boot succeeded")
+            NativeLog.debug("PersistentPHPRuntime: boot succeeded")
         } else {
             let bootError = String(cString: _persistent_php_boot_error())
-            print("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
+            NativeLog.error("PersistentPHPRuntime: boot FAILED (\(result)) error: \(bootError)")
         }
 
         // Re-open the window shutdown() closed, so webview contexts
@@ -131,11 +135,11 @@ final class PersistentPHPRuntime {
     func dispatchData(request: RequestData) -> Data {
         // Detect stale state: Swift thinks we're booted but C layer disagrees
         if isBooted && _persistent_php_is_booted() == 0 {
-            print("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
+            NativeLog.debug("PersistentPHPRuntime: stale isBooted detected, attempting re-boot")
             isBooted = false
             let rebooted = boot()
             if !rebooted {
-                print("PersistentPHPRuntime: re-boot failed, falling back to error response")
+                NativeLog.error("PersistentPHPRuntime: re-boot failed, falling back to error response")
                 return Data("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nPersistent runtime re-boot failed.".utf8)
             }
         }
@@ -217,50 +221,16 @@ final class PersistentPHPRuntime {
         _persistent_php_shutdown()
         isBooted = false
     }
+}
 
-    // MARK: - Helpers
-
-    private func createPhpIni(caPath: String) -> String {
-        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let iniPath = supportDir.appendingPathComponent("php.ini")
-
-        // upload_max_filesize and post_max_size match the bridge's 16MB
-        // response cap instead of PHP's 2MB/8MB defaults; BridgeDispatcher
-        // applies them to request bodies the way PHP does. They go here, not
-        // in the embed SAPI's ini_entries: php_embed_init() replaces those.
-        //
-        // memory_limit: 128M for every context. The persistent runtime, which
-        // runs the native session, raises its own to 512M when it boots (see
-        // raise_persistent_memory_limit in PHP.c).
-        let phpIni = """
-        curl.cainfo="\(caPath)"
-        openssl.cafile="\(caPath)"
-        upload_max_filesize=16M
-        post_max_size=16M
-        memory_limit=128M
-        """
-
-        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-        try? phpIni.write(to: iniPath, atomically: true, encoding: .utf8)
-
-        return iniPath.path(percentEncoded: false)
-    }
-
-    private func getAppKey() -> String? {
-        let service = Bundle.main.bundleIdentifier ?? "com.nativephp.app"
-        let account = "APP_KEY"
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: account,
-            kSecAttrService as String: service,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess, let data = result as? Data {
-            return String(data: data, encoding: .utf8)
-        }
-        return nil
+/// The iOS version as `UIDevice.systemVersion` spells it ("26.1", "26.0.1"),
+/// for NATIVEPHP_OS_VERSION (PHP's `System::osVersion()`). Read from
+/// `ProcessInfo`, which any thread may use, since the persistent runtime
+/// sets its env off the main thread.
+enum NativeOSVersion {
+    static var string: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let base = "\(version.majorVersion).\(version.minorVersion)"
+        return version.patchVersion > 0 ? "\(base).\(version.patchVersion)" : base
     }
 }

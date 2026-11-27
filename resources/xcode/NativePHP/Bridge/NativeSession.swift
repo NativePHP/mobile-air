@@ -47,12 +47,12 @@ enum NativeSession {
 
             let output = String(decoding: response.prefix(8 * 1024), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            // Through %@, never NSLog's format string: the URI and PHP's
-            // output can both hold %s, and enough of them crash the app.
-            NSLog("%@", "[NativeSession] PHP stopped part-way through the native session at \(uri): \(output)")
+            // PHP's output stays out of release logs; keepCrashOutput saves it.
+            NativeLog.error("[NativeSession] PHP stopped part-way through the native session (\(output.utf8.count) bytes of output)")
+            NativeLog.debug("[NativeSession] at \(uri): \(output)")
 
             guard mayRestart() else {
-                NSLog("[NativeSession] The native session died \(maxRestarts) times in \(Int(restartWindow))s, not restarting it again")
+                NativeLog.error("[NativeSession] The native session died \(maxRestarts) times in \(Int(restartWindow))s, not restarting it again")
                 return String(decoding: response, as: UTF8.self)
             }
 
@@ -60,7 +60,7 @@ enum NativeSession {
             rebootRuntime()
 
             uri = NativePHPApp.getStartURL()
-            NSLog("%@", "[NativeSession] Restarting the native session at \(uri)")
+            NativeLog.debug("[NativeSession] Restarting the native session at \(uri)")
         }
     }
 
@@ -96,6 +96,6 @@ enum NativeSession {
         PHPQueueWorker.shared.start()
         AsyncTaskExecutor.shared.start()
 
-        NSLog("[NativeSession] Runtime rebooted, booted=\(booted)")
+        NativeLog.debug("[NativeSession] Runtime rebooted, booted=\(booted)")
     }
 }

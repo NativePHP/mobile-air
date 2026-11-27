@@ -13,13 +13,15 @@ import androidx.compose.runtime.compositionLocalOf
  */
 val LocalSafeAreaTop = compositionLocalOf { 0f }
 val LocalSafeAreaBottom = compositionLocalOf { 0f }
+val LocalSafeAreaLeft = compositionLocalOf { 0f }
+val LocalSafeAreaRight = compositionLocalOf { 0f }
 val LocalAvailableWidth = compositionLocalOf { 390f }
 val LocalAvailableHeight = compositionLocalOf { 844f }
 
 /**
  * True when a root host renders a persistent background layer beneath the
  * content (e.g. mobile-ui's `background_layer` map). Chrome that normally
- * paints an opaque canvas — the tabs Scaffold — goes transparent so the
+ * paints an opaque canvas — the tabs and stack Scaffolds — goes transparent so the
  * layer shows through.
  */
 val LocalBackgroundLayerPresent = compositionLocalOf { false }
@@ -62,7 +64,12 @@ val LocalChromeMorphScopes = compositionLocalOf<ChromeMorphScopes?> { null }
 
 /**
  * The same scopes, provided under every pane of a native-chrome renderer
- * whether or not it takes part in a morph, for the inert registration that
- * `Modifier.heroMorph` keeps at the front of each ref'd node in chrome.
+ * while the renderer's `morphing` holds (from a level change that morphs
+ * until the next one that doesn't), whether or not that pane takes part in
+ * the morph, for the inert registration that `Modifier.heroMorph` keeps at
+ * the front of each ref'd node in chrome. Null otherwise: provided on every
+ * pane, the inert registration made ref'd lazy lists and pagers crash in the
+ * lookahead pass, and leaving it off panes reached without a morph stops
+ * that (#753).
  */
 val LocalInertChromeScopes = compositionLocalOf<ChromeMorphScopes?> { null }

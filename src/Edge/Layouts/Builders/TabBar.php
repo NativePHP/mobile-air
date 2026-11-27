@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Layouts\Builders;
 
 use InvalidArgumentException;
+use Native\Mobile\Edge\Elements\BottomBar;
 use Native\Mobile\Edge\Elements\BottomNav;
 use Native\Mobile\Edge\Elements\BottomNavItem;
 use Native\Mobile\Edge\NativeRouter;
@@ -60,6 +61,10 @@ class TabBar
 
     private bool $minimizeOnScroll = false;
 
+    private ?string $edgeBlur = null;
+
+    private bool $hideOnPush = true;
+
     private ?string $presentationIdentifier = null;
 
     private ?string $presentationConfiguration = null;
@@ -91,6 +96,8 @@ class TabBar
         $bar->textColor = $props['text_color'] ?? null;
         $bar->font = $props['font_name'] ?? null;
         $bar->minimizeOnScroll = (bool) ($props['minimize_on_scroll'] ?? false);
+        $bar->edgeBlur = $props['edge_blur'] ?? null;
+        $bar->hideOnPush = (bool) ($props['hide_on_push'] ?? true);
         $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
         $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
 
@@ -106,6 +113,17 @@ class TabBar
     public function add(Tab $tab): self
     {
         $this->tabs[] = $tab;
+
+        return $this;
+    }
+
+    /**
+     * Add a tab that is already an element, after the builder tabs. For
+     * callers that wire the element's callbacks themselves.
+     */
+    public function tabElement(BottomNavItem $item): self
+    {
+        $this->prebuiltTabElements[] = $item;
 
         return $this;
     }
@@ -201,6 +219,40 @@ class TabBar
     }
 
     /**
+     * iOS 26+ only. The blur under the tab bar at each tab's root: "soft"
+     * (the default, a gradual progressive blur from just above the bar to
+     * the bottom of the screen, drawn in place of the system's faint soft
+     * edge), "hard" (the system's opaque
+     * fade) or "none". It covers whichever page of a pager is showing.
+     */
+    public function edgeBlur(string $style): self
+    {
+        $this->edgeBlur = BottomBar::edgeBlurStyle($style)
+            ?? throw new InvalidArgumentException('A tab bar\'s edge blur is "soft", "hard" or "none".');
+
+        return $this;
+    }
+
+    /**
+     * Whether the bar hides on screens pushed inside a tab (a detail screen
+     * opened from a tab's root). By default the bar hides on pushed screens
+     * on both iOS and Android, and only false is sent to the renderers:
+     *
+     *   TabBar::make()->hideOnPush(false)   // keep the bar on pushed screens
+     *   TabBar::make()->hideOnPush()        // hide it on pushed screens
+     *
+     * Inline: `<native:bottom-nav :hide-on-push="false">`. A single screen
+     * can still override this with `tabBarOptions()->hidden()` (hide) or
+     * `->hidden(false)` (keep).
+     */
+    public function hideOnPush(bool $hide = true): self
+    {
+        $this->hideOnPush = $hide;
+
+        return $this;
+    }
+
+    /**
      * Select a plugin-provided native tab-bar presentation for this layout.
      *
      * NativePHP continues to own the root tabs, selection, callbacks, and
@@ -270,8 +322,28 @@ class TabBar
      * matching tab wins. This is a superset of the previous
      * exact-match behavior.
      */
-    public function highlight(string $currentUrl): self
+    public function highlight(?string $currentUrl, ?string $tabId = null): self
     {
+        if ($tabId !== null && $tabId !== '') {
+            $matched = null;
+            foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
+                if ($matched === null && $tab->getId() === $tabId) {
+                    $matched = $tab;
+                }
+            }
+            if ($matched !== null) {
+                foreach ([...$this->tabs, ...$this->prebuiltTabElements] as $tab) {
+                    $tab->setActive($tab === $matched);
+                }
+
+                return $this;
+            }
+        }
+
+        if ($currentUrl === null || $currentUrl === '') {
+            return $this;
+        }
+
         // Respect an explicit choice: when this bar was reconstructed from
         // an inline `<native:bottom-nav>` and the blade already marks a tab
         // `active`, the dev decided — don't second-guess with URL matching.
@@ -344,6 +416,12 @@ class TabBar
         if ($this->minimizeOnScroll) {
             $attrs['minimizeOnScroll'] = true;
         }
+        if ($this->edgeBlur !== null) {
+            $attrs['edgeBlur'] = $this->edgeBlur;
+        }
+        if (! $this->hideOnPush) {
+            $attrs['hideOnPush'] = false;
+        }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;
             $attrs['tabPresentationConfiguration'] = $this->presentationConfiguration;
@@ -401,6 +479,12 @@ class TabBar
         }
         if ($this->minimizeOnScroll) {
             $attrs['minimizeOnScroll'] = true;
+        }
+        if ($this->edgeBlur !== null) {
+            $attrs['edgeBlur'] = $this->edgeBlur;
+        }
+        if (! $this->hideOnPush) {
+            $attrs['hideOnPush'] = false;
         }
         if ($this->presentationIdentifier !== null) {
             $attrs['tabPresentationId'] = $this->presentationIdentifier;

@@ -20,12 +20,12 @@ enum DeviceFunctions {
     ///   - success: boolean - Whether vibration was triggered
     class Vibrate: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            print("Device.Vibrate called")
+            NativeLog.debug("Device.Vibrate called")
 
             // Trigger haptic feedback
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
 
-            print("Vibration triggered")
+            NativeLog.debug("Vibration triggered")
             return ["success": true]
         }
     }
@@ -42,10 +42,10 @@ enum DeviceFunctions {
         private static var flashlightState = false
 
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            print("Device.ToggleFlashlight called")
+            NativeLog.debug("Device.ToggleFlashlight called")
 
             guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else {
-                print("Flashlight not available on this device")
+                NativeLog.debug("Flashlight not available on this device")
                 return [
                     "success": false,
                     "error": "Flashlight not available"
@@ -61,14 +61,14 @@ enum DeviceFunctions {
                 device.torchMode = DeviceFunctions.ToggleFlashlight.flashlightState ? .on : .off
                 device.unlockForConfiguration()
 
-                print("Flashlight toggled to: \(DeviceFunctions.ToggleFlashlight.flashlightState)")
+                NativeLog.debug("Flashlight toggled to: \(DeviceFunctions.ToggleFlashlight.flashlightState)")
 
                 return [
                     "success": true,
                     "state": DeviceFunctions.ToggleFlashlight.flashlightState
                 ]
             } catch {
-                print("Failed to toggle flashlight: \(error)")
+                NativeLog.error("Failed to toggle flashlight: \(error)")
                 return [
                     "success": false,
                     "error": error.localizedDescription
@@ -85,10 +85,10 @@ enum DeviceFunctions {
     ///   - id: string - Unique device identifier (identifierForVendor UUID)
     class GetId: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            print("Device.GetId called")
+            NativeLog.debug("Device.GetId called")
 
             let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
-            print("Device ID retrieved: \(deviceId)")
+            NativeLog.debug("Device ID retrieved: \(deviceId)")
 
             return ["id": deviceId]
         }
@@ -103,7 +103,7 @@ enum DeviceFunctions {
     ///     timezone, memUsed, memTotal, processorCount, activeProcessorCount, systemUptime, etc.)
     class GetInfo: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            print("Device.GetInfo called")
+            NativeLog.debug("Device.GetInfo called")
 
             let device = UIDevice.current
 
@@ -146,7 +146,7 @@ enum DeviceFunctions {
                 "webViewVersion": webViewVersion
             ]
 
-            print("Device info collected")
+            NativeLog.debug("Device info collected")
 
             do {
                 let jsonData = try JSONSerialization.data(withJSONObject: deviceInfo, options: [])
@@ -156,7 +156,7 @@ enum DeviceFunctions {
                     return ["info": "{\"error\": \"Failed to convert JSON data to string\"}"]
                 }
             } catch {
-                print("Error serializing device info: \(error)")
+                NativeLog.error("Error serializing device info: \(error)")
                 return ["info": "{\"error\": \"\(error.localizedDescription)\"}"]
             }
         }
@@ -220,7 +220,7 @@ enum DeviceFunctions {
     ///   - info: JSON string with battery level (0-1) and charging status
     class GetBatteryInfo: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            print("Device.GetBatteryInfo called")
+            NativeLog.debug("Device.GetBatteryInfo called")
 
             let device = UIDevice.current
             device.isBatteryMonitoringEnabled = true
@@ -234,7 +234,7 @@ enum DeviceFunctions {
                 "isCharging": device.batteryState == .charging
             ]
 
-            print("Battery info retrieved: \(Int(batteryLevel * 100))%, charging: \(device.batteryState == .charging)")
+            NativeLog.debug("Battery info retrieved: \(Int(batteryLevel * 100))%, charging: \(device.batteryState == .charging)")
 
             do {
                 let jsonData = try JSONSerialization.data(withJSONObject: batteryInfo, options: [])
@@ -246,7 +246,7 @@ enum DeviceFunctions {
                     return ["info": "{\"error\": \"Failed to convert JSON data to string\"}"]
                 }
             } catch {
-                print("Error serializing battery info: \(error)")
+                NativeLog.error("Error serializing battery info: \(error)")
                 device.isBatteryMonitoringEnabled = false
                 return ["info": "{\"error\": \"\(error.localizedDescription)\"}"]
             }
@@ -262,9 +262,9 @@ enum DeviceFunctions {
     ///   - state: string - "normal" | "warm" | "hot" | "critical"
     class GetThermalState: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            print("Device.GetThermalState called")
+            NativeLog.debug("Device.GetThermalState called")
             let state = DeviceFunctions.normalizedThermalState()
-            print("Thermal state: \(state)")
+            NativeLog.debug("Thermal state: \(state)")
             return ["state": state]
         }
     }

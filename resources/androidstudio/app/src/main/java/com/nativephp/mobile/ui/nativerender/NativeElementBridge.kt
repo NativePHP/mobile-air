@@ -8,6 +8,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Element Runtime bridge — direct JNI push architecture.
@@ -137,8 +138,22 @@ class NativeElementBridge private constructor() {
          * switching tabs) can diff against the LAST tree at that URI —
          * unchanged subtrees keep their refs and Compose's `key()` /
          * structural diffing avoids rebuilding them mid-animation.
+         *
+         * Bounded: levels popped off a `native_root_stack` are dropped, the
+         * rest is an LRU of [ChromeTreeCache.CAPACITY] URIs, and
+         * [trimMemory] keeps only the current screen's tree. A missing entry
+         * only costs a diff against the immediate previous tree instead.
          */
-        private val nativeChromePrevTrees = mutableMapOf<String, NativeUITree>()
+        private val nativeChromePrevTrees = ChromeTreeCache()
+
+        /**
+         * Called from `MainActivity.onTrimMemory`. Drops the per-URI diff
+         * baselines of every screen except the one showing.
+         */
+        @JvmStatic
+        fun trimMemory() {
+            nativeChromePrevTrees.trimToMostRecent()
+        }
 
         /** Runtime toggle for tree diff — set via Perf.SetDiffEnabled */
         @Volatile
@@ -204,11 +219,8 @@ class NativeElementBridge private constructor() {
                     versionMismatch = true
                 } else {
                     runtimeFlags = nativeGetRuntimeFlags()
-                    Log.i(
-                        TAG,
-                        "postTreeUpdate: first publish — format_version=$producerVersion " +
-                            "runtime_flags=0x${"%08x".format(runtimeFlags)}"
-                    )
+                    NativeLog.i(TAG) { "postTreeUpdate: first publish — format_version=$producerVersion " +
+                            "runtime_flags=0x${"%08x".format(runtimeFlags)}" }
                 }
                 versionChecked = true
             }
@@ -228,7 +240,7 @@ class NativeElementBridge private constructor() {
 
                 val nodeCount = nativeGetNodeCount()
                 if (nodeCount == 0) {
-                    Log.w(TAG, "postTreeUpdate: nodeCount=0, skipping")
+                    NativeLog.d(TAG) { "postTreeUpdate: nodeCount=0, skipping" }
                     return
                 }
 
@@ -264,7 +276,7 @@ class NativeElementBridge private constructor() {
                 val navTransition = if (isNav) NativeUIBridge.pendingTransition.value else null
 
                 val t1 = System.nanoTime()
-                Log.d(TAG, "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread")
+                NativeLog.d(TAG) { "postTreeUpdate: jni+copy=${(t1-t0)/1_000_000}ms nodes=$nodeCount → shadow thread" }
 
                 // Ensure shadow thread is running (self-healing if it was stopped)
                 if (shadowThread == null || shadowThread?.isAlive != true) {
@@ -291,7 +303,7 @@ class NativeElementBridge private constructor() {
          * parses the tree, diffs against previous, posts to main thread.
          */
         private fun shadowThreadLoop() {
-            Log.d(TAG, "Shadow thread started")
+            NativeLog.d(TAG) { "Shadow thread started" }
             while (shadowRunning) {
                 val taken = pendingFrames.take()
                 if (taken == null) {
@@ -368,7 +380,7 @@ class NativeElementBridge private constructor() {
                             // `prev` is non-null here — nativeChromeContinuation
                             // requires prev?.root?.type to match a sentinel.
                             val baseline = if (newUri.isNotEmpty()) {
-                                nativeChromePrevTrees[newUri] ?: prev
+                                nativeChromePrevTrees.tree(newUri) ?: prev
                             } else {
                                 prev
                             }
@@ -391,11 +403,19 @@ class NativeElementBridge private constructor() {
                         if (newRootType == "native_root_stack" || newRootType == "native_root_tabs") {
                             val uri = diffedTree.root.props.getString("current_uri", "")
                             if (uri.isNotEmpty()) {
-                                nativeChromePrevTrees[uri] = diffedTree
+                                // Stack depth only means "levels above this
+                                // were popped" for a single stack; tabs keep
+                                // one stack per tab.
+                                val depth = if (newRootType == "native_root_stack") {
+                                    diffedTree.root.props.getInt("stack_depth", 0)
+                                } else {
+                                    0
+                                }
+                                nativeChromePrevTrees.store(diffedTree, uri, depth)
                             }
                         }
 
-                        Log.d(TAG, "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation")
+                        NativeLog.d(TAG) { "PERF shadow: jni+copy=${(update.t1-update.t0)/1_000_000}ms parse=${(tParseEnd-tParseStart)/1_000_000}ms nodes=$nc types=${update.typeTable.size} isNav=${update.isNav} cont=$nativeChromeContinuation" }
 
                         val isNav = update.isNav
                         mainHandler.post {
@@ -422,7 +442,7 @@ class NativeElementBridge private constructor() {
                                 NativeUIBridge.isReloading.value = false
                                 preserveTreeOnStop = false
                             }
-                            Log.d(TAG, "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}")
+                            NativeLog.d(TAG) { "mainThread: tree posted, screenKey=$prevKey→${NativeUIBridge.screenKey.intValue} isNav=$isNav rootType=${diffedTree.root.type}" }
                         }
                     } else {
                         Log.e(TAG, "Shadow: failed to parse tree (nodeCount=${update.nodeCount})")
@@ -431,7 +451,7 @@ class NativeElementBridge private constructor() {
                     Log.e(TAG, "Shadow thread processing failed: ${e.message}", e)
                 }
             }
-            Log.d(TAG, "Shadow thread stopped")
+            NativeLog.d(TAG) { "Shadow thread stopped" }
         }
 
         /**
@@ -469,7 +489,7 @@ class NativeElementBridge private constructor() {
 
         /** Reset state for new hot-reload cycle */
         fun startWatching() {
-            Log.d(TAG, "startWatching() — resetting state, starting shadow thread")
+            NativeLog.d(TAG) { "startWatching() — resetting state, starting shadow thread" }
 
             // Stop existing shadow thread before starting a new one
             val oldThread = shadowThread
@@ -863,7 +883,7 @@ class NativeElementBridge private constructor() {
 
         fun sendHotReloadEvent() {
             val ready = nativeElementIsReady()
-            Log.d(TAG, "sendHotReloadEvent: elementReady=$ready")
+            NativeLog.d(TAG) { "sendHotReloadEvent: elementReady=$ready" }
             if (!ready) {
                 Log.e(TAG, "sendHotReloadEvent: element NOT ready — event will be dropped")
             }
@@ -1012,6 +1032,63 @@ class NativeElementBridge private constructor() {
         private fun countNodes(node: NativeUINode): Int {
             return 1 + node.children.sumOf { countNodes(it) }
         }
+    }
+}
+
+/**
+ * Last tree published at each native chrome URI, for the nav diff baseline.
+ * Written from the shadow thread, trimmed from the main thread by
+ * `onTrimMemory`, so every access is synchronized.
+ */
+internal class ChromeTreeCache {
+    private class Entry(val tree: NativeUITree, val depth: Int)
+
+    // Access-ordered, so iteration starts at the least recently used URI.
+    private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
+    private var mostRecentUri: String? = null
+
+    val size: Int
+        @Synchronized get() = entries.size
+
+    @Synchronized
+    fun tree(uri: String): NativeUITree? = entries[uri]?.tree
+
+    /**
+     * Store [tree] as the latest at [uri]. When [depth] > 0 the publish is on
+     * a stack at that depth, so anything recorded deeper has been popped and
+     * can't be diffed against again except by a fresh push.
+     */
+    @Synchronized
+    fun store(tree: NativeUITree, uri: String, depth: Int) {
+        if (depth > 0) {
+            entries.entries.removeAll { it.key != uri && it.value.depth > depth }
+        }
+        // A -> B -> A: the root copy of A is still on the stack below.
+        val existing = entries[uri]?.depth ?: 0
+        val keepDepth = if (existing in 1 until depth) existing else depth
+        entries[uri] = Entry(tree, keepDepth)
+        mostRecentUri = uri
+        val iter = entries.keys.iterator()
+        while (entries.size > CAPACITY && iter.hasNext()) {
+            if (iter.next() != uri) iter.remove()
+        }
+    }
+
+    /** Memory pressure: keep only the screen published last. */
+    @Synchronized
+    fun trimToMostRecent() {
+        entries.keys.retainAll(setOfNotNull(mostRecentUri))
+    }
+
+    @Synchronized
+    fun clear() {
+        entries.clear()
+        mostRecentUri = null
+    }
+
+    companion object {
+        /** Enough for a normal back stack plus a few tabs. */
+        const val CAPACITY = 10
     }
 }
 

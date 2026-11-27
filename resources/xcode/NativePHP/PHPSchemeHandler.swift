@@ -101,7 +101,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                         || resolvedPath.hasPrefix(publicRoot + "/")
 
                     if !withinPublic {
-                        print("⚠️ Refused asset outside public/: \(relativeAssetPath)")
+                        NativeLog.error("⚠️ Refused asset outside public/: \(relativeAssetPath)")
                     }
 
                     if withinPublic, FileManager.default.fileExists(atPath: localPath) {
@@ -233,7 +233,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                             return
                         } catch {
                             // Just fall back to PHP
-                            print("⚠️ Error serving asset: \(error.localizedDescription)")
+                            NativeLog.error("⚠️ Error serving asset: \(error.localizedDescription)")
                         }
                     }
                 }
@@ -274,7 +274,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func stopLoading(for schemeTask: WKURLSchemeTask) {
         // Cancel any ongoing operations for this task
-        print("Canceling scheme task: \(schemeTask)")
+        NativeLog.debug("Canceling scheme task: \(schemeTask)")
     }
 
     private func isTaskActive(_ schemeTask: WKURLSchemeTask) -> Bool {
@@ -356,8 +356,8 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                                     completion: @escaping (Result<RequestData, Error>) -> Void) {
         guard request.url?.host == domain else {
             // If the domain doesn't match, don't do anything
-            print("⚠ Domain doesn't match expected!")
-            print(request.url?.host ?? "")
+            NativeLog.debug("⚠ Domain doesn't match expected!")
+            NativeLog.debug(request.url?.host ?? "")
             return
         }
 
@@ -544,7 +544,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             : loc
 
         DispatchQueue.main.async {
-            NSLog("%@", "[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
+            NativeLog.debug("[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
             if SharedWebView.shared.webView != nil {
                 // WebView exists (detached while native was active): load the
                 // destination into it, then unmount the native branch so it
@@ -638,7 +638,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private func error(code: Int, description: String) -> NSError
     {
-        print("ERROR: \(description)")
+        NativeLog.error("ERROR: \(description)")
         return NSError(domain: "PHPAppSchemeHandler", code: code, userInfo: [NSLocalizedDescriptionKey: description])
     }
 
@@ -687,7 +687,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 guard let parsed = PHPRawResponse(responseData) else {
                     // Not a raw HTTP response: a PHP fatal error, or a bridge
                     // failure before PHP answered. Show it as a 500.
-                    print("Invalid PHP response format (\(responseData.count) bytes)")
+                    NativeLog.error("Invalid PHP response format (\(responseData.count) bytes)")
                     let url = schemeTask.request.url ?? URL(string: "php://\(self.domain)/")!
                     guard let httpResponse = HTTPURLResponse(url: url,
                                                              statusCode: 500,
@@ -787,7 +787,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     return
                 }
 
-                print("Forwarding response to WebView")
+                NativeLog.debug("Forwarding response to WebView")
 
                 guard let httpResponse = HTTPURLResponse(url: (URL(string: requestData.uri) ?? URL(string: "/"))!,
                                                         statusCode: statusCode,
@@ -810,7 +810,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                     // Indicate that the task has finished
                     schemeTask.didFinish()
                     self.removeTask(schemeTask)
-                    print("Done")
+                    NativeLog.debug("Done")
                 }
 
             case .failure(let error):
@@ -867,7 +867,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         PersistentPHPRuntime.shared.executeOnPHPThreadAsync {
             let mode = PersistentPHPRuntime.shared.isBooted ? "PERSISTENT" : "CLASSIC"
             let start = CFAbsoluteTimeGetCurrent()
-            NSLog("%@", "[NativePHP] [\(mode)] --> \(request.method) \(request.uri)")
+            NativeLog.debug("[NativePHP] [\(mode)] --> \(request.method) \(request.uri)")
 
             let response: Data
             if PersistentPHPRuntime.shared.isBooted {
@@ -879,7 +879,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             }
 
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            NSLog("%@", "[NativePHP] [\(mode)] <-- \(PHPRawResponse.statusLine(of: response)) (\(String(format: "%.1f", elapsed))ms)")
+            NativeLog.debug("[NativePHP] [\(mode)] <-- \(PHPRawResponse.statusLine(of: response)) (\(String(format: "%.1f", elapsed))ms)")
 
             self.storeSetCookies(from: response) {
                 completion(.success(response))
@@ -922,7 +922,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
             req.httpBody = body
         }
 
-        NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] --> \(request.method) \(urlString)")
+        NativeLog.debug("[NativePHP] [JUMP-WEBVIEW] --> \(request.method) \(urlString)")
 
         PHPSchemeHandler.forwardSession.dataTask(with: req) { data, response, err in
             if let err = err {
@@ -934,7 +934,7 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
                 return
             }
 
-            NSLog("%@", "[NativePHP] [JUMP-WEBVIEW] <-- \(http.statusCode) \(data.count) bytes")
+            NativeLog.debug("[NativePHP] [JUMP-WEBVIEW] <-- \(http.statusCode) \(data.count) bytes")
 
             // Flatten headers to [String:String] for cookie parsing + rebuild.
             var headerFields: [String: String] = [:]

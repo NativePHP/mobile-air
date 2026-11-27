@@ -153,6 +153,7 @@ class AndroidBundleCopyTest extends TestCase
                 'acme' => ['pkg' => [
                     'README.md' => '# strip',
                     'LICENSE' => 'MIT',
+                    'LICENSE.md' => 'MIT',
                     'phpstan.neon' => 'includes: []',
                     'docs' => ['guide.md' => '# strip'],
                     'src' => ['Pkg.php' => '<?php', 'deep' => ['notes.md' => '# strip']],
@@ -165,7 +166,8 @@ class AndroidBundleCopyTest extends TestCase
 
         // Pruned at any depth inside vendor packages.
         $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/README.md');
-        $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/LICENSE');
+        $this->assertFileExists($destination.'/vendor/acme/pkg/LICENSE');
+        $this->assertFileExists($destination.'/vendor/acme/pkg/LICENSE.md');
         $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/phpstan.neon');
         $this->assertDirectoryDoesNotExist($destination.'/vendor/acme/pkg/docs');
         $this->assertFileDoesNotExist($destination.'/vendor/acme/pkg/src/deep/notes.md');

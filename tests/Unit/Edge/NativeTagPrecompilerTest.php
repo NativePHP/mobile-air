@@ -264,6 +264,26 @@ it('compiles dotted native model paths to a path read on the variable', function
         ->toContain("'sync-mode' => 'live'");
 });
 
+it('folds native:model and @change on one element into a single change callback', function (string $tag, string $syncMode) {
+    $result = ($this->precompiler)($tag);
+
+    expect(substr_count($result, "'_change' =>"))->toBe(1)
+        ->and($result)
+        ->toContain("'_change' => '__syncPropertyThen(\\'email\\', '")
+        ->toContain("'sync-mode' => '{$syncMode}'");
+})->with([
+    'model first' => ['<native:text-input native:model="email" @change="check" />', 'live'],
+    'change first' => ['<native:text-input @change="check({{ $id }})" native:model.debounce.300ms="email" />', 'debounce'],
+    'legacy @model' => ['<native:text-input @change="check" @model="email" />', 'live'],
+]);
+
+it('compiles native:model and @change alone exactly as before', function () use ($collector, $marker) {
+    expect(($this->precompiler)('<native:text-input native:model="email" />'))
+        ->toBe($marker."<?php {$collector}::leaf('text_input', ['value' => (\$email), '_change' => '__syncProperty(\\'email\\')', 'sync-mode' => 'live']); ?>")
+        ->and(($this->precompiler)('<native:text-input @change="check" />'))
+        ->toBe($marker."<?php {$collector}::leaf('text_input', ['_change' => 'check']); ?>");
+});
+
 it('preserves Blade directives like @foreach', function () {
     $input = '@foreach($items as $item) <native:text>{{ $item }}</native:text> @endforeach';
     $result = ($this->precompiler)($input);
@@ -439,8 +459,9 @@ it('reads the element registry at first compile, not at construction', function 
     $precompiler = new NativeTagPrecompiler;
 
     // Registered after construction, exactly as this package's chrome is
-    // registered after core's provider has built the precompiler.
-    ElementRegistry::register('late_arrival', Column::class);
+    // registered after core's provider has built the precompiler. The
+    // registry is locked once the app has booted, so the test swaps it in.
+    ElementRegistry::swap('late_arrival', Column::class);
 
     expect($precompiler('<late-arrival class="p-2">x</late-arrival>'))
         ->toContain("::open('late_arrival', ['class' => 'p-2'])");

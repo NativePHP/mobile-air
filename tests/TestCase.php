@@ -3,6 +3,7 @@
 namespace Tests;
 
 use Native\Mobile\AsyncTask;
+use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\NativeServiceProvider;
 use Native\Mobile\Support\AsyncTaskRegistry;
 use Native\Mobile\Support\Lane;
@@ -36,6 +37,12 @@ abstract class TestCase extends BaseTestCase
         // on a device. Left marked, the next test's native routes would be
         // handed to a screen instead of answering.
         Lane::reset();
+
+        // The element registry is static and locks when the app boots, so a
+        // test's swap()/fake() must not reach the next test, and the next
+        // app boot needs an empty, unlocked registry to register core and
+        // plugin elements into.
+        ElementRegistry::reset();
 
         parent::tearDown();
     }

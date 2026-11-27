@@ -9,3 +9,7 @@ import android.content.Context
 fun registerPluginBridgeFunctions(activity: FragmentActivity, context: Context) {
     // No plugins to register
 }
+
+fun registerContextOnlyBridgeFunctions(context: Context) {
+    // No plugins to register
+}

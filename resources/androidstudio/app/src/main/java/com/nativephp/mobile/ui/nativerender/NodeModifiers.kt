@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.absolutePadding
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
@@ -284,7 +285,9 @@ fun Modifier.nodeLayout(
     safeAreaTop: Float,
     safeAreaBottom: Float,
     availableWidth: Float,
-    availableHeight: Float
+    availableHeight: Float,
+    safeAreaLeft: Float = 0f,
+    safeAreaRight: Float = 0f
 ): Modifier {
     if (layout == null) return this
 
@@ -302,15 +305,20 @@ fun Modifier.nodeLayout(
     }
 
     // Safe area padding. `safe_area` encodes which edges to inset:
-    //   0 = none, 1 = both (legacy), 2 = top only, 3 = bottom only.
+    //   0 = none, 1 = all edges, 2 = top only, 3 = bottom only.
     // Top-only / bottom-only let a layout's wrapper free one edge so a
     // chrome bar (NavBar / TabBar) can extend its bg through the system
     // inset zone, while the wrapper still handles the other edge.
+    // `1` also takes the side insets: in landscape the 3-button
+    // navigation bar and the camera cutout sit on a side.
     if (layout.safeArea != 0) {
-        val applyTop = layout.safeArea == 1 || layout.safeArea == 2
-        val applyBottom = layout.safeArea == 1 || layout.safeArea == 3
-        mod = mod.padding(
+        val all = layout.safeArea == 1
+        val applyTop = all || layout.safeArea == 2
+        val applyBottom = all || layout.safeArea == 3
+        mod = mod.absolutePadding(
+            left = if (all) safeAreaLeft.dp else 0.dp,
             top = if (applyTop) safeAreaTop.dp else 0.dp,
+            right = if (all) safeAreaRight.dp else 0.dp,
             bottom = if (applyBottom) safeAreaBottom.dp else 0.dp
         )
     }

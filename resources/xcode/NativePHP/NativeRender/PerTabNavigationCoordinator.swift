@@ -126,7 +126,16 @@ final class PerTabNavigationCoordinator: ObservableObject {
     /// absent). Depth-based reconciliation distinguishes pushing a NEW
     /// level whose URI already exists on this tab's stack from popping
     /// back to that level — see `NavigationCoordinator.receive`.
-    func receive(uri: String, depth: Int = 0, rootNode: NativeUINode) {
+    ///
+    /// `stack` is the URI of every screen on PHP's router stack, bottom
+    /// first (`stack_uris` prop, empty when absent). The renderer only
+    /// calls this when SwiftUI redraws the tabs, so a publish that lands
+    /// just before another is never seen. When a tab root mounts and
+    /// pushes a screen straight away (a tab opened from a push
+    /// notification that opens what it's about), the root's publish is
+    /// the one lost, and `rootDepth` is left where the tab last stood.
+    /// The stack says where the root really is and what sits above it.
+    func receive(uri: String, depth: Int = 0, stack: [String] = [], rootNode: NativeUINode) {
         guard !uri.isEmpty else { return }
 
         storeNode(rootNode, for: uri)
@@ -138,6 +147,8 @@ final class PerTabNavigationCoordinator: ObservableObject {
             return
         }
         lastProcessedNode = rootNode
+
+        let levelsAboveRoot = learnRoot(uri: uri, depth: depth, stack: stack)
 
         // Re-render of tab root — pop all pushed levels.
         if isRoot(uri) {
@@ -156,7 +167,7 @@ final class PerTabNavigationCoordinator: ObservableObject {
         }
 
         if depth > 0 {
-            receiveByDepth(uri: uri, depth: depth)
+            receiveByDepth(uri: uri, depth: depth, levelsAboveRoot: levelsAboveRoot)
             return
         }
 
@@ -184,9 +195,24 @@ final class PerTabNavigationCoordinator: ObservableObject {
         scheduleEviction()
     }
 
+    /// Moves `rootDepth` to the level of this tab's root on PHP's stack,
+    /// and returns the URIs above it, top last. Nil when the publish
+    /// carries no stack, the stack doesn't match the publish, or the
+    /// tab's root isn't on it (an app launched straight into one of the
+    /// tab's sub-routes), which leaves `rootDepth` as it was.
+    private func learnRoot(uri: String, depth: Int, stack: [String]) -> [String]? {
+        guard depth > 0, stack.count == depth, stack.last == uri,
+              let rootIndex = stack.lastIndex(where: { isRoot($0) }) else {
+            return nil
+        }
+        rootDepth = rootIndex + 1
+
+        return Array(stack[(rootIndex + 1)...])
+    }
+
     /// Depth-authoritative reconciliation for pushed levels; mirrors
     /// `NavigationCoordinator.receiveByDepth`.
-    private func receiveByDepth(uri: String, depth: Int) {
+    private func receiveByDepth(uri: String, depth: Int, levelsAboveRoot: [String]? = nil) {
         let target = depth - rootDepth
         guard target > 0 else {
             // Below/at root depth with a non-root URI — treat as a root
@@ -218,7 +244,14 @@ final class PerTabNavigationCoordinator: ObservableObject {
             }
         } else if next.count == target {
             next[target - 1] = uri
+        } else if let levelsAboveRoot, levelsAboveRoot.count == target {
+            // Pushed, and the stack names every level, including any whose
+            // publish this tab never saw.
+            next = levelsAboveRoot
         } else {
+            // Pushed. Normally one level; backfill defensively if PHP
+            // skipped levels (each backfilled entry renders from the same
+            // cached URI until its own publish lands).
             while next.count < target - 1 {
                 next.append(uri)
             }

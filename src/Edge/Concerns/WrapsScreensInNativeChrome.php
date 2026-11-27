@@ -81,9 +81,7 @@ trait WrapsScreensInNativeChrome
      */
     protected function wrapWithChrome(Element $content): Element
     {
-        $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
-            ? new ($this->nativeLayout)()
-            : null;
+        $layout = $this->chromeLayout();
 
         // ── Inline chrome (screen blade) ──
         // Non-custom bars are hoisted out of the content tree so they
@@ -147,33 +145,38 @@ trait WrapsScreensInNativeChrome
         }
 
         $tabBar = null;
+        $tabOptions = null;
         if ($inlineBottomNav !== null) {
+            $tabOptions = $this->tabBarOptions();
             $tabBar = TabBar::fromElement($inlineBottomNav);
             $tabBar->defaultFont($layout?->chromeFont());
             // Auto-highlight the tab owning the current URI — unless the
             // blade marked one `active` explicitly (highlight() respects
             // explicit choices on inline items).
             $currentUri = $this->nativeRouter?->currentUri();
-            if ($currentUri !== null) {
-                $tabBar->highlight($currentUri);
+            if ($currentUri !== null || $tabOptions?->highlight !== null) {
+                $tabBar->highlight($currentUri, $tabOptions?->highlight);
             }
         } elseif (! $hasCustomBottomNav && $layout !== null) {
             $tabBar = $layout->tabBar($this);
-            // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
-            // builder), mirroring the NavBar handling above. On the
-            // custom-Column path hiding is identical to the layout
-            // returning null — dropping the bar also hands the bottom
-            // safe-area edge back to the wrapper in buildChromeColumn().
-            // The native-chrome path instead keeps the config and folds a
-            // `hide_tab_bar` prop onto the sentinel, so the TabView
-            // survives for tab switching.
-            if ($tabBar !== null && ! $usesNativeChrome && $this->shouldHideTabBar()) {
-                $tabBar = null;
+            if ($tabBar !== null) {
+                $tabOptions = $this->tabBarOptions();
+                // Per-screen opt-out ($hidesTabBar shortcut + tabBarOptions()
+                // builder), mirroring the NavBar handling above. On the
+                // custom-Column path hiding is identical to the layout
+                // returning null — dropping the bar also hands the bottom
+                // safe-area edge back to the wrapper in buildChromeColumn().
+                // The native-chrome path instead keeps the config and folds a
+                // `hide_tab_bar` prop onto the sentinel, so the TabView
+                // survives for tab switching.
+                if (! $usesNativeChrome && $this->resolveHideTabBar($tabOptions)) {
+                    $tabBar = null;
+                }
             }
             if ($tabBar !== null) {
                 $currentUri = $this->nativeRouter?->currentUri();
-                if ($currentUri !== null) {
-                    $tabBar->highlight($currentUri);
+                if ($currentUri !== null || $tabOptions?->highlight !== null) {
+                    $tabBar->highlight($currentUri, $tabOptions?->highlight);
                 }
                 $tabBar->defaultFont($layout->chromeFont());
             }
@@ -187,7 +190,7 @@ trait WrapsScreensInNativeChrome
                 // native iOS / Android renderers for those types take over
                 // and use NavigationStack / TabView / NavHost / Scaffold to
                 // render chrome system-natively.
-                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
+                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout, $tabOptions);
             } else {
                 $root = $this->buildChromeColumn($content, $navBar, $tabBar);
             }
@@ -211,6 +214,18 @@ trait WrapsScreensInNativeChrome
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * The layout whose chrome wraps this screen: the route's layout class,
+     * or null for none. A screen that builds its chrome some other way
+     * (from data it loaded, say) overrides this.
+     */
+    protected function chromeLayout(): ?NativeLayout
+    {
+        return ($this->nativeLayout !== null && class_exists($this->nativeLayout))
+            ? new ($this->nativeLayout)()
+            : null;
     }
 
     /**
@@ -453,6 +468,7 @@ trait WrapsScreensInNativeChrome
         ?NavBar $navBar,
         ?TabBar $tabBar,
         ?NativeLayout $layout,
+        ?TabBarOptions $tabOptions = null,
     ): Element {
         if ($tabBar !== null) {
             $root = NativeRootTabs::make();
@@ -473,20 +489,34 @@ trait WrapsScreensInNativeChrome
             // URI that is already on the stack pushes a new level rather
             // than being misread as a pop back to the earlier one.
             $attrs['stackDepth'] = $this->router()?->stackDepth() ?? 0;
+            // The URI of every screen on the router stack, bottom first. iOS
+            // only reconciles a tab's stack when SwiftUI redraws the tabs, so
+            // when two publishes land before a redraw it sees only the second.
+            // A tab root that mounts and pushes a screen at once then goes
+            // unseen, and the tab can't tell where its levels start. With the
+            // stack it finds its root and the screens above it in any frame.
+            $attrs['stackUris'] = array_column($this->router()?->getStackEntries() ?? [], 'uri');
+
+            if (func_num_args() < 5) {
+                $tabOptions = $this->tabBarOptions();
+            }
 
             // Per-screen tab-bar overrides ($hidesTabBar shortcut +
             // tabBarOptions() builder). Folded onto the chrome sentinel
             // as flat props so the iOS / Android renderers don't need to
             // re-derive visibility from URI matching or `nav_back`.
-            if ($this->shouldHideTabBar()) {
+            if ($this->resolveHideTabBar($tabOptions)) {
                 $attrs['hideTabBar'] = true;
+            } elseif ($tabOptions?->hidden === false) {
+                // An explicit `hidden(false)` keeps the bar on this screen
+                // even when it is a pushed screen and the bar hides on push.
+                $attrs['showTabBar'] = true;
             }
             // Per-screen nav-bar opt-out, same shape as `hideTabBar` — the
             // renderers hide the toolbar for this destination only.
             if ($navBar !== null && $this->shouldHideNavBar()) {
                 $attrs['hideNavBar'] = true;
             }
-            $tabOptions = $this->tabBarOptions();
             if ($tabOptions !== null) {
                 if ($tabOptions->highlight !== null) {
                     $attrs['tabHighlight'] = $tabOptions->highlight;
@@ -914,7 +944,11 @@ trait WrapsScreensInNativeChrome
      */
     public function shouldHideTabBar(): bool
     {
-        $options = $this->tabBarOptions();
+        return $this->resolveHideTabBar($this->tabBarOptions());
+    }
+
+    private function resolveHideTabBar(?TabBarOptions $options): bool
+    {
         if ($options !== null && $options->hidden !== null) {
             return $options->isHidden();
         }

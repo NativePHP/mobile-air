@@ -9,8 +9,15 @@
 #include <errno.h>
 
 #define LOG_TAG "BridgeJNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+// Debug-only chatter. CMake defines NDEBUG for Release/RelWithDebInfo, which
+// the Gradle release variant builds, so these compile away there. Keep LOGE
+// for real failures.
+#ifdef NDEBUG
+#define LOGD(...) ((void) 0)
+#else
+#define LOGD(...) ((void) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__))
+#endif
 
 // Per-call bridge tracing (function names, parameter JSON, result JSON).
 // Bridge payloads can carry tokens, keys and user data, and logcat is readable
@@ -67,16 +74,16 @@ extern "C" uint8_t *nphp_get_active_prop_buffer(uint32_t *size_out);
 
 // Initialization function to be called from php_bridge.c's JNI_OnLoad
 extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
-    LOGI("🔌 BridgeJNI: InitializeBridgeJNI called");
+    LOGD("🔌 BridgeJNI: InitializeBridgeJNI called");
 
     // Find the BridgeRouter class and cache method IDs
-    LOGI("🔍 BridgeJNI: Looking for com/nativephp/mobile/bridge/BridgeRouterKt class...");
+    LOGD("🔍 BridgeJNI: Looking for com/nativephp/mobile/bridge/BridgeRouterKt class...");
     jclass localClass = env->FindClass("com/nativephp/mobile/bridge/BridgeRouterKt");
     if (localClass == nullptr) {
         LOGE("❌ BridgeJNI: Failed to find BridgeRouterKt class");
         return JNI_ERR;
     }
-    LOGI("✅ BridgeJNI: Found BridgeRouterKt class");
+    LOGD("✅ BridgeJNI: Found BridgeRouterKt class");
 
     // Create global reference
     g_bridgeRouterClass = reinterpret_cast<jclass>(env->NewGlobalRef(localClass));
@@ -102,7 +109,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
         return JNI_ERR;
     }
 
-    LOGI("BridgeJNI: Initialization successful");
+    LOGD("BridgeJNI: Initialization successful");
 
     /* Register Element bridge native methods */
     static JNINativeMethod elementMethods[] = {
@@ -121,7 +128,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
     jclass elClass = env->FindClass("com/nativephp/mobile/ui/nativerender/NativeElementBridge");
     if (elClass != nullptr) {
         if (env->RegisterNatives(elClass, elementMethods, sizeof(elementMethods) / sizeof(elementMethods[0])) == 0) {
-            LOGI("BridgeJNI: Element bridge native methods registered");
+            LOGD("BridgeJNI: Element bridge native methods registered");
         } else {
             LOGE("BridgeJNI: Failed to register Element bridge native methods");
         }
@@ -130,7 +137,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
         g_elementBridgeClass = reinterpret_cast<jclass>(env->NewGlobalRef(elClass));
         g_postTreeUpdateMethod = env->GetStaticMethodID(g_elementBridgeClass, "postTreeUpdate", "()V");
         if (g_postTreeUpdateMethod) {
-            LOGI("BridgeJNI: Cached postTreeUpdate method for direct JNI push");
+            LOGD("BridgeJNI: Cached postTreeUpdate method for direct JNI push");
         } else {
             LOGE("BridgeJNI: Failed to find postTreeUpdate method");
             env->ExceptionClear();
@@ -138,7 +145,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
 
         g_stopWatchingMethod = env->GetStaticMethodID(g_elementBridgeClass, "stopWatching", "()V");
         if (g_stopWatchingMethod) {
-            LOGI("BridgeJNI: Cached stopWatching method for element teardown");
+            LOGD("BridgeJNI: Cached stopWatching method for element teardown");
         } else {
             LOGE("BridgeJNI: Failed to find stopWatching method");
             env->ExceptionClear();
@@ -146,7 +153,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
 
         g_startWatchingMethod = env->GetStaticMethodID(g_elementBridgeClass, "startWatching", "()V");
         if (g_startWatchingMethod) {
-            LOGI("BridgeJNI: Cached startWatching method for element setup");
+            LOGD("BridgeJNI: Cached startWatching method for element setup");
         } else {
             LOGE("BridgeJNI: Failed to find startWatching method");
             env->ExceptionClear();
@@ -155,7 +162,7 @@ extern "C" jint InitializeBridgeJNI(JNIEnv* env) {
         env->DeleteLocalRef(elClass);
     } else {
         env->ExceptionClear();
-        LOGI("BridgeJNI: NativeElementBridge class not found (Element runtime disabled)");
+        LOGD("BridgeJNI: NativeElementBridge class not found (Element runtime disabled)");
     }
 
     return JNI_OK;
@@ -309,13 +316,13 @@ static void* g_native_ui_region = nullptr;
 
 extern "C" __attribute__((visibility("default")))
 void NativeUI_RegisterRegion(void* ptr) {
-    LOGI("NativeUI: RegisterRegion ptr=%p", ptr);
+    LOGD("NativeUI: RegisterRegion ptr=%p", ptr);
     g_native_ui_region = ptr;
 }
 
 extern "C" __attribute__((visibility("default")))
 void NativeUI_UnregisterRegion(void) {
-    LOGI("NativeUI: UnregisterRegion");
+    LOGD("NativeUI: UnregisterRegion");
     g_native_ui_region = nullptr;
 }
 
@@ -389,14 +396,14 @@ static NphpElementRegion* g_element_direct_ptr = nullptr;
 
 extern "C" __attribute__((visibility("default")))
 void NativeElement_RegisterRegion(void* ptr) {
-    LOGI("Element: NativeElement_RegisterRegion called with ptr=%p", ptr);
+    LOGD("Element: NativeElement_RegisterRegion called with ptr=%p", ptr);
     g_element_direct_ptr = (NphpElementRegion*)ptr;
 
     // Restart the shadow thread so it can process tree updates for the new page
     if (g_elementBridgeClass && g_startWatchingMethod) {
         JNIEnv* env = GetJNIEnv();
         if (env) {
-            LOGI("Element: RegisterRegion — calling startWatching()");
+            LOGD("Element: RegisterRegion — calling startWatching()");
             env->CallStaticVoidMethod(g_elementBridgeClass, g_startWatchingMethod);
             if (env->ExceptionCheck()) {
                 LOGE("Element: RegisterRegion — startWatching exception");
@@ -408,14 +415,14 @@ void NativeElement_RegisterRegion(void* ptr) {
 
 extern "C" __attribute__((visibility("default")))
 void NativeElement_UnregisterRegion(void) {
-    LOGI("Element: NativeElement_UnregisterRegion called");
+    LOGD("Element: NativeElement_UnregisterRegion called");
     g_element_direct_ptr = nullptr;
 
     // Notify Kotlin to hide the native Compose overlay
     if (g_elementBridgeClass && g_stopWatchingMethod) {
         JNIEnv* env = GetJNIEnv();
         if (env) {
-            LOGI("Element: UnregisterRegion — calling stopWatching()");
+            LOGD("Element: UnregisterRegion — calling stopWatching()");
             env->CallStaticVoidMethod(g_elementBridgeClass, g_stopWatchingMethod);
             if (env->ExceptionCheck()) {
                 LOGE("Element: UnregisterRegion — stopWatching exception");
@@ -578,7 +585,7 @@ void NativeElement_PostTreeUpdate() {
 
     auto* region = get_element_region();
     if (region) {
-        LOGI("Element: PostTreeUpdate calling Kotlin (nodes=%u flat=%u types=%d ver=%u)",
+        LOGD("Element: PostTreeUpdate calling Kotlin (nodes=%u flat=%u types=%d ver=%u)",
              region->node_count.load(std::memory_order_acquire),
              region->flat_buffer_size.load(std::memory_order_acquire),
              (int)region->type_count.load(std::memory_order_acquire),

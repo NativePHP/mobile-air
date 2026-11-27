@@ -4,8 +4,15 @@
 #include <stdlib.h>
 
 #define LOG_TAG "PHP-Native"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+// Debug-only chatter. CMake defines NDEBUG for Release/RelWithDebInfo, which
+// the Gradle release variant builds, so these compile away there. Keep LOGE
+// for real failures.
+#ifdef NDEBUG
+#define LOGD(...) ((void) 0)
+#else
+#define LOGD(...) ((void) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__))
+#endif
 static php_stream *g_stdout_stream = NULL;
 extern void append_output(const char* str, size_t length);
 
@@ -16,15 +23,15 @@ void initialize_php_with_request(const char *post_data, const char *method, cons
 
 void initialize_php_with_request_bytes(const char *body, size_t body_len, const char *content_type,
                                        const char *method, const char *uri) {
-    LOGI("🛠️ Starting PHP request startup");
-    LOGI("🐛 initialize_php_with_request called with method=%s uri=%s body=%zu bytes", method, uri, body_len);
+    LOGD("🛠️ Starting PHP request startup");
+    LOGD("🐛 initialize_php_with_request called with method=%s uri=%s body=%zu bytes", method, uri, body_len);
 
     // Step 1: Bootstrap PHP internals (superglobals, session, etc)
     if (php_request_startup() == FAILURE) {
         LOGE("php_request_startup() failed");
         return;
     }
-    LOGI("✅ php_request_startup() completed");
+    LOGD("✅ php_request_startup() completed");
 
     // Step 2: Populate $_SERVER
     zval server_array;
@@ -52,12 +59,12 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
     }
 
     zend_hash_str_update(&EG(symbol_table), "_SERVER", sizeof("_SERVER") - 1, &server_array);
-    LOGI("✅ $_SERVER populated");
+    LOGD("✅ $_SERVER populated");
 
     // Step 3: Populate $_COOKIE from HTTP_COOKIE env var
     const char* cookie_header = getenv("HTTP_COOKIE");
     if (cookie_header) {
-        LOGI("🍪 HTTP_COOKIE from env (%zu bytes)", strlen(cookie_header));
+        LOGD("🍪 HTTP_COOKIE from env (%zu bytes)", strlen(cookie_header));
 
         zval cookie_array;
         array_init(&cookie_array);
@@ -71,23 +78,23 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
                 *equal = '\0';
                 const char* key = token;
                 const char* val = equal + 1;
-                LOGI("🍪 Parsed cookie → %s", key);
+                LOGD("🍪 Parsed cookie → %s", key);
                 add_assoc_string(&cookie_array, key, val);
             } else {
-                LOGI("⚠️ Skipping malformed cookie token");
+                LOGD("⚠️ Skipping malformed cookie token");
             }
             token = strtok(NULL, ";");
         }
         free(cookies);
 
         zend_hash_str_update(&EG(symbol_table), "_COOKIE", sizeof("_COOKIE") - 1, &cookie_array);
-        LOGI("✅ $_COOKIE populated from HTTP_COOKIE");
+        LOGD("✅ $_COOKIE populated from HTTP_COOKIE");
     } else {
-        LOGI("🚫 No HTTP_COOKIE found in environment");
+        LOGD("🚫 No HTTP_COOKIE found in environment");
     }
 
     // Step 4: Setup PHP output buffer (stdout stream)
-    LOGI("🌀 Setting up memory output stream");
+    LOGD("🌀 Setting up memory output stream");
     g_stdout_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
     if (!g_stdout_stream) {
         LOGE("❌ Failed to create STDOUT memory stream");
@@ -99,7 +106,7 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
     php_stream_to_zval(g_stdout_stream, &stdout_handle);
     zend_hash_add(&EG(symbol_table), stdout_name, &stdout_handle);
     zend_string_release(stdout_name);
-    LOGI("✅ STDOUT memory stream ready");
+    LOGD("✅ STDOUT memory stream ready");
 
     php_output_activate();
 
@@ -108,7 +115,7 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
     // has no read_post); $_SERVER['CONTENT_TYPE'] carries the real one.
     SG(request_info).content_type = NULL;
     if (body && body_len > 0) {
-        LOGI("📮 Request body: %zu bytes, type %s", body_len, content_type ? content_type : "(none)");
+        LOGD("📮 Request body: %zu bytes, type %s", body_len, content_type ? content_type : "(none)");
 
         php_stream *mem_stream = php_stream_memory_create(TEMP_STREAM_DEFAULT);
         php_stream_write(mem_stream, body, body_len);
@@ -131,7 +138,7 @@ void initialize_php_with_request_bytes(const char *body, size_t body_len, const 
 // Function to capture stdout content after PHP execution
 void capture_php_stdout_output() {
     if (!g_stdout_stream) {
-        LOGI("No stdout stream to capture");
+        LOGD("No stdout stream to capture");
         return;
     }
 
@@ -153,7 +160,7 @@ void capture_php_stdout_output() {
             size_t bytes_read = php_stream_read(g_stdout_stream, buffer, size);
             buffer[bytes_read] = '\0';
 
-            LOGI("Captured %zu bytes from stdout stream", bytes_read);
+            LOGD("Captured %zu bytes from stdout stream", bytes_read);
 
             // Send to our output collector, by length
             append_output(buffer, bytes_read);
@@ -161,7 +168,7 @@ void capture_php_stdout_output() {
             free(buffer);
         }
     } else {
-        LOGI("Stdout stream is empty");
+        LOGD("Stdout stream is empty");
     }
 }
 

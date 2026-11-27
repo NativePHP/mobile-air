@@ -70,7 +70,7 @@ final class BridgeFunctionRegistry {
         defer { lock.unlock() }
 
         functions[name] = function
-        print("🔌 Registered bridge function: \(name)")
+        NativeLog.debug("🔌 Registered bridge function: \(name)")
     }
 
     /// Check if a function exists in the registry
@@ -132,7 +132,7 @@ struct BridgeResponse {
             let jsonData = try JSONSerialization.data(withJSONObject: response, options: [])
             return String(data: jsonData, encoding: .utf8)
         } catch {
-            print("❌ Failed to serialize bridge response: \(error)")
+            NativeLog.error("❌ Failed to serialize bridge response: \(error)")
             return nil
         }
     }
@@ -153,7 +153,7 @@ public func NativePHPCan(_ cFunctionName: UnsafePointer<CChar>?) -> Int32 {
         let functionName = String(cString: cFunctionName)
         let exists = BridgeFunctionRegistry.shared.exists(functionName)
 
-        print("🔍 NativePHPCan('\(functionName)'): \(exists ? "YES" : "NO")")
+        NativeLog.debug("🔍 NativePHPCan('\(functionName)'): \(exists ? "YES" : "NO")")
 
         return exists ? 1 : 0
     }
@@ -176,7 +176,7 @@ public func NativePHPCall(
     autoreleasepool {
         // Validate function name
         guard let cFunctionName = cFunctionName else {
-            print("❌ NativePHPCall: Missing function name")
+            NativeLog.error("❌ NativePHPCall: Missing function name")
             return nil
         }
 
@@ -184,7 +184,7 @@ public func NativePHPCall(
 
         // Check if function exists - return nil if not
         guard BridgeFunctionRegistry.shared.exists(functionName) else {
-            print("❌ NativePHPCall: Function '\(functionName)' not found")
+            NativeLog.error("❌ NativePHPCall: Function '\(functionName)' not found")
             return nil
         }
 
@@ -212,12 +212,12 @@ public func NativePHPCall(
             }
         }
 
-        print("🚀 NativePHPCall('\(functionName)') with parameters: \(parameters)")
+        NativeLog.debug("🚀 NativePHPCall('\(functionName)') with parameters: \(parameters)")
 
         // Get the function
         guard let function = BridgeFunctionRegistry.shared.get(functionName) else {
             // This shouldn't happen since we checked exists() above, but handle it anyway
-            print("❌ NativePHPCall: Function '\(functionName)' disappeared between checks")
+            NativeLog.error("❌ NativePHPCall: Function '\(functionName)' disappeared between checks")
             return nil
         }
 
@@ -227,7 +227,7 @@ public func NativePHPCall(
             let response = BridgeResponse.success(data: result)
 
             if let jsonString = BridgeResponse.toJSON(response) {
-                print("✅ NativePHPCall('\(functionName)') succeeded")
+                NativeLog.debug("✅ NativePHPCall('\(functionName)') succeeded")
                 return UnsafePointer(strdup(jsonString))
             } else {
                 let errorResponse = BridgeResponse.error(
@@ -241,7 +241,7 @@ public func NativePHPCall(
             }
         } catch let error as BridgeError {
             // Handle known bridge errors
-            print("⚠️ NativePHPCall('\(functionName)') failed: \(error.message)")
+            NativeLog.error("⚠️ NativePHPCall('\(functionName)') failed: \(error.message)")
             let response = BridgeResponse.error(from: error)
 
             if let jsonString = BridgeResponse.toJSON(response) {
@@ -250,7 +250,7 @@ public func NativePHPCall(
             return nil
         } catch {
             // Handle unexpected errors
-            print("❌ NativePHPCall('\(functionName)') unexpected error: \(error.localizedDescription)")
+            NativeLog.error("❌ NativePHPCall('\(functionName)') unexpected error: \(error.localizedDescription)")
             let response = BridgeResponse.error(
                 code: "UNKNOWN_ERROR",
                 message: "Unexpected error: \(error.localizedDescription)"
@@ -271,16 +271,16 @@ public func NativePHPCall(
 @_cdecl("NativeUI_RegisterRegion")
 public func NativeUI_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
     guard let region = region else {
-        print("NativeUI_RegisterRegion called with nil region")
+        NativeLog.debug("NativeUI_RegisterRegion called with nil region")
         return
     }
-    print("NativeUI_RegisterRegion: region at \(region)")
+    NativeLog.debug("NativeUI_RegisterRegion: region at \(region)")
 }
 
 /// Called by PHP's nativephp_ui_shutdown() to unregister the shared memory region.
 @_cdecl("NativeUI_UnregisterRegion")
 public func NativeUI_UnregisterRegion() {
-    print("NativeUI_UnregisterRegion: region released")
+    NativeLog.debug("NativeUI_UnregisterRegion: region released")
 }
 
 // MARK: - NativeElement Bridge Functions (Element Runtime)
@@ -291,10 +291,10 @@ public func NativeUI_UnregisterRegion() {
 public func NativeElement_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
     autoreleasepool {
         guard let region = region else {
-            print("NativeElement_RegisterRegion called with nil region")
+            NativeLog.debug("NativeElement_RegisterRegion called with nil region")
             return
         }
-        print("NativeElement_RegisterRegion: region at \(region)")
+        NativeLog.debug("NativeElement_RegisterRegion: region at \(region)")
         NativeElementBridge.registerRegion(region)
     }
 }
@@ -303,7 +303,7 @@ public func NativeElement_RegisterRegion(_ region: UnsafeMutableRawPointer?) {
 @_cdecl("NativeElement_UnregisterRegion")
 public func NativeElement_UnregisterRegion() {
     autoreleasepool {
-        print("NativeElement_UnregisterRegion: region released")
+        NativeLog.debug("NativeElement_UnregisterRegion: region released")
         NativeElementBridge.unregisterRegion()
     }
 }

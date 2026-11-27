@@ -6,6 +6,7 @@ use Illuminate\Console\Events\CommandFinished;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
+use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,7 @@ use Native\Mobile\Commands\PluginMakeHookCommand;
 use Native\Mobile\Commands\PluginRegisterCommand;
 use Native\Mobile\Commands\PluginUninstallCommand;
 use Native\Mobile\Commands\PluginValidateCommand;
+use Native\Mobile\Commands\QueueIdleCommand;
 use Native\Mobile\Commands\ReleaseCommand;
 use Native\Mobile\Commands\RemoveNativeComponentCommand;
 use Native\Mobile\Commands\RunAsyncTaskCommand;
@@ -42,7 +44,6 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
-use Native\Mobile\Edge\Contracts\NativeRouteFallback;
 use Native\Mobile\Edge\Elements as ChromeElements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\UnknownElementHint;
@@ -50,6 +51,7 @@ use Native\Mobile\Events\Device\ThermalStateChanged;
 use Native\Mobile\Events\System\AppearanceChanged;
 use Native\Mobile\Events\System\OrientationChanged;
 use Native\Mobile\Http\Middleware\HonorsRequestedNativeScreen;
+use Native\Mobile\Http\NativeScreenEntry;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
@@ -57,8 +59,7 @@ use Native\Mobile\Plugins\PluginRegistry;
 use Native\Mobile\Support\DeviceAppKey;
 use Native\Mobile\Support\GlobalEventRouter;
 use Native\Mobile\Support\Ios\PhpUrlGenerator;
-use Native\Mobile\Support\Lane;
-use RuntimeException;
+use Native\Mobile\Support\QueueWorkerSignal;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use SupaNative\Core\Contracts\RoutesGlobalEvents;
@@ -95,6 +96,7 @@ class NativeServiceProvider extends PackageServiceProvider
                 InstallCommand::class,
                 RunCommand::class,
                 RunAsyncTaskCommand::class,
+                QueueIdleCommand::class,
                 OpenProjectCommand::class,
                 LaunchEmulatorCommand::class,
                 SimCommand::class,
@@ -223,6 +225,11 @@ class NativeServiceProvider extends PackageServiceProvider
             ThermalStateChanged::class,
             fn (ThermalStateChanged $e) => Device::rememberThermalState($e->state),
         );
+
+        // The device queue worker stays off until a job is pushed. This tells
+        // native to boot it, and leaves a marker so jobs still queued when the
+        // app closes are picked up at the next launch.
+        Event::listen(JobQueued::class, [QueueWorkerSignal::class, 'jobQueued']);
     }
 
     protected function registerCoreFacades(): void
@@ -325,6 +332,12 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->hintUnknownElements();
         $this->registerChromeElements();
         $this->registerUiPluginComponents();
+
+        // Once the app has booted, core, every plugin manifest and every
+        // service provider's boot() have had their turn. From then on a new
+        // element type is refused rather than quietly added.
+        $this->app->booted(fn () => ElementRegistry::lock());
+
         $this->registerFilesystems();
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
@@ -358,115 +371,7 @@ class NativeServiceProvider extends PackageServiceProvider
         // The Route this returns is the same object the macro used to return, so
         // ->name() and ->layout() chain exactly as before.
         ScreenRoutes::servedBy(function (string $uri, string $componentClass) {
-            $route = Route::get($uri, function () use ($componentClass) {
-                // A lane other than the main one asked for a native screen,
-                // most often a link or redirect in a php web view inside a
-                // native screen. It must never enter the runloop (see
-                // NativeRouter::openOnMainLane()), so the screen on show
-                // opens the route instead and the web view keeps its page.
-                if (! Lane::isMain()) {
-                    $path = '/'.ltrim(request()->path(), '/');
-                    $queryString = (string) request()->server('QUERY_STRING', '');
-                    $target = $queryString === '' ? $path : "$path?$queryString";
-
-                    if (! NativeRouter::openOnMainLane($target)) {
-                        throw new RuntimeException("Native screen [{$target}] can only run on the main lane, and native did not take the request to open it there.");
-                    }
-
-                    return response()->noContent();
-                }
-
-                // Native route reached without a native runtime — a shared
-                // app link opened in a plain browser, a crawler, a
-                // misconfigured deploy. The runloop can never satisfy these
-                // (no device is attached to the request), so if the app
-                // bound a fallback, let it answer (landing page, app-store
-                // redirect). Unbound, everything below is unchanged.
-                if (! env('NATIVEPHP_RUNNING') && ! config('nativephp-internal.running')
-                    && app()->bound(NativeRouteFallback::class)) {
-                    return app(NativeRouteFallback::class)->handle($componentClass);
-                }
-
-                // HTTP feature tests ($this->get('/')) must never enter the
-                // runloop: it blocks in wait_event against the REAL bridge —
-                // with a live Jump session that's ~90s of reconnect spinning
-                // per request. Answer 200 so route-level smoke tests pass,
-                // and point at the component harness for actual coverage.
-                if (app()->runningUnitTests()) {
-                    return response(
-                        "Native screen [{$componentClass}] — test it with Native::test() / Native::visit().",
-                        200
-                    );
-                }
-
-                $router = new NativeRouter;
-                $path = '/'.ltrim(request()->path(), '/');
-                $resolved = NativeRouter::resolve($path);
-                $params = $resolved ? $resolved['params'] : [];
-
-                // Hot-reload stack restoration. PHP wrote the full
-                // navigation stack to `.hot_restart` when the user
-                // saved a file; replay the entries below the current
-                // top so back-button history survives the PHP reboot.
-                // We delete the file here (PHP becomes the sole
-                // consumer); iOS / Android just peek at it for the
-                // top URI to dispatch.
-                $restartPath = storage_path('framework/.hot_restart');
-                if (is_file($restartPath)) {
-                    $raw = @file_get_contents($restartPath);
-                    $data = $raw ? @json_decode($raw, true) : null;
-                    $age = time() - (int) ($data['ts'] ?? 0);
-
-                    // The hot-reload re-exec lands on the WebView's URL (almost
-                    // always "/"), but the user may have navigated deeper before
-                    // saving. Redirect to the saved top screen so ITS route
-                    // restores onto it — otherwise the entry screen ("/") gets
-                    // pushed on top of the restored stack and the user is dumped
-                    // back at root. Leave .hot_restart in place; the target
-                    // route is the sole consumer. Compare paths alone so we can't
-                    // redirect-loop: the saved top keeps its query string and
-                    // $path never has one.
-                    $savedTop = is_array($data) ? ($data['uri'] ?? null) : null;
-                    $savedTopNorm = $savedTop !== null ? '/'.ltrim($savedTop, '/') : null;
-                    if ($age <= 30 && $savedTopNorm && NativeRouter::pathOf($savedTopNorm) !== $path) {
-                        return redirect($savedTopNorm);
-                    }
-
-                    @unlink($restartPath);
-                    $stack = is_array($data['stack'] ?? null) ? $data['stack'] : [];
-                    // Drop the entry matching the current request URI —
-                    // `start()` will push that as the top itself.
-                    if ($age <= 30 && ! empty($stack)) {
-                        $last = end($stack);
-                        if (is_array($last) && is_string($last['uri'] ?? null)
-                            && NativeRouter::pathOf($last['uri']) === $path) {
-                            array_pop($stack);
-                        }
-                        if (! empty($stack)) {
-                            $router->preloadStack($stack);
-                        }
-                    }
-                }
-
-                NativeRouter::logRestartAfterCrash();
-
-                // Hand the launch screen its query the way a warm link does: in
-                // the URI, parsed by the router. request()->query() has been
-                // through TrimStrings and ConvertEmptyStringsToNull by now.
-                $queryString = (string) request()->server('QUERY_STRING', '');
-                $exitUri = $router->start($componentClass, $params, $queryString === '' ? $path : "$path?$queryString");
-
-                if ($exitUri !== null) {
-                    return redirect($exitUri);
-                }
-
-                // Hot reload exit — return 204 so the WebView doesn't load stale content
-                if (file_exists(storage_path('framework/.hot_restart'))) {
-                    return response()->noContent();
-                }
-
-                return '';
-            });
+            $route = Route::get($uri, fn () => NativeScreenEntry::handle($componentClass));
 
             // Register the route itself so native navigation shares its
             // constraints and binders. Its URI includes any group prefix, and
@@ -596,9 +501,16 @@ class NativeServiceProvider extends PackageServiceProvider
                 \$__nativeErrorField = \$__nativeErrorArgs[0];
                 \$__nativeErrorColor = \$__nativeErrorArgs[1] ?? config('native-ui.theme.light.destructive', '#FF0000');
                 \$__nativeErrorDarkColor = isset(\$__nativeErrorArgs[1]) ? null : config('native-ui.theme.dark.destructive');
-                if (isset(\$errors) && is_array(\$errors) && !empty(\$errors[\$__nativeErrorField])) {
+                \$__nativeErrorMessage = match (true) {
+                    ! isset(\$errors) => null,
+                    is_array(\$errors) => \$errors[\$__nativeErrorField] ?? null,
+                    \$errors instanceof \\Illuminate\\Support\\ViewErrorBag,
+                    \$errors instanceof \\Illuminate\\Contracts\\Support\\MessageBag => \$errors->first(\$__nativeErrorField),
+                    default => null,
+                };
+                if (!empty(\$__nativeErrorMessage)) {
                     \\Native\\Mobile\\Edge\\NativeElementCollector::leaf('text', [
-                        'text' => \$errors[\$__nativeErrorField],
+                        'text' => \$__nativeErrorMessage,
                         'color' => \$__nativeErrorColor,
                         'dark' => ['color' => \$__nativeErrorDarkColor],
                         'fontSize' => 12,
@@ -841,7 +753,9 @@ class NativeServiceProvider extends PackageServiceProvider
      * Register UI components from installed nativephp-ui-plugin packages.
      *
      * For each component declared in a UI plugin's manifest:
-     * - Registers the Element class in ElementRegistry (for NativeElementCollector resolution)
+     * - Registers the Element class in ElementRegistry under the plugin's name
+     *   (for NativeElementCollector resolution). Throws when the type already
+     *   belongs to core or another plugin with a different class.
      * - Registers the Blade component (for <native:vendor-component> tag support)
      */
     protected function registerUiPluginComponents(): void
@@ -854,13 +768,25 @@ class NativeServiceProvider extends PackageServiceProvider
 
         foreach ($registry->components() as $component) {
             $type = $component['type'];
-            $elementClass = $component['element'];
+            $elementClass = ltrim($component['element'], '\\');
             $bladeClass = $component['blade'];
 
-            // Register in ElementRegistry so NativeElementCollector's default case resolves it
-            // Skip types already registered as core elements
-            if (class_exists($elementClass) && ! ElementRegistry::has($type)) {
-                ElementRegistry::register($type, $elementClass);
+            // Register in ElementRegistry so NativeElementCollector's default
+            // case resolves it, under the plugin's name. A UI plugin may pair
+            // its native renderer with one of core's own Element classes
+            // (mobile-ui does this for `text`, `column`, `top_bar`, ...).
+            // That takes nothing over, so there is nothing to register. Any
+            // other claim on a type that is already held throws.
+            //
+            // mobile-ui names core's classes by their old
+            // mobile names, which are aliases, so this
+            // compares each class by its real name.
+            $sharesCoreElement = ElementRegistry::owner($type) === ElementRegistry::CORE
+                && class_exists($elementClass)
+                && ElementRegistry::get($type) === (new \ReflectionClass($elementClass))->getName();
+
+            if (class_exists($elementClass) && ! $sharesCoreElement) {
+                ElementRegistry::register($type, $elementClass, $component['plugin'] ?? ElementRegistry::UNKNOWN);
             }
 
             if (isset($component['element_events']) && is_array($component['element_events'])) {
@@ -967,8 +893,9 @@ class NativeServiceProvider extends PackageServiceProvider
      * resolves it at first compile instead.
      *
      * `button`, `text_input`, `toggle`, `activity_indicator` and
-     * `bottom_sheet` belong to UI plugins (see nativephp/native-ui), not
-     * here: plugin discovery can't override an existing registration.
+     * `bottom_sheet` belong to UI plugins (see nativephp/mobile-ui), not
+     * here: a plugin can't take over a type core already registered (it
+     * throws).
      */
     protected function registerChromeElements(): void
     {
@@ -990,7 +917,7 @@ class NativeServiceProvider extends PackageServiceProvider
         ];
 
         foreach ($elements as $type => $class) {
-            ElementRegistry::register($type, $class);
+            ElementRegistry::register($type, $class, ElementRegistry::CORE);
         }
     }
 

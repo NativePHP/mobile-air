@@ -2,17 +2,22 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\ScreenGuard;
+use Native\Mobile\Events\Screen\ScreenMounted;
+use Native\Mobile\Events\Screen\ScreenResumed;
+use Native\Mobile\Events\Screen\ScreenUnmounted;
 use Native\Mobile\Support\NativeCallbacks;
 use Native\Mobile\System;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
 use SupaNative\Core\Edge\CallbackRegistry;
-use SupaNative\Core\Edge\ComponentMethodInvoker;
+use SupaNative\Core\Edge\Enums\ActionSource;
+use SupaNative\Core\Edge\NativeComponent as CoreNativeComponent;
 use SupaNative\Core\Edge\NativeDumpException;
 use SupaNative\Core\Edge\TailwindParser;
 use SupaNative\Core\Edge\Transition;
@@ -118,6 +123,9 @@ class TestableComponent
     /** Platform for ios:/android: Tailwind variants (null = neither). */
     protected ?string $platform;
 
+    /** The URI this screen was opened at, when it was opened by one (visit() or follow()). */
+    protected ?string $uri = null;
+
     /** The screen this one was pushed from (flow stack), if any. */
     protected ?TestableComponent $parent = null;
 
@@ -175,13 +183,14 @@ class TestableComponent
         // regression can hide from an otherwise thorough suite.
         $denial = ScreenGuard::check($resolved['route'] ?? null, $uri);
 
-        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial);
+        return new static($resolved['class'], $resolved['params'], $data, $resolved['layout'], $platform, $uri, $denial, $resolved['context'] ?? null);
     }
 
-    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null)
+    protected function __construct(string $componentClass, array $params, array $data, ?string $layout, ?string $platform = null, ?string $uri = null, ?NavigationIntent $denial = null, mixed $routeContext = null)
     {
         $this->bridge = FakeBridge::enable();
         $this->platform = $platform;
+        $this->uri = $uri;
 
         // dd() in a component throws instead of killing the test process;
         // guard() converts it into a readable failure below.
@@ -204,6 +213,9 @@ class TestableComponent
         }
 
         $this->component = $component;
+        // A route table entry's context, handed over before mount() as
+        // the router does.
+        $component->setRouteContext($routeContext);
         $component->setParams($params);
         $component->setData($data);
         // From the URI, as the router does: visit('/search?q=x') and a followed
@@ -262,6 +274,7 @@ class TestableComponent
             $component->publishPlaceholder();
 
             $component->mountComponent();
+            $this->announce(new ScreenMounted(get_class($component), $this->uri));
             $component->flushDispatchedEvents();
 
             // A redirect from mount() (e.g. an auth gate) skips the first
@@ -588,6 +601,45 @@ class TestableComponent
         return $this->afterInteraction(render: ! $unheard);
     }
 
+    /**
+     * Let time pass with no input, then take the turn the runloop takes
+     * when it wakes on its own: runloop extensions tick (timers of theirs
+     * that are now due run out), and the screen draws a frame.
+     *
+     *     $screen->wait(16)->assertSee('Timed out');
+     *
+     * Time moves on Carbon's clock (Carbon::setTestNow()), so an
+     * extension's timers should read it.
+     */
+    public function wait(float $seconds = 0): static
+    {
+        $this->startInteraction();
+
+        if ($seconds > 0) {
+            Carbon::setTestNow(Carbon::now()->addMilliseconds((int) round($seconds * 1000)));
+        }
+
+        $this->guard(fn () => $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $this->tickExtensions();
+        }));
+
+        return $this->afterInteraction();
+    }
+
+    /**
+     * Fire a screen lifecycle event as the router does: best-effort, so a
+     * listener that throws does not take the screen down.
+     */
+    protected function announce(object $event): void
+    {
+        try {
+            event($event);
+        } catch (\Throwable) {
+            //
+        }
+    }
+
     /** Simulate the system back gesture / hardware back button. */
     public function pressBack(): static
     {
@@ -608,11 +660,11 @@ class TestableComponent
     {
         $this->startInteraction();
 
-        $this->guard(fn () => $this->scoped(function () {
+        $this->guard(fn () => $this->coreScoped(function () {
             /** @var NativeComponent $this */
             foreach ($this->pollDefinitions() as $def) {
                 if ($def['method'] !== null && method_exists($this, $def['method'])) {
-                    ComponentMethodInvoker::invokeLifecycle($this, $def['method']);
+                    $this->runAction($def['method'], [], ActionSource::Poll);
                 }
             }
         }));
@@ -636,7 +688,10 @@ class TestableComponent
             "No #[Poll] method [{$method}] on ".get_class($this->component).'. Declared: '.(implode(', ', $defined) ?: '(none)')
         );
 
-        $this->guard(fn () => ComponentMethodInvoker::invokeLifecycle($this->component, $method));
+        $this->guard(fn () => $this->coreScoped(function () use ($method) {
+            /** @var NativeComponent $this */
+            $this->runAction($method, [], ActionSource::Poll);
+        }));
 
         return $this->afterInteraction();
     }
@@ -660,9 +715,9 @@ class TestableComponent
             get_class($this->component).' does not override onSearchQuery() — there is no dynamic search to drive.'
         );
 
-        $this->guard(fn () => $this->scoped(function () use ($query) {
+        $this->guard(fn () => $this->coreScoped(function () use ($query) {
             /** @var NativeComponent $this */
-            $result = $this->onSearchQuery($query);
+            $result = $this->runAction('onSearchQuery', [$query], ActionSource::SearchQuery);
             if (is_array($result)) {
                 $this->pendingSearchResults = array_values($result);
             }
@@ -740,11 +795,12 @@ class TestableComponent
         // re-fire it (NativeRouter::loop does exactly this).
         $this->component->resetNavigationIntent();
 
-        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri);
+        $next = new static($resolved['class'], $resolved['params'], $intent->data, $resolved['layout'], $this->platform, $intent->uri, routeContext: $resolved['context'] ?? null);
 
         if ($intent->type === NavigationIntent::REPLACE) {
             // Replaced screens leave the stack entirely.
             $this->component->unmount();
+            $this->announce(new ScreenUnmounted(get_class($this->component), $this->uri));
             $next->parent = $this->parent;
             $this->suspended = true;
         } else {
@@ -788,6 +844,7 @@ class TestableComponent
         );
 
         $this->component->unmount();
+        $this->announce(new ScreenUnmounted(get_class($this->component), $this->uri));
         $this->suspended = true;
 
         $this->parent->resumeFromFlow();
@@ -822,6 +879,7 @@ class TestableComponent
 
         $this->guard(function () {
             $this->component->onResume();
+            $this->announce(new ScreenResumed(get_class($this->component), $this->uri));
             $this->component->flushDispatchedEvents();
             $this->takeTurns(render: true);
         });
@@ -1591,6 +1649,16 @@ class TestableComponent
     }
 
     /**
+     * As scoped(), at the scope of core's screen class,
+     * for what core keeps private to itself, such as
+     * runAction() that this subclass can't reach.
+     */
+    protected function coreScoped(\Closure $fn): mixed
+    {
+        return \Closure::bind($fn, $this->component, CoreNativeComponent::class)();
+    }
+
+    /**
      * Convert a component dd() into a readable test failure instead of a
      * raw exception (or a dead PHPUnit process).
      */
@@ -1816,7 +1884,8 @@ class TestableComponent
 
             foreach ($registry->expressions() as $expression => $id) {
                 if (str_starts_with($expression, $target.'(')
-                    || str_starts_with($expression, "__syncProperty('{$target}'")) {
+                    || str_starts_with($expression, "__syncProperty('{$target}'")
+                    || str_starts_with($expression, "__syncPropertyThen('{$target}'")) {
                     return $id;
                 }
             }

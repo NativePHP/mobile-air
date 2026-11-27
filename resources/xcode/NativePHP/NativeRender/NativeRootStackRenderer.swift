@@ -516,7 +516,10 @@ struct StackRootEdgeSwipeBack: UIViewRepresentable {
 /// renderer's `BottomBarInsetModifier`: iOS 26 uses `.safeAreaBar`
 /// (first-class floating glass bar primitive), pre-26 falls back to
 /// `.safeAreaInset(.bottom)`. A `bottom_bar` carrying `glass` gets soft
-/// glass behind the whole bar (see `BottomBarSoftGlass`).
+/// glass behind the whole bar (see `BottomBarSoftGlass`), except on iOS 26+
+/// when it also asks for the scroll edge effect (`edge-blur="soft"` or
+/// `"hard"`), which takes the glass's place there (see
+/// `bottomBarScrollEdgeStyle`).
 private struct StackBottomBarInsetModifier: ViewModifier {
     let bottomBar: NativeUINode?
 
@@ -536,16 +539,26 @@ private struct StackBottomBarInsetModifier: ViewModifier {
             // on pre-Xcode-26 toolchains, whose SDK has no such symbol — see
             // `LiquidGlassAvailability.swift`.
             let glass = bottomBar.props.getInt("glass", default: 0)
+            let glassOpacity = CGFloat(bottomBar.props.getFloat("glass_opacity", default: 1))
+            let edgeBlur = bottomBar.props.getString("edge_blur", default: "")
             #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
-                content.safeAreaBar(edge: .bottom) {
-                    barContent(inner, glass: glass)
+                if !edgeBlur.isEmpty {
+                    content
+                        .safeAreaBar(edge: .bottom) {
+                            barContent(inner, glass: 0, glassOpacity: glassOpacity)
+                        }
+                        .bottomBarScrollEdgeStyle(edgeBlur)
+                } else {
+                    content.safeAreaBar(edge: .bottom) {
+                        barContent(inner, glass: glass, glassOpacity: glassOpacity)
+                    }
                 }
             } else {
-                fallback(content, inner, glass: glass)
+                fallback(content, inner, glass: glass, glassOpacity: glassOpacity)
             }
             #else
-            fallback(content, inner, glass: glass)
+            fallback(content, inner, glass: glass, glassOpacity: glassOpacity)
             #endif
         } else {
             content
@@ -555,9 +568,9 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// Pre-26 placement: a plain bottom safe-area inset, no floating glass
     /// bar primitive.
     @ViewBuilder
-    private func fallback(_ content: Content, _ inner: NativeUINode, glass: Int) -> some View {
+    private func fallback(_ content: Content, _ inner: NativeUINode, glass: Int, glassOpacity: CGFloat) -> some View {
         content.safeAreaInset(edge: .bottom, spacing: 0) {
-            barContent(inner, glass: glass)
+            barContent(inner, glass: glass, glassOpacity: glassOpacity)
         }
     }
 
@@ -568,13 +581,13 @@ private struct StackBottomBarInsetModifier: ViewModifier {
     /// through the bottom safe area (the iMessage treatment). Bars without
     /// an explicit background keep `.clear` and are unaffected.
     @ViewBuilder
-    private func barContent(_ inner: NativeUINode, glass: Int) -> some View {
+    private func barContent(_ inner: NativeUINode, glass: Int, glassOpacity: CGFloat) -> some View {
         NodeView(node: inner)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity)
             .background(barBackgroundColor(inner).ignoresSafeArea(edges: .bottom))
             .background(alignment: .top) {
-                BottomBarSoftGlass(flags: glass)
+                BottomBarSoftGlass(flags: glass, opacity: glassOpacity)
             }
     }
 

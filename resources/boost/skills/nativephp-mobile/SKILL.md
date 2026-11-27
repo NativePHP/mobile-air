@@ -243,6 +243,29 @@ bottom-nav, fab, bottom-bar, side-nav — see Native Chrome below), lists (list,
 overlays (modal, bottom-sheet), and drawing (canvas, shapes). Fetch the component's doc page before using it —
 required props are validated at render time.
 
+### Animating layout changes
+
+Add `animate-layout` to a container (column, row, scroll-view, list) to animate what changes inside it from
+one frame to the next. Children that are in both frames slide to their new place and size, new ones fade in
+and removed ones fade out. Children are matched by id, so key them with `native:key` (a stable domain id,
+not the loop index) and keep the container's own key the same, or every row reads as new. A frame that only
+changes text or styling isn't animated. It's off by default and follows Reduce Motion on iOS and the
+animator duration scale on Android. In PHP: `->animateLayout()`.
+
+```blade
+<native:scroll-view animate-layout :auto-scroll-to="$focusIndex" :auto-scroll-token="$focusRequest" auto-scroll-animated>
+    @foreach ($rows as $row)
+        <native:column native:key="row-{{ $row->id }}">...</native:column>
+    @endforeach
+</native:scroll-view>
+```
+
+`:auto-scroll-to` brings a direct child into view. The first move jumps and later ones animate, unless you
+add `auto-scroll-animated`, which animates every move except the one the scroll view opens with. The scroll
+view only moves when the request changes, so asking for the same index again does nothing. Bump
+`:auto-scroll-token` (any string or number) to ask again; don't remount the scroll view with a new key.
+On Android, removed children of a plain column or row disappear without fading; in a scroll view they fade.
+
 ## Custom Fonts
 
 Drop `.ttf`/`.otf`/`.ttc` files into `resources/fonts/` — the build bundles them into the native project
@@ -312,6 +335,35 @@ elsewhere with `ComponentRegistry::components(['user-card' => UserCard::class])`
   not the screen. Children nest recursively; child navigation calls (`navigate()`, `back()`) forward to the
   screen.
 - Slot content between component tags is not supported (it throws) — pass data through props.
+- **Memoise list rows with `#[Memo]`.** The parent's Blade view re-runs on every event, so without it every
+  child in a long list rebuilds its subtree on every tap or keystroke. Put `#[Memo]` on a row, card or chip
+  component whose `render()` reads only its own public properties; it then re-renders only when its props,
+  state or `@event` bindings change. Don't use it on a child whose view reads the clock, session, config or
+  database, because it would keep showing stale output.
+
+## Performance
+
+Every event re-renders the screen's component tree in PHP and publishes it to native, so the cost of a frame
+grows with the size of the tree the screen owns.
+
+- **One screen per route.** Navigate between screens with `navigate()`/`back()` and the native stack or tab
+  bar. Don't fake navigation by holding several "screens" as state in one component and swapping what
+  `render()` shows: every event then re-renders all of them, and you lose the native push/pop animation and
+  swipe-back.
+- **Extract repeated UI into `#[Memo]` child components** (see above) so unchanged rows are reused as built.
+- **Use `native:list` for long or paginated content.** It is lazy on both platforms; `on-end-reached` loads
+  the next page.
+- **Keep the first frame fast.** Do slow work (network calls, big queries) off the render path: render a
+  placeholder first (`#[Lazy]` on the screen, or a loading state) and fetch with `$this->async(...)` /
+  `AsyncTask`, which runs on a background PHP lane and updates state in its callback.
+- **Request images at the size you show them.** When the image host supports it (most CDNs take a `width`
+  or similar query parameter), ask for roughly the displayed width times the screen scale instead of the
+  original.
+- **Keep public state small.** Store ids and the fields a view needs, not whole API responses or models with
+  every relation loaded.
+- **Measure on a release build only.** Time and compare performance with `native:run ios --build=release` on a
+  device or a Release archive, never a debug build. A debug build bundles dev packages, runs with `APP_DEBUG` on,
+  compiles native code unoptimised and logs much more, so its numbers say little about what users get.
 
 ## Native Chrome — Composable Blade Elements (Layouts Optional)
 
@@ -344,7 +396,16 @@ titles, and Liquid Glass/Material You all come for free, exactly as with a layou
   automatically.
 - `<native:fab>` floats above the content (give it `@tap` or `url`; `label` makes it an extended fab).
   `<native:bottom-bar>` pins bottom content (chat inputs, search bars) with keyboard avoidance. On iOS,
-  `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge.
+  `class="glass"` on it draws Liquid Glass behind the whole bar, faded in at its top edge. `glass/80` caps that glass
+  at 80% so more of the screen shows through.
+  `edge-blur="soft"` (or `"hard"`) on it asks iOS 26+ for the system scroll edge effect under the bar, a
+  progressive blur (or opaque fade) of what scrolls beneath it, in place of the glass; older iOS still draws the glass.
+  `System::osVersion()` tells a screen which it got.
+- On iOS 26+ the tab bar blurs what scrolls under it at each tab's root, lists inside a pager included. The default,
+  `soft`, is a gradual progressive blur from just above the bar to the bottom of the screen, like the soft edge under
+  a composer but stronger, with content still recognisable behind the glass (it replaces the system's own soft edge). A root level with its own bottom
+  bar keeps the system effect. `<native:bottom-nav edge-blur="hard">` (or `TabBar::make()->edgeBlur('hard')`) swaps
+  it for the system's opaque fade, and `none` turns it off.
 - **`custom` escape hatch**: `<native:top-bar custom …>` keeps the bar in the content tree as an ordinary drawn
   element — only for designs the system bars can't express. It still suppresses a layout's bar for that slot.
 - Never hand-roll top bars or bottom navs out of rows and pressables — that forfeits native back gestures,
@@ -553,6 +614,10 @@ rest with the `nativephp-webview-to-native` skill.
 - Using the loop index as a child component `key` — keys must be stable domain ids or state sticks to the
   wrong child on reorder
 - Duplicating the same card/row Blade across screens instead of extracting a nested child component
+- Holding every screen (or every tab's stack) as state in one component and swapping what `render()` shows,
+  instead of separate routes with `navigate()`/`back()` and native chrome; it re-renders everything on every
+  event and loses native transitions
+- Long lists of child components without `#[Memo]` on the row component
 - Putting slot content between component tags (`<native:user-card>…</native:user-card>`) — it throws; pass
   data via props
 - Expecting Vite HMR without passing `--vite` (opt-in since v4)

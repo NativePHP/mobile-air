@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.util.Log
 import com.nativephp.mobile.bridge.BridgeError
 import com.nativephp.mobile.bridge.BridgeFunction
+import com.nativephp.mobile.utils.NativeLog
 
 /**
  * Functions related to system-level operations
@@ -31,7 +32,7 @@ object SystemFunctions {
      */
     class OpenAppSettings(private val context: Context) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
-            Log.d("System.OpenAppSettings", "Opening app settings")
+            NativeLog.d("System.OpenAppSettings") { "Opening app settings" }
 
             return try {
                 val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -40,7 +41,7 @@ object SystemFunctions {
                 }
                 context.startActivity(intent)
 
-                Log.d("System.OpenAppSettings", "Successfully opened app settings")
+                NativeLog.d("System.OpenAppSettings") { "Successfully opened app settings" }
                 mapOf("success" to true)
             } catch (e: Exception) {
                 Log.e("System.OpenAppSettings", "Error opening app settings: ${e.message}", e)
@@ -88,10 +89,10 @@ object SystemFunctions {
 
             return try {
                 context.startActivity(intent)
-                Log.d("System.OpenInBrowser", "Opened $url in the browser")
+                NativeLog.d("System.OpenInBrowser") { "Opened $url in the browser" }
                 mapOf("success" to true)
             } catch (e: ActivityNotFoundException) {
-                Log.w("System.OpenInBrowser", "No browser installed to open $url")
+                Log.w("System.OpenInBrowser", "No browser installed to open a link")
                 mapOf("success" to false)
             }
         }
@@ -108,7 +109,7 @@ object SystemFunctions {
      */
     class MinimizeApp(private val activity: Activity) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
-            Log.d("System.MinimizeApp", "Moving task to back")
+            NativeLog.d("System.MinimizeApp") { "Moving task to back" }
             activity.runOnUiThread {
                 activity.moveTaskToBack(true)
             }

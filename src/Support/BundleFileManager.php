@@ -18,7 +18,7 @@ class BundleFileManager
     {
         $excludes = array_merge(
             BundleExclusions::ANY_DEPTH,
-            array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::VENDOR_PATTERNS),
+            array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::vendorPatterns()),
             BundleExclusions::VENDOR_PATHS,
             array_map(fn ($p) => '/'.$p, BundleExclusions::PROJECT),
             array_map(fn ($p) => '/'.$p, BundleExclusions::COPY_ONLY),
@@ -45,6 +45,44 @@ class BundleFileManager
         }
 
         return array_values(array_unique($excludes));
+    }
+
+    /**
+     * rsync rules that keep vendor licence files. They go before the
+     * excludes, since rsync applies the first rule that matches.
+     *
+     * @return array<int, string>
+     */
+    public static function includes(): array
+    {
+        return array_map(fn ($p) => 'vendor/**/'.$p, BundleExclusions::VENDOR_LICENSE_PATTERNS);
+    }
+
+    /**
+     * Every rule that decides what the staged copy contains, for build
+     * fingerprints: the includes (prefixed with "+") and then the excludes.
+     *
+     * @return array<int, string>
+     */
+    public static function filterRules(array $configPaths = [], ?string $sourcePath = null): array
+    {
+        return array_merge(
+            array_map(fn ($p) => '+'.$p, self::includes()),
+            self::excludes($configPaths, $sourcePath),
+        );
+    }
+
+    /**
+     * rsync --include and --exclude flags for a copy, includes first.
+     */
+    private static function rsyncFilterFlags(array $excludes): string
+    {
+        $quote = fn ($d) => "'".str_replace("'", "'\\''", $d)."'";
+
+        return implode(' ', array_merge(
+            array_map(fn ($d) => '--include='.$quote($d), self::includes()),
+            array_map(fn ($d) => '--exclude='.$quote($d), $excludes),
+        ));
     }
 
     /**
@@ -100,8 +138,7 @@ class BundleFileManager
             throw new \InvalidArgumentException("Refusing to sync [{$source}] onto itself.");
         }
 
-        $excludes = array_merge(self::excludes($configPaths, $source), $extraExcludes);
-        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
+        $excludeFlags = self::rsyncFilterFlags(array_merge(self::excludes($configPaths, $source), $extraExcludes));
 
         $result = Process::forever()->run("rsync -a --copy-links --delete --itemize-changes {$excludeFlags} \"{$source}/\" \"{$destination}/\"");
 
@@ -159,8 +196,7 @@ class BundleFileManager
 
     private static function copyWithRsync(string $source, string $destination, array $configPaths): void
     {
-        $excludes = self::excludes($configPaths, $source);
-        $excludeFlags = implode(' ', array_map(fn ($d) => "--exclude='".str_replace("'", "'\\''", $d)."'", $excludes));
+        $excludeFlags = self::rsyncFilterFlags(self::excludes($configPaths, $source));
 
         // No timeout, the same as robocopy. A large app on a busy machine
         // takes well over the default minute to copy.
@@ -230,16 +266,19 @@ class BundleFileManager
     }
 
     /**
-     * Delete files matching VENDOR_PATTERNS from a copied vendor tree.
+     * Delete files matching the vendor patterns from a copied vendor tree.
      * Robocopy cannot express the multi-level vendor wildcards rsync
      * handles natively, so the Windows backend prunes them here to
-     * keep the copy contract identical on every platform.
+     * keep the copy contract identical on every platform. Cleanup runs it
+     * again after composer install, which can put files back.
      */
     private static function pruneVendorPatterns(string $destination): void
     {
+        $patterns = BundleExclusions::vendorPatterns();
+
         $vendorPath = $destination.'/vendor';
 
-        if (! is_dir($vendorPath)) {
+        if (! is_dir($vendorPath) || is_link($vendorPath)) {
             return;
         }
 
@@ -256,7 +295,19 @@ class BundleFileManager
                 continue;
             }
 
-            foreach (BundleExclusions::VENDOR_PATTERNS as $pattern) {
+            // composer install links path repository packages into vendor/.
+            // Deleting through a link would delete the package's own source.
+            if ($item->isLink()) {
+                continue;
+            }
+
+            foreach (BundleExclusions::VENDOR_LICENSE_PATTERNS as $licence) {
+                if (fnmatch($licence, $item->getFilename())) {
+                    continue 2;
+                }
+            }
+
+            foreach ($patterns as $pattern) {
                 if (fnmatch($pattern, $item->getFilename())) {
                     $item->isDir() ? File::deleteDirectory($item->getPathname()) : unlink($item->getPathname());
 
@@ -362,6 +413,10 @@ class BundleFileManager
                 }
             }
         }
+
+        // composer install runs after the copy, and it can reinstall a
+        // package (a path repository, say) with everything the copy left out.
+        self::pruneVendorPatterns(rtrim($appPath, '/'));
 
         foreach ($configPaths as $path) {
             $fullPath = $appPath.ltrim($path, '/');

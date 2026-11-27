@@ -32,7 +32,7 @@ public class NativePHPPluginRegistry {
     ///   - callback: The initialization code to run
     public func registerOnAppLaunch(_ name: String, callback: @escaping () -> Void) {
         onAppLaunchCallbacks.append((name: name, callback: callback))
-        print("NativePHPPluginRegistry: Registered '\(name)' for onAppLaunch")
+        NativeLog.debug("NativePHPPluginRegistry: Registered '\(name)' for onAppLaunch")
     }
 
     /// Register a callback to run after PHP runtime has booted successfully.
@@ -42,7 +42,7 @@ public class NativePHPPluginRegistry {
     ///   - callback: The code to run
     public func registerOnAppReady(_ name: String, callback: @escaping () -> Void) {
         onAppReadyCallbacks.append((name: name, callback: callback))
-        print("NativePHPPluginRegistry: Registered '\(name)' for onAppReady")
+        NativeLog.debug("NativePHPPluginRegistry: Registered '\(name)' for onAppReady")
     }
 
     // MARK: - Execution (called by core)
@@ -50,9 +50,9 @@ public class NativePHPPluginRegistry {
     /// Execute all registered onAppLaunch callbacks.
     /// Called by NativePHPApp during initialization.
     internal func executeOnAppLaunch() {
-        print("NativePHPPluginRegistry: Executing \(onAppLaunchCallbacks.count) onAppLaunch callbacks")
+        NativeLog.debug("NativePHPPluginRegistry: Executing \(onAppLaunchCallbacks.count) onAppLaunch callbacks")
         for (name, callback) in onAppLaunchCallbacks {
-            print("NativePHPPluginRegistry: Running '\(name)' onAppLaunch")
+            NativeLog.debug("NativePHPPluginRegistry: Running '\(name)' onAppLaunch")
             callback()
         }
     }
@@ -60,9 +60,9 @@ public class NativePHPPluginRegistry {
     /// Execute all registered onAppReady callbacks.
     /// Called by NativePHPApp after PHP runtime has booted.
     internal func executeOnAppReady() {
-        print("NativePHPPluginRegistry: Executing \(onAppReadyCallbacks.count) onAppReady callbacks")
+        NativeLog.debug("NativePHPPluginRegistry: Executing \(onAppReadyCallbacks.count) onAppReady callbacks")
         for (name, callback) in onAppReadyCallbacks {
-            print("NativePHPPluginRegistry: Running '\(name)' onAppReady")
+            NativeLog.debug("NativePHPPluginRegistry: Running '\(name)' onAppReady")
             callback()
         }
     }
