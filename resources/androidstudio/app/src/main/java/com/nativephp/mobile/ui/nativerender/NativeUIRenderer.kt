@@ -16,8 +16,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
@@ -33,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.semantics
@@ -63,6 +63,20 @@ fun NativeUIContent() {
         }
     }
 
+    // `Accessibility::focus()` finds its element through this view's
+    // semantics, and retries once each render is drawn, since the element
+    // is often the one that render added.
+    val composeView = LocalView.current
+    DisposableEffect(composeView) {
+        ScreenReader.attach(composeView)
+        onDispose { ScreenReader.detach(composeView) }
+    }
+    // Keyed on each publication, which an unchanged tree also counts as.
+    LaunchedEffect(NativeUIBridge.treePublicationId.longValue) {
+        withFrameNanos { }
+        ScreenReader.applyPendingFocus()
+    }
+
     val focusManager = LocalFocusManager.current
 
     // Gesture modifiers dispatch @press outside composable scope, so the
@@ -84,14 +98,17 @@ fun NativeUIContent() {
             // rather than per node.
             .semantics { testTagsAsResourceId = true }
             .imePadding()
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() }
-            ) {
+            .pointerInput(focusManager) {
                 // Tap on a plain area dismisses the keyboard. Fires only for
                 // taps no child consumed; interactive elements dismiss via
                 // KeyboardFocusPolicy in their own handlers instead.
-                focusManager.clearFocus()
+                //
+                // A tap detector rather than a clickable, which would merge
+                // the whole screen into one TalkBack element. Under that
+                // merging root Compose counts no plain text or labelled
+                // container as focusable, so it leaves them out of the
+                // reading order it gives TalkBack.
+                detectTapGestures(onTap = { focusManager.clearFocus() })
             }
     ) {
         // Read safe area insets
@@ -165,9 +182,13 @@ fun NativeUIContent() {
                         // Publish both scopes down the tree: `NodeView` is a
                         // plain recursive composable and cannot receive them
                         // any other way.
+                        val width = LocalAvailableWidth.current
+                        val modal = remember(t, width) { NodeAccessibility.modalScope(t.root, width) }
                         CompositionLocalProvider(
                             LocalSharedTransitionScope provides if (morphing) this@SharedTransitionLayout else null,
-                            LocalAnimatedVisibilityScope provides this@AnimatedContent
+                            LocalAnimatedVisibilityScope provides this@AnimatedContent,
+                            LocalA11yHiddenByModal provides (modal?.hidden ?: emptySet()),
+                            LocalA11yModalPath provides modal?.path
                         ) {
                             // Fold any plugin-registered root hosts (side drawers,
                             // global overlays, …) around the rendered tree. A host

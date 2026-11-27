@@ -65,6 +65,11 @@ class Pressable extends Element
      */
     public function applyAttributes(array $attrs): void
     {
+        if (array_key_exists('disabled', $attrs)) {
+            // `disabled`, `disabled="disabled"` and `:disabled="true"` all disable.
+            $this->disabled(filter_var($attrs['disabled'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? ! empty($attrs['disabled']));
+        }
+
         if (! isset($attrs['menu']) && ! isset($attrs['context-menu']) && ! isset($attrs['contextMenu'])) {
             return;
         }
@@ -87,6 +92,19 @@ class Pressable extends Element
         if ($contextMenu !== []) {
             $this->setProp('has_context_menu', true);
         }
+    }
+
+    /**
+     * Stop the press, long-press, double-tap and press-down/up handlers,
+     * and announce the pressable as unavailable to VoiceOver and TalkBack.
+     * The content is drawn as authored, so style the disabled look
+     * yourself. On iOS, controls inside the pressable are disabled too.
+     */
+    public function disabled(bool $disabled = true): static
+    {
+        $this->setProp('disabled', $disabled);
+
+        return $this;
     }
 
     /**

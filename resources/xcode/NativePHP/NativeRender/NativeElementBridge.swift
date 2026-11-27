@@ -618,6 +618,8 @@ final class NativeElementBridge {
                 }
                 if isFreshStackMount { NavigationCoordinator.shared.reset() }
                 bridge.currentTree = finalTree
+                // `Accessibility::focus()` waits for this render.
+                ScreenReader.treeDidUpdate()
                 // First publish after a hot-reload dismisses the
                 // "Reloading…" pill. Set by `HotReloadCoordinator.reload`
                 // at the start of the reboot; cleared here when the

@@ -1,5 +1,6 @@
 package com.nativephp.mobile.ui.nativerender
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -30,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.unit.dp
@@ -253,9 +255,27 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         //   → nodeStyle                     (background + border)
         //   → clip (rounded pressable)
         //   → nodeGestures                  (clickable; ripple now lives inside the scaled visual)
-        //   → nodeAccessibility             (a11y-label replaces the children's semantics, inside the clickable so its action survives)
+        //   → nodeAccessibility             (role, state, value and a11y-label; inside the clickable so its action survives)
         //   → nodeLayout                    (padding)
         var modifier: Modifier = base
+
+        // Hidden from TalkBack: `a11y-hidden`, or outside an `a11y-modal`
+        // overlay that is on screen. Outermost, so the clear also drops this
+        // node's own click action and role, not only its children's.
+        // The `ref` and the hidden mark go outside it, or the clear would
+        // drop them too. The mark tells `Accessibility::focus()` the node is
+        // hidden, unlike a decorative icon, which clears itself as well. It is
+        // a key of our own rather than `hideFromAccessibility()`, which would
+        // also hide the `ref` from UiAutomator and Maestro.
+        val ref = node.props.getString("ref", "")
+        if (node.id in LocalA11yHiddenByModal.current || NodeAccessibility.isHidden(node.type, node.props)) {
+            modifier = modifier
+                .semantics {
+                    if (ref.isNotEmpty()) testTag = ref
+                    this[A11yHidden] = Unit
+                }
+                .clearAndSetSemantics { }
+        }
 
         // Shared-element morph goes FIRST, i.e. outermost.
         //
@@ -303,7 +323,6 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         // `ref` is both the test-targeting handle (Maestro / Compose UI tests)
         // AND the shared-element identity: two screens naming an element the
         // same thing morph it between them under a `morph` transition.
-        val ref = node.props.getString("ref", "")
         if (ref.isNotEmpty()) {
             // testTag ONLY — deliberately not contentDescription. Overwriting
             // the description with an internal handle makes TalkBack announce
@@ -325,6 +344,15 @@ private fun ResolvedNodeView(node: NativeUINode, overrideModifier: Modifier? = n
         // roll / crossfade). Wraps the content in AnimatedContent keyed on
         // the text prop; absent prop → straight render, hot path unchanged.
         val contentTransition = node.props.getString("content_transition", "")
+
+        // A modal overlay with @a11yDismiss closes on system back, the
+        // gesture Android users (and TalkBack's back action) use to leave a
+        // dialog. Registered after the stack's own handler, so it wins
+        // while the overlay is shown.
+        val dismissId = node.props.getCallbackId("on_a11y_dismiss")
+        if (dismissId != 0 && node.type in NodeAccessibility.CONTAINER_TYPES && node.props.getBool("a11y_modal")) {
+            BackHandler { NativeElementBridge.sendPressEvent(dismissId, node.id) }
+        }
 
         val renderContent: @Composable () -> Unit = {
             if (contentTransition.isNotEmpty()) {

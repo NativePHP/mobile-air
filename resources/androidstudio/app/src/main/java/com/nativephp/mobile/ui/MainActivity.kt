@@ -1576,6 +1576,10 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
                                 }
                             }
 
+                            // `Accessibility::announce()` speaks through this live
+                            // region, in both renderers, so it sits outside them.
+                            com.nativephp.mobile.ui.nativerender.ScreenReader.Announcer()
+
                             // Hot-reload indicator. Mirrors iOS's
                             // `HotReloadIndicator` — small Material 3
                             // pill at top with a spinner + label.
