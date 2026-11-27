@@ -153,7 +153,19 @@ struct NativeRootTabsRenderer: View {
         let hasTitleView = node.children.contains { $0.type == "top_bar_title" }
         // a bar carrying only actions must still render.
         let hasNavActions = node.children.contains { $0.type == "top_bar_action" }
-        let hasNavBar = navBack || !navTitleText.isEmpty || hasTitleView || hasNavActions
+        // A screen pushed inside a tab always keeps the tab's NavigationStack,
+        // whatever its title: the stack is what pushes it and gives it a
+        // back button. Without this, a pushed screen whose first frame has an
+        // empty title (still loading its name) tore the stack down to the
+        // bare tab root, the bar disappeared and the content jumped up, and
+        // the push only happened once a frame arrived with a title.
+        let isPushedLevel: Bool = {
+            guard !currentUri.isEmpty, owningIdx < tabs.count else { return false }
+            let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
+            return tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
+                .isPushedLevel(uri: currentUri, depth: node.props.getInt("stack_depth", default: 0))
+        }()
+        let hasNavBar = navBack || isPushedLevel || !navTitleText.isEmpty || hasTitleView || hasNavActions
 
         // Search-tab plumbing for iOS 26's `Tab(role: .search)` floating
         // Liquid Glass capsule. `SearchTabContainer` owns the query state
