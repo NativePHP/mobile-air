@@ -111,6 +111,16 @@ final class PerTabNavigationCoordinator: ObservableObject {
         uri == rootUri || Self.path(of: uri) == rootUri
     }
 
+    /// Whether a publish for `uri` at router `depth` is a level pushed on
+    /// top of this tab's root, rather than the root itself. Read while
+    /// rendering, before `receive` has moved `path`, so the renderer can
+    /// keep the NavigationStack for a pushed screen from its first frame.
+    func isPushedLevel(uri: String, depth: Int) -> Bool {
+        guard !uri.isEmpty, !isRoot(uri) else { return false }
+        // Same rule as Android's tabs renderer: deeper than the tab's root.
+        return depth > rootDepth
+    }
+
     /// Synchronously update the cache for this URI. Safe to call during
     /// a SwiftUI `body` evaluation: the store is plain and the
     /// recompose trigger is deferred.
