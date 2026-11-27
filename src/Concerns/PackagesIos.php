@@ -235,43 +235,30 @@ trait PackagesIos
 
     protected function exportArchive(string $archivePath): ?string
     {
-        $manualIpaPath = null;
-
-        $this->components->task('Exporting IPA (manual)', function () use ($archivePath, &$manualIpaPath) {
-            $manualIpaPath = $this->exportArchiveManually($archivePath);
-
-            return $manualIpaPath !== null;
-        });
-
-        if ($manualIpaPath) {
-            return $manualIpaPath;
-        }
-
-        \Laravel\Prompts\warning('Manual export failed, falling back to Xcode export');
-
-        return $this->exportArchiveWithXcode($archivePath);
-    }
-
-    protected function exportArchiveWithXcode(string $archivePath): ?string
-    {
         $basePath = base_path('nativephp/ios');
         $exportPath = $basePath.'/build/export';
-        $exportOptionsPath = $this->createExportOptions($basePath);
+        $exportOptionsPath = $this->createExportOptions($basePath, archivePath: $archivePath);
 
         if (is_dir($exportPath)) {
             Process::run('rm -rf '.escapeshellarg($exportPath));
         }
 
-        $result = Process::path($basePath)
-            ->timeout(600)
-            ->run([
-                'xcodebuild',
-                '-exportArchive',
-                '-archivePath', $archivePath,
-                '-exportPath', $exportPath,
-                '-exportOptionsPlist', $exportOptionsPath,
-                // Remove -allowProvisioningUpdates to prevent Xcode from overriding our custom entitlements
-            ]);
+        $result = null;
+
+        $this->components->task('Exporting IPA', function () use ($basePath, $archivePath, $exportPath, $exportOptionsPath, &$result) {
+            $result = Process::path($basePath)
+                ->timeout(600)
+                ->run([
+                    'xcodebuild',
+                    '-exportArchive',
+                    '-archivePath', $archivePath,
+                    '-exportPath', $exportPath,
+                    '-exportOptionsPlist', $exportOptionsPath,
+                    // Remove -allowProvisioningUpdates to prevent Xcode from overriding our custom entitlements
+                ]);
+
+            return $result->successful();
+        });
 
         if (! $result->successful()) {
             \Laravel\Prompts\error('IPA export failed');
@@ -299,127 +286,6 @@ trait PackagesIos
         }
 
         return $ipaPath;
-    }
-
-    protected function exportArchiveManually(string $archivePath): ?string
-    {
-        $basePath = base_path('nativephp/ios');
-        $exportPath = $basePath.'/build/export';
-
-        if (is_dir($exportPath)) {
-            Process::run('rm -rf '.escapeshellarg($exportPath));
-        }
-
-        if (! mkdir($exportPath, 0755, true)) {
-            return null;
-        }
-
-        $archiveAppPath = $archivePath.'/Products/Applications/NativePHP.app';
-        if (! is_dir($archiveAppPath)) {
-            return null;
-        }
-
-        $payloadDir = $exportPath.'/Payload';
-        $appBundleDestination = $payloadDir.'/NativePHP.app';
-
-        if (! mkdir($payloadDir, 0755, true)) {
-            return null;
-        }
-
-        $copyResult = Process::run([
-            'cp', '-R', $archiveAppPath, $appBundleDestination,
-        ]);
-
-        if (! $copyResult->successful()) {
-            return null;
-        }
-
-        if (! $this->reSignAppBundlePreservingEntitlements($appBundleDestination)) {
-            return null;
-        }
-
-        $ipaPath = $exportPath.'/NativePHP.ipa';
-        $zipResult = Process::path($exportPath)->run([
-            'zip', '-r', '-q', 'NativePHP.ipa', 'Payload',
-        ]);
-
-        if (! $zipResult->successful()) {
-            return null;
-        }
-
-        if (! $this->verifyIpaCodeSignature($ipaPath)) {
-            return null;
-        }
-
-        return $ipaPath;
-    }
-
-    /**
-     * NEW: Re-sign app preserving entitlements from archived binary, coercing NFC formats to ["TAG"].
-     */
-    protected function reSignAppBundlePreservingEntitlements(string $appBundlePath): bool
-    {
-        if (! $this->replaceEmbeddedProvisioningProfile($appBundlePath)) {
-            return false;
-        }
-
-        $signingIdentity = $this->getCiSigningIdentity();
-        if (! $signingIdentity) {
-            return false;
-        }
-
-        // Extract current entitlements from archived binary
-        $binary = trim(shell_exec(
-            '/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" '.escapeshellarg($appBundlePath.'/Info.plist')
-        ));
-        $binaryPath = $appBundlePath.'/'.$binary;
-
-        // Extract entitlements to a temp file (avoids deprecated ':- ' syntax warning)
-        $tempEntitlementsFile = sys_get_temp_dir().'/nativephp-entitlements-'.uniqid().'.xml';
-        $result = Process::run([
-            'codesign', '-d', '--entitlements', $tempEntitlementsFile, $binaryPath,
-        ]);
-
-        if (! $result->successful() || ! file_exists($tempEntitlementsFile)) {
-            @unlink($tempEntitlementsFile);
-
-            return false;
-        }
-
-        $entitlementsXml = file_get_contents($tempEntitlementsFile);
-        @unlink($tempEntitlementsFile);
-
-        if (! $entitlementsXml) {
-            return false;
-        }
-
-        // Coerce NFC formats to ["TAG"] if the key exists
-        $entitlementsXml = $this->coerceNfcFormatsToTag($entitlementsXml);
-
-        $entitlementsPath = $appBundlePath.'/Preserved.entitlements';
-        if (file_put_contents($entitlementsPath, $entitlementsXml) === false) {
-            return false;
-        }
-
-        if (! $this->signEmbeddedBundles($appBundlePath, $signingIdentity)) {
-            return false;
-        }
-
-        $result = Process::run([
-            'codesign', '--force', '--sign', $signingIdentity,
-            '--entitlements', $entitlementsPath, '--timestamp', '--options', 'runtime',
-            $appBundlePath,
-        ]);
-        if (! $result->successful()) {
-            return false;
-        }
-
-        $verify = Process::run(['codesign', '--verify', '--deep', '--strict', $appBundlePath]);
-        if (! $verify->successful()) {
-            return false;
-        }
-
-        return true;
     }
 
     protected function extractAndValidateEntitlements(string $appBundlePath): ?array
@@ -461,52 +327,7 @@ trait PackagesIos
         return $entitlements;
     }
 
-    protected function signEmbeddedBundles(string $appBundlePath, string $signingIdentity): bool
-    {
-        // Find all embedded bundles that need signing
-        $bundleDirs = [
-            $appBundlePath.'/Frameworks',
-            $appBundlePath.'/PlugIns',
-            $appBundlePath.'/Extensions',
-        ];
-
-        foreach ($bundleDirs as $bundleDir) {
-            if (! is_dir($bundleDir)) {
-                continue;
-            }
-
-            $items = glob($bundleDir.'/*');
-            if (! $items) {
-                continue;
-            }
-
-            foreach ($items as $item) {
-                if (! is_dir($item)) {
-                    continue;
-                }
-
-                $extension = pathinfo($item, PATHINFO_EXTENSION);
-                if (in_array($extension, ['framework', 'bundle', 'app', 'xpc', 'plugin', 'appex'])) {
-                    $result = Process::run([
-                        'codesign',
-                        '--force',
-                        '--sign', $signingIdentity,
-                        '--timestamp',
-                        '--options', 'runtime',
-                        $item,
-                    ]);
-
-                    if (! $result->successful()) {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        return true;
-    }
-
-    protected function createExportOptions(string $basePath, ?array $iosSigningConfig = null): string
+    protected function createExportOptions(string $basePath, ?array $iosSigningConfig = null, ?string $archivePath = null): string
     {
         $exportMethod = $this->option('export-method');
         $appId = config('nativephp.app_id');
@@ -559,12 +380,60 @@ trait PackagesIos
                 \Laravel\Prompts\error('No deterministic provisioning profile available (UUID or explicit name)');
                 throw new \Exception('Missing deterministic provisioning profile for distribution build');
             }
+
+            // Xcode refuses to export an app extension that has no entry here.
+            if ($archivePath) {
+                foreach ($this->appExtensionProvisioningProfiles($archivePath) as $bundleId => $profileUuid) {
+                    $exportOptions['provisioningProfiles'][$bundleId] = $profileUuid;
+                    $this->components->twoColumnDetail('Provisioning profile ('.$bundleId.')', $profileUuid);
+                }
+            }
         }
 
         $plistPath = $basePath.'/build/ExportOptions.plist';
         $this->createPlistFile($plistPath, $exportOptions);
 
         return $plistPath;
+    }
+
+    /**
+     * The profile each app extension in the archive was signed with, keyed by
+     * its bundle ID. The archive signs an extension with the profile its own
+     * target names, so the export reuses it.
+     *
+     * @return array<string, string>
+     */
+    protected function appExtensionProvisioningProfiles(string $archivePath): array
+    {
+        $appPath = $archivePath.'/Products/Applications/NativePHP.app';
+        $extensions = array_merge(
+            glob($appPath.'/PlugIns/*.appex', GLOB_ONLYDIR) ?: [],
+            glob($appPath.'/Extensions/*.appex', GLOB_ONLYDIR) ?: [],
+        );
+
+        $profiles = [];
+
+        foreach ($extensions as $extensionPath) {
+            $name = basename($extensionPath);
+
+            $bundleId = Process::run([
+                '/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleIdentifier', $extensionPath.'/Info.plist',
+            ]);
+            $profile = Process::run([
+                'security', 'cms', '-D', '-i', $extensionPath.'/embedded.mobileprovision',
+            ]);
+
+            if (! $bundleId->successful() || ! $profile->successful()
+                || ! preg_match('#<key>UUID</key>\s*<string>([^<]+)</string>#', $profile->output(), $uuid)) {
+                \Laravel\Prompts\warning("{$name} has no provisioning profile. Set PROVISIONING_PROFILE_SPECIFIER on its target's Release configuration.");
+
+                continue;
+            }
+
+            $profiles[trim($bundleId->output())] = $uuid[1];
+        }
+
+        return $profiles;
     }
 
     protected function createPlistFile(string $path, array $data): void
@@ -760,35 +629,6 @@ trait PackagesIos
 
         // Fall back to base64 from config (legacy approach)
         return config('nativephp.app_store_connect.api_key');
-    }
-
-    protected function replaceEmbeddedProvisioningProfile(string $appBundlePath): bool
-    {
-        // Get the UUID of the correct provisioning profile that was installed
-        $correctProfileUuid = getenv('EXTRACTED_PROVISIONING_PROFILE_UUID');
-        if (! $correctProfileUuid) {
-            $exportMethod = $this->option('export-method') ?: 'app-store';
-            if (in_array($exportMethod, ['app-store', 'ad-hoc', 'enterprise'])) {
-                return false;
-            }
-
-            return true;
-        }
-
-        $homeDir = getenv('HOME');
-        $correctProfilePath = "{$homeDir}/Library/MobileDevice/Provisioning Profiles/{$correctProfileUuid}.mobileprovision";
-
-        if (! file_exists($correctProfilePath)) {
-            return false;
-        }
-
-        $embeddedProfilePath = $appBundlePath.'/embedded.mobileprovision';
-
-        if (! copy($correctProfilePath, $embeddedProfilePath)) {
-            return false;
-        }
-
-        return true;
     }
 
     protected function uploadToAppStore(string $ipaPath, ?array $iosSigningConfig = null): void
@@ -1415,29 +1255,6 @@ trait PackagesIos
 
         // Return as base64 for consistency with existing system
         return base64_encode($content);
-    }
-
-    /**
-     * Coerce NFC formats to ["TAG"] in an entitlements plist (XML string).
-     */
-    protected function coerceNfcFormatsToTag(string $entitlementsXml): string
-    {
-        $needle = '<key>'.self::NFC_ENTITLEMENTS_KEY.'</key>';
-        if (strpos($entitlementsXml, $needle) === false) {
-            return $entitlementsXml; // key not present; nothing to change
-        }
-        $replacement = <<<'XML'
-<key>com.apple.developer.nfc.readersession.formats</key>
-<array>
-    <string>TAG</string>
-</array>
-XML;
-
-        return preg_replace(
-            '#<key>com\.apple\.developer\.nfc\.readersession\.formats</key>\s*<array>.*?</array>#s',
-            $replacement,
-            $entitlementsXml
-        );
     }
 
     /**
