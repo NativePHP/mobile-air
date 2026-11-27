@@ -3,11 +3,14 @@
 namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Support\AnimatedWebp;
 
 trait InstallsSplashScreen
 {
     public function installIosSplashScreen()
     {
+        $this->installIosSplashAnimation();
+
         // Define supported splash screen variants
         $splashVariants = [
             'splash.png' => ['filename' => 'splash.png', 'idiom' => 'universal'],
@@ -81,6 +84,38 @@ trait InstallsSplashScreen
 
         foreach ($foundVariants as $filename => $sourcePath) {
             @copy($sourcePath, $launchImageDir.'/'.$filename);
+        }
+    }
+
+    /**
+     * An animated splash.webp goes into a data set that SplashView plays over
+     * the launch image, which the launch screen still shows as a still.
+     */
+    private function installIosSplashAnimation(): void
+    {
+        $assets = base_path('nativephp/ios/NativePHP/Assets.xcassets');
+
+        foreach (['splash' => 'SplashAnimation', 'splash-dark' => 'SplashAnimationDark'] as $source => $dataSet) {
+            $sourcePath = public_path($source.'.webp');
+            $dataSetDir = $assets.'/'.$dataSet.'.dataset';
+
+            File::deleteDirectory($dataSetDir);
+
+            $size = File::exists($sourcePath) ? AnimatedWebp::size($sourcePath) : null;
+            if ($size === null || $size[0] < 375 || $size[1] < 667) {
+                continue;
+            }
+
+            File::ensureDirectoryExists($dataSetDir);
+            File::copy($sourcePath, $dataSetDir.'/splash.webp');
+            File::put($dataSetDir.'/Contents.json', json_encode([
+                'data' => [[
+                    'filename' => 'splash.webp',
+                    'idiom' => 'universal',
+                    'universal-type-identifier' => 'org.webmproject.webp',
+                ]],
+                'info' => ['author' => 'xcode', 'version' => 1],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         }
     }
 
