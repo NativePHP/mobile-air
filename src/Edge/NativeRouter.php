@@ -194,6 +194,35 @@ class NativeRouter
     protected array $stack = [];
 
     /**
+     * The tab URLs of the keep-alive tab bar the top screen last rendered
+     * with, or null when it rendered without one. Reported by the screen
+     * itself (NativeComponent::wrapWithChrome() → observeTabBar()).
+     *
+     * @var list<string>|null
+     */
+    protected ?array $keepAliveTabs = null;
+
+    /**
+     * The stacks of the keep-alive tabs that are not showing, keyed by tab
+     * URL, root first. Their components are alive, exactly like a screen
+     * covered by a push: no mount() on the way back, no unmount() on the way
+     * out, and no events or polls while parked.
+     *
+     * Stack entries in a keep-alive tab section carry a `tab` key naming the
+     * tab they belong to (see tagTabEntries()).
+     *
+     * @var array<string, list<array{component: NativeComponent, uri: string, params: array, tab?: ?string}>>
+     */
+    protected array $parkedTabs = [];
+
+    /**
+     * Set when the top screen showed it has left the tab section (see
+     * observeTabBar()). The parked tabs are dropped at the next turn of the
+     * navigation loop, outside any screen's render.
+     */
+    protected bool $leftTabSection = false;
+
+    /**
      * Deferred transition — set during navigation, flushed just before
      * the first publish() so the old tree stays visible until the new
      * one is ready.
@@ -812,6 +841,7 @@ class NativeRouter
 
             return null;
         } finally {
+            $this->discardParkedTabs();
             nativephp_element_shutdown();
         }
     }
@@ -827,6 +857,10 @@ class NativeRouter
         $queuedSystemBacks = 0;
 
         while (! empty($this->stack)) {
+            if ($this->leftTabSection) {
+                $this->discardParkedTabs();
+            }
+
             $entry = &$this->stack[count($this->stack) - 1];
             $component = $entry['component'];
             $poppedByQueuedBack = false;
@@ -914,6 +948,7 @@ class NativeRouter
                 $this->unmountComponent($component);
                 array_pop($this->stack);
                 $freshPush = false;
+                $this->discardParkedTabsWhenSectionLeft();
 
                 if (! empty($this->stack)) {
                     $this->deferredTransition = Transition::SlideFromLeft;
@@ -923,6 +958,40 @@ class NativeRouter
             }
 
             static::debugLog("loop: intent type={$intent->type} uri={$intent->uri} stack=".count($this->stack));
+
+            if ($intent->type === NavigationIntent::TAB) {
+                // $entry is a reference into the stack; the switch below
+                // slices the stack into new arrays, which must not carry it.
+                unset($entry);
+
+                $outcome = $this->switchTab($intent, $component);
+
+                if ($outcome === 'error') {
+                    $freshPush = false;
+                    $reenterCurrentScreen = true;
+
+                    continue;
+                }
+
+                if ($outcome !== 'replace') {
+                    $freshPush = $outcome === 'fresh';
+                    $reenterCurrentScreen = false;
+                    $this->deferredTransition = $intent->transition instanceof Transition
+                        ? $intent->transition
+                        : (Transition::tryFrom((string) $intent->transition) ?? Transition::None);
+
+                    continue;
+                }
+
+                // Not a keep-alive tab switch (no keep-alive bar, or the URL
+                // is not one of its tabs): what a tab tap always did.
+                $intent = new NavigationIntent(
+                    NavigationIntent::REPLACE,
+                    $intent->uri,
+                    $intent->data,
+                    $intent->transition ?? Transition::None,
+                );
+            }
 
             switch ($intent->type) {
                 case NavigationIntent::NAVIGATE:
@@ -942,6 +1011,7 @@ class NativeRouter
                         static::debugLog('NAVIGATE: unresolved, exiting to web');
                         $this->unmountComponent($component);
                         $this->stack = [];
+                        $this->discardParkedTabs();
 
                         return $intent->uri;
                     }
@@ -962,10 +1032,12 @@ class NativeRouter
                     }
                     static::debugLog('NAVIGATE: component created, pushing to stack');
 
+                    $tabTag = $this->tabTagFor($intent->uri, $this->stack[count($this->stack) - 1] ?? []);
                     $this->stack[] = [
                         'component' => $next,
                         'uri' => $intent->uri,
                         'params' => $resolved['params'],
+                        ...$tabTag,
                     ];
 
                     $freshPush = true;
@@ -976,6 +1048,7 @@ class NativeRouter
                     $this->unmountComponent($component);
                     array_pop($this->stack);
                     $freshPush = false;
+                    $this->discardParkedTabsWhenSectionLeft();
 
                     if (empty($this->stack)) {
                         static::debugLog('BACK: stack empty, returning null');
@@ -1005,13 +1078,14 @@ class NativeRouter
                         static::debugLog('REPLACE: unresolved, exiting to web');
                         $this->unmountComponent($component);
                         $this->stack = [];
+                        $this->discardParkedTabs();
 
                         return $intent->uri;
                     }
 
                     static::debugLog("REPLACE: resolved to {$resolved['class']}");
                     $this->unmountComponent($component);
-                    array_pop($this->stack);
+                    $replaced = array_pop($this->stack) ?? [];
 
                     static::debugLog('REPLACE: deferring transition, stack='.count($this->stack));
                     $this->deferredTransition = $intent->transition ?? Transition::Fade;
@@ -1033,6 +1107,12 @@ class NativeRouter
                             'component' => $next,
                             'uri' => $intent->uri,
                             'params' => $resolved['params'],
+                            // A replace stays in the tab of the screen it
+                            // replaced. Marked, so a replace that leaves the
+                            // tab chrome (sign-out to a login screen) drops
+                            // the parked tabs: see observeTabBar().
+                            ...$this->tabTagFor($intent->uri, $replaced),
+                            'replaced' => true,
                         ];
 
                         static::debugLog('REPLACE: pushed '.get_class($next).' to stack');
@@ -1049,6 +1129,7 @@ class NativeRouter
                     static::debugLog("EXIT_WEB: uri={$intent->uri}");
                     $this->unmountComponent($component);
                     $this->stack = [];
+                    $this->discardParkedTabs();
 
                     return $intent->uri;
 
@@ -1059,6 +1140,7 @@ class NativeRouter
                         $this->unmountComponent($this->stack[count($this->stack) - 1]['component']);
                         array_pop($this->stack);
                     }
+                    $this->discardParkedTabs();
 
                     // Return null — the .hot_restart file tells Kotlin to re-execute
                     return null;
@@ -1076,6 +1158,307 @@ class NativeRouter
      * Every pop in the loop above goes through here, so the event has one
      * home rather than seven.
      */
+    // ── Keep-alive tabs ────────────────────────────
+
+    /**
+     * Called by a screen each time it builds its chrome: the URLs of the
+     * keep-alive tab bar it shows, or null when it shows none. Only the top
+     * screen's report counts (child components and covered screens build
+     * chrome too).
+     *
+     * @param  list<string>|null  $tabUrls
+     */
+    public function observeTabBar(NativeComponent $screen, ?array $tabUrls): void
+    {
+        $top = $this->stack[count($this->stack) - 1] ?? null;
+
+        if ($top === null || $top['component'] !== $screen) {
+            return;
+        }
+
+        $this->keepAliveTabs = $tabUrls === [] ? null : $tabUrls;
+
+        // A screen outside the tab section, or one that replaced its way
+        // out of the tab chrome (signing out to a login screen), means the
+        // parked tabs will not be shown again. A screen pushed without the
+        // tab bar (a full-screen checkout) does not: back() returns to them.
+        if ($tabUrls === null && $this->parkedTabs !== []
+            && (($top['tab'] ?? null) === null || ($top['replaced'] ?? false))) {
+            $this->leftTabSection = true;
+        }
+    }
+
+    /**
+     * The tab URLs of the keep-alive tab bar the top screen shows, if any.
+     *
+     * @return list<string>|null
+     */
+    public function keepAliveTabs(): ?array
+    {
+        return $this->keepAliveTabs;
+    }
+
+    /**
+     * The parked tab stacks, keyed by tab URL. For tests and tooling.
+     *
+     * @return array<string, list<NativeComponent>>
+     */
+    public function parkedTabs(): array
+    {
+        return array_map(
+            fn (array $run) => array_map(fn (array $entry) => $entry['component'], $run),
+            $this->parkedTabs,
+        );
+    }
+
+    /**
+     * The keep-alive tab whose URL is `$uri`: the tab's URL itself, or its
+     * path with a query. Same rule as TabBar::highlight() for exact matches.
+     */
+    protected function keepAliveTabFor(string $uri): ?string
+    {
+        if ($this->keepAliveTabs === null || $uri === '') {
+            return null;
+        }
+
+        $path = static::pathOf($uri);
+
+        foreach ($this->keepAliveTabs as $tabUrl) {
+            if ($tabUrl === $uri) {
+                return $tabUrl;
+            }
+        }
+
+        foreach ($this->keepAliveTabs as $tabUrl) {
+            if ($tabUrl === $path) {
+                return $tabUrl;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The `tab` key for a new stack entry at `$uri`, pushed over (or
+     * replacing) `$below`: the tab whose root `$uri` is, or else the tab of
+     * `$below`. Empty when neither is known, so tagTabEntries() works it
+     * out later.
+     *
+     * @return array{tab?: ?string}
+     */
+    protected function tabTagFor(string $uri, array $below): array
+    {
+        $tab = $this->keepAliveTabFor($uri);
+
+        if ($tab !== null) {
+            return ['tab' => $tab];
+        }
+
+        return array_key_exists('tab', $below) ? ['tab' => $below['tab']] : [];
+    }
+
+    /**
+     * Give every stack entry without a `tab` key one, bottom up: a screen
+     * at a tab's URL starts that tab, and every other screen belongs to the
+     * tab of the screen below it (null below the tab section). Entries get
+     * their key when pushed once a keep-alive bar has been seen; this fills
+     * in the ones from before (the launch screen, a preloaded stack).
+     *
+     * Returns the tab of the top screen.
+     */
+    protected function tagTabEntries(): ?string
+    {
+        $tab = null;
+
+        foreach ($this->stack as $index => $stackEntry) {
+            if (array_key_exists('tab', $stackEntry) && $stackEntry['tab'] !== null) {
+                $tab = $stackEntry['tab'];
+
+                continue;
+            }
+
+            $tab = $this->keepAliveTabFor($stackEntry['uri'] ?? '') ?? $tab;
+            $this->stack[$index]['tab'] = $tab;
+        }
+
+        return $tab;
+    }
+
+    /**
+     * Switch to the keep-alive tab `$intent->uri` names. Returns:
+     *   - 'resumed': the tab's kept stack is back on top; resume its top
+     *   - 'fresh':   the tab's root screen was pushed; mount it
+     *   - 'error':   the tab's route failed to bind; its error screen shows
+     *                on the current screen
+     *   - 'replace': this is not a keep-alive tab switch; replace instead
+     *
+     * The stack is the screens below the tab section (`base`) followed by
+     * the section's screens, each tagged with its tab. Every tab other than
+     * the target is parked, the target's screens (kept in the section, or
+     * parked earlier) go back on top of the base. Switching to the tab
+     * that is showing pops it to its root.
+     */
+    protected function switchTab(NavigationIntent $intent, NativeComponent $component): string
+    {
+        $target = $this->keepAliveTabFor((string) $intent->uri);
+        $current = $target === null ? null : $this->tagTabEntries();
+
+        if ($target === null || $current === null) {
+            static::debugLog("TAB: {$intent->uri} is not a keep-alive tab of this screen, replacing");
+
+            return 'replace';
+        }
+
+        $base = [];
+        $runs = [];
+        foreach ($this->stack as $stackEntry) {
+            if ($stackEntry['tab'] === null) {
+                $base[] = $stackEntry;
+            } else {
+                $runs[$stackEntry['tab']][] = $stackEntry;
+            }
+        }
+
+        $kept = $runs[$target] ?? $this->parkedTabs[$target] ?? null;
+        $unmount = [];
+
+        // Re-selecting the tab that is showing pops it back to its root, or
+        // opens the root afresh when the tab's first screen is not it.
+        if ($target === $current) {
+            $run = $runs[$current];
+            if ($this->keepAliveTabFor($run[0]['uri'] ?? '') === $target) {
+                $kept = [$run[0]];
+                $unmount = array_slice($run, 1);
+            } else {
+                $kept = null;
+                $unmount = $run;
+            }
+            unset($runs[$current]);
+        }
+
+        $resolved = null;
+        if ($kept === null) {
+            try {
+                $resolved = static::resolve((string) $intent->uri);
+            } catch (\Throwable $e) {
+                static::debugLog('TAB binding FAILED: '.$e->getMessage());
+                $component->renderErrorScreen($e);
+
+                return 'error';
+            }
+
+            if ($resolved === null) {
+                return 'replace';
+            }
+        }
+
+        foreach (array_reverse($unmount) as $stackEntry) {
+            $this->unmountComponent($stackEntry['component']);
+        }
+
+        foreach ($runs as $tab => $run) {
+            if ($tab !== $target) {
+                $this->parkTab($tab, $run);
+            }
+        }
+
+        // The target's screens came from the section: anything parked for
+        // it earlier is stale. Or they came from the parked set: take them.
+        if (isset($this->parkedTabs[$target])) {
+            if ($kept !== $this->parkedTabs[$target]) {
+                $this->parkTab($target, []);
+            }
+            unset($this->parkedTabs[$target]);
+        }
+
+        if ($kept !== null) {
+            static::debugLog("TAB: $current → $target, resuming ".get_class($kept[count($kept) - 1]['component']).' (kept '.count($kept).' screens)');
+            $this->stack = [...$base, ...$kept];
+
+            return 'resumed';
+        }
+
+        static::debugLog("TAB: $current → $target, opening {$resolved['class']}");
+        $next = $this->createComponent($resolved['class'], $resolved['params'], $intent->data, $resolved['query']);
+        if (! empty($resolved['layout'])) {
+            $next->setLayout($resolved['layout']);
+        }
+
+        $this->stack = [...$base, [
+            'component' => $next,
+            'uri' => (string) $intent->uri,
+            'params' => $resolved['params'],
+            'tab' => $target,
+        ]];
+
+        return 'fresh';
+    }
+
+    /**
+     * Park a tab's screens. Screens parked for that tab before are
+     * unmounted: a tab has one stack.
+     *
+     * @param  list<array>  $run
+     */
+    protected function parkTab(string $tab, array $run): void
+    {
+        foreach (array_reverse($this->parkedTabs[$tab] ?? []) as $stackEntry) {
+            if (! in_array($stackEntry, $run, true)) {
+                $this->unmountComponent($stackEntry['component']);
+            }
+        }
+
+        if ($run === []) {
+            unset($this->parkedTabs[$tab]);
+
+            return;
+        }
+
+        $this->parkedTabs[$tab] = $run;
+    }
+
+    /**
+     * Unmount every parked tab's screens, top first.
+     */
+    protected function discardParkedTabs(): void
+    {
+        $this->leftTabSection = false;
+
+        if ($this->parkedTabs === []) {
+            return;
+        }
+
+        static::debugLog('TAB: left the tab section, unmounting '.count($this->parkedTabs).' parked tab(s)');
+
+        $parked = $this->parkedTabs;
+        $this->parkedTabs = [];
+
+        foreach ($parked as $run) {
+            foreach (array_reverse($run) as $stackEntry) {
+                $this->unmountComponent($stackEntry['component']);
+            }
+        }
+    }
+
+    /**
+     * After a pop: when no screen of the tab section is left on the stack,
+     * the parked tabs can't be reached any more.
+     */
+    protected function discardParkedTabsWhenSectionLeft(): void
+    {
+        if ($this->parkedTabs === []) {
+            return;
+        }
+
+        foreach ($this->stack as $stackEntry) {
+            if (($stackEntry['tab'] ?? null) !== null) {
+                return;
+            }
+        }
+
+        $this->discardParkedTabs();
+    }
+
     protected function unmountComponent(NativeComponent $component): void
     {
         $component->unmount();

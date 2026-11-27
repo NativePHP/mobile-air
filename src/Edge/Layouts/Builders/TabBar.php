@@ -69,6 +69,8 @@ class TabBar
 
     private ?string $presentationConfiguration = null;
 
+    private bool $keepAlive = true;
+
     public static function make(): self
     {
         return new self;
@@ -100,6 +102,7 @@ class TabBar
         $bar->hideOnPush = (bool) ($props['hide_on_push'] ?? true);
         $bar->presentationIdentifier = $props['tab_presentation_id'] ?? null;
         $bar->presentationConfiguration = $props['tab_presentation_configuration'] ?? null;
+        $bar->keepAlive = (bool) ($props['keep_alive'] ?? true);
 
         foreach ($element->getChildren() as $child) {
             if ($child instanceof BottomNavItem) {
@@ -383,6 +386,53 @@ class TabBar
         }
 
         return $this;
+    }
+
+    /**
+     * Keep each tab alive across tab switches (the default). Leaving a tab
+     * parks its screens, component instances and all, the way a screen
+     * covered by a push is kept, so coming back shows the same screen with
+     * the same state and runs onResume() instead of mount().
+     *
+     * Pass false for the older behaviour, where every tab tap replaces the
+     * current screen and the tab's screen is mounted afresh. Only the native
+     * tab chrome keeps tabs alive; a custom-drawn bar always replaces.
+     */
+    public function keepAlive(bool $keepAlive = true): self
+    {
+        $this->keepAlive = $keepAlive;
+
+        return $this;
+    }
+
+    public function keepsAlive(): bool
+    {
+        return $this->keepAlive;
+    }
+
+    /**
+     * The URLs of the tabs that open a screen, in bar order. Action tabs (no
+     * URL) and the search-role tab have no stack of their own.
+     *
+     * @return list<string>
+     */
+    public function tabUrls(): array
+    {
+        $urls = [];
+
+        foreach ($this->tabs as $tab) {
+            if ($tab->getUrl() !== '' && ! $tab->isSearchTab()) {
+                $urls[] = $tab->getUrl();
+            }
+        }
+
+        foreach ($this->prebuiltTabElements as $item) {
+            if ($item->getUrl() !== '' && ! $item->isSearchTab()) {
+                $urls[] = $item->getUrl();
+            }
+        }
+
+        return array_values(array_unique($urls));
     }
 
     /**

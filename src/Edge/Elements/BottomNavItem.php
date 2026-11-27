@@ -48,6 +48,13 @@ class BottomNavItem extends Element
      */
     private ?array $rawSearchItems = null;
 
+    /**
+     * Set by the native tab chrome when the bar keeps its tabs alive
+     * (TabBar::keepAlive(), on by default). A tap then switches tabs
+     * instead of replacing the current screen.
+     */
+    private bool $switchesTab = false;
+
     public static function make(): static
     {
         return new static;
@@ -179,6 +186,17 @@ class BottomNavItem extends Element
         return $this;
     }
 
+    /**
+     * Make a tap on this tab switch to it, keeping the tab being left alive,
+     * instead of replacing the current screen with a fresh copy of the tab.
+     */
+    public function switchesTab(bool $switchesTab = true): static
+    {
+        $this->switchesTab = $switchesTab;
+
+        return $this;
+    }
+
     protected function resolveProps(CallbackRegistry $registry): array
     {
         // Resolve the platform icon triple down to the single wire icon.
@@ -211,13 +229,15 @@ class BottomNavItem extends Element
             && $this->pressMethod === null
             && empty($this->props['search'])
         ) {
-            // Tab taps should `replace` the current screen, not push onto
-            // the stack. Otherwise tapping Chats → Friends → Profile builds
-            // up a 4-deep stack, and the framework back chevron pops one
-            // tab at a time instead of returning to where the user came
-            // from before entering the tabs section.
+            // Tab taps should never push onto the stack. Otherwise tapping
+            // Chats → Friends → Profile builds up a 4-deep stack, and the
+            // framework back chevron pops one tab at a time instead of
+            // returning to where the user came from before entering the
+            // tabs section. A keep-alive bar switches tabs (the router
+            // parks the tab being left); otherwise the tap `replace`s the
+            // current screen with a fresh copy of the tab.
             $this->setNavigateConfig([
-                'type' => 'replace',
+                'type' => $this->switchesTab ? 'tab' : 'replace',
                 'uri' => $this->props['url'],
                 'data' => [],
                 'transition' => 'none',

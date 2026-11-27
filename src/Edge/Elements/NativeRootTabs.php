@@ -95,6 +95,14 @@ class NativeRootTabs extends Element
             $this->props['tab_presentation_configuration'] = $attrs['tabPresentationConfiguration'];
         }
 
+        // The router keeps each tab's screens alive across tab switches
+        // (TabBar::keepAlive()). Renderers that keep no per-tab tree of
+        // their own (Android) show the tapped tab's last tree while it
+        // resumes only when this is set: a fresh mount would replace it.
+        if (! empty($attrs['keepAlive'])) {
+            $this->props['keep_alive'] = true;
+        }
+
         // Optional folded NavBar config (when this layout supplies both bars).
         if (isset($attrs['navTitle'])) {
             $this->props['nav_title'] = $attrs['navTitle'];

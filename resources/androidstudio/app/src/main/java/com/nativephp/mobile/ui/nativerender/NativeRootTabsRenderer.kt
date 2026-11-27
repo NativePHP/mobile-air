@@ -149,8 +149,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
     // `replace` navigation is in flight; tabs it displaced go in
     // `supersededTabIds`, whose late publishes must not move `selection`.
     // (The content pane still keys off `activeTabIdx`, so it can show the
-    // superseded screen for the beat until the re-fired press republishes —
-    // Android keeps no per-tab tree cache to hold the selected tab's content.)
+    // superseded screen for the beat until the re-fired press republishes.
+    // Keep-alive bars are the exception: the pane shows the pending tab's
+    // last tree, see `tabPanes` below.)
     var pendingTabId by remember { mutableStateOf<String?>(null) }
     val supersededTabIds = remember { mutableSetOf<String>() }
 
@@ -646,7 +647,26 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // free via per-tab NavigationStack; Compose lacks that, so we
         // drive both off `pendingTransition` and the (tabIdx, uri) key.
         val pendingTransition by NativeUIBridge.pendingTransition
-        val targetKey = "$activeTabIdx|$currentUri"
+        // Keep-alive tabs (TabBar::keepAlive()): PHP parks the tab being
+        // left and resumes the tapped one with its stack and state intact.
+        // Show the tapped tab's last tree at once while it resumes, instead
+        // of holding the old tab's content until PHP republishes. When the
+        // resumed tab publishes the same URI the key doesn't change, so the
+        // fresh tree swaps in without another transition.
+        val keepAlive = node.props.getBool("keep_alive")
+        val tabPanes = remember { HashMap<String, KeptTabPane>() }
+        if (keepAlive && currentUri.isNotEmpty() && activeTabId.isNotEmpty()) {
+            tabPanes[activeTabId] = KeptTabPane(currentUri, screenContent, bottomBarNode)
+        }
+        val heldPane = if (keepAlive) {
+            pendingTabId?.takeIf { it != activeTabId }?.let { tabPanes[it] }
+        } else {
+            null
+        }
+        val paneTabIdx = if (heldPane != null) tabIds.indexOf(pendingTabId) else activeTabIdx
+        val shownScreen = heldPane?.screen ?: screenContent
+        val shownBottomBar = heldPane?.bottomBar ?: bottomBarNode
+        val targetKey = "$paneTabIdx|${heldPane?.uri ?: currentUri}"
 
         // Scaffold padding follows the current screen's bars (nav bar
         // presence, hidden tab bar), which swap instantly on navigation.
@@ -719,9 +739,9 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         screenPaddings[key] ?: padding
                     }
                     val (paneScreen, paneBottomBar) = if (key == targetKey) {
-                        Pair(screenContent, bottomBarNode).also { paneNodes[key] = it }
+                        Pair(shownScreen, shownBottomBar).also { paneNodes[key] = it }
                     } else {
-                        paneNodes[key] ?: Pair(screenContent, bottomBarNode)
+                        paneNodes[key] ?: Pair(shownScreen, shownBottomBar)
                     }
                     // The bar's nested-scroll connection wraps the screen content
                     // directly, inside AnimatedContent, for the same reason as the
@@ -779,6 +799,13 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
  * action sends the query to PHP's `onSearchSubmit($q)` as a SUBMIT event,
  * when the screen defines one.
  */
+/** The last tree a keep-alive tab showed: its URI, screen content and bottom bar. */
+private data class KeptTabPane(
+    val uri: String,
+    val screen: NativeUINode?,
+    val bottomBar: NativeUINode?,
+)
+
 @Composable
 private fun AndroidSearchTabRoot(
     placeholder: String,
