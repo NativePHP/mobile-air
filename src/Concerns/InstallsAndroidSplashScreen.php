@@ -3,6 +3,7 @@
 namespace Native\Mobile\Concerns;
 
 use Illuminate\Support\Facades\File;
+use Native\Mobile\Support\AnimatedWebp;
 
 trait InstallsAndroidSplashScreen
 {
@@ -46,7 +47,7 @@ trait InstallsAndroidSplashScreen
                     continue;
                 }
 
-                if ($this->animatedWebpSize($sourcePath) !== null) {
+                if (AnimatedWebp::size($sourcePath) !== null) {
                     $this->installAnimatedSplash($sourcePath, $resDir.'drawable-'.$qualifier, array_keys($sizes));
 
                     continue;
@@ -83,7 +84,7 @@ trait InstallsAndroidSplashScreen
     private function locateSplashSource(string $name): ?string
     {
         $webp = public_path($name.'.webp');
-        if (File::exists($webp) && (function_exists('imagecreatefromwebp') || $this->animatedWebpSize($webp) !== null)) {
+        if (File::exists($webp) && (function_exists('imagecreatefromwebp') || AnimatedWebp::size($webp) !== null)) {
             return $webp;
         }
 
@@ -126,29 +127,9 @@ trait InstallsAndroidSplashScreen
         File::copy($sourcePath, $drawablePrefix.'nodpi'.DIRECTORY_SEPARATOR.'splash.webp');
     }
 
-    /**
-     * Canvas size from the VP8X header of an animated WebP, or null for any other file.
-     */
-    private function animatedWebpSize(string $path): ?array
-    {
-        $header = @file_get_contents($path, false, null, 0, 30);
-
-        if (! is_string($header) || strlen($header) < 30
-            || ! str_starts_with($header, 'RIFF')
-            || substr($header, 8, 8) !== 'WEBPVP8X'
-            || (ord($header[20]) & 0x02) === 0) {
-            return null;
-        }
-
-        return [
-            unpack('V', substr($header, 24, 3)."\0")[1] + 1,
-            unpack('V', substr($header, 27, 3)."\0")[1] + 1,
-        ];
-    }
-
     private function validateSplashImage(string $splashPath): bool
     {
-        $animatedSize = $this->animatedWebpSize($splashPath);
+        $animatedSize = AnimatedWebp::size($splashPath);
         if ($animatedSize !== null) {
             return $animatedSize[0] >= 320 && $animatedSize[1] >= 480;
         }
