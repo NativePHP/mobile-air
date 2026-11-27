@@ -250,6 +250,15 @@ class BuildConfigurationTest extends TestCase
         $this->assertMatchesRegularExpression('/create\("profileable"\) \{[^}]*isMinifyEnabled = true/', $gradleContent);
     }
 
+    public function test_android_gradle_template_does_not_keep_debug_symbols_that_defeat_debug_symbol_level()
+    {
+        $templatePath = dirname(__DIR__, 2).'/resources/androidstudio/app/build.gradle.kts';
+        $templateContent = File::get($templatePath);
+
+        $this->assertStringContainsString('debugSymbolLevel = "REPLACE_DEBUG_SYMBOLS"', $templateContent);
+        $this->assertStringNotContainsString('keepDebugSymbols', $templateContent);
+    }
+
     /**
      * Helper methods
      */
