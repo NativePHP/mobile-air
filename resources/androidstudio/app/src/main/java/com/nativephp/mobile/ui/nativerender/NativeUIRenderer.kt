@@ -53,6 +53,9 @@ fun NativeUIContent() {
     val tree by NativeUIBridge.currentTree
     val screenKey by NativeUIBridge.screenKey
     val pendingTransition by NativeUIBridge.pendingTransition
+    // Written on the main thread with the tree. `pendingTransition` is
+    // written from the PHP thread and can land a frame earlier or later.
+    val navigationTransition by NativeUIBridge.navigationTransition
 
     // Performance tracking — measure frame draw latency
     LaunchedEffect(tree) {
@@ -146,11 +149,22 @@ fun NativeUIContent() {
             // transition every ref'd node stays a plain node, as on iOS, so a
             // ref used only as a test handle and repeated across screens
             // doesn't start travelling during an ordinary slide.
-            val morphing = pendingTransition == "morph"
+            //
+            // `navigationTransition` is the type snapshotted with this
+            // navigation and published on the main thread beside the new
+            // screen. `pendingTransition` is written from the PHP thread and
+            // can still be the previous navigation's value here. The shown
+            // key then waits two frames so the outgoing registrations are
+            // laid out before the cross-fade starts. Compose takes the
+            // shared element's start rect from that layout; without it the
+            // element is sometimes shown at its destination bounds on the
+            // first frame. See rememberMorphHeldTarget.
+            val morphing = navigationTransition == "morph"
+            val shownKey = rememberMorphHeldTarget(screenKey, morphing)
             SharedTransitionLayout {
                 AnimatedContent(
-                    targetState = screenKey,
-                    transitionSpec = { transitionFor(pendingTransition) },
+                    targetState = shownKey,
+                    transitionSpec = { transitionFor(navigationTransition ?: pendingTransition) },
                     label = "screen-transition"
                 ) { key ->
                     DisposableEffect(key) {
