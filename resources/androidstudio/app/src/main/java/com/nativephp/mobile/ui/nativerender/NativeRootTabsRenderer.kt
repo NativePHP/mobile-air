@@ -179,6 +179,8 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         if (selection != activeTabIdx) selection = activeTabIdx
     }
 
+    // `TabBar::labelVisibility('labeled'|'selected'|'unlabeled')`, as on iOS.
+    val labelVisibility = node.props.getString("label_visibility", "labeled")
     val activeColorArgb = node.props.getColor("active_color", 0)
     val textColorArgb = node.props.getColor("text_color", 0)
     val bgArgb = node.props.getColor("background_color", 0)
@@ -580,16 +582,19 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                             // One line with an ellipsis. Android Material design wants labels
                             // short enough to neither wrap nor truncate, but it's not always
                             // possible to do that. This is the best of a limited set of options.
-                            label = {
-                                Text(
-                                    label,
-                                    fontFamily = chromeFontFamily,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    textAlign = TextAlign.Center,
-                                )
+                            label = if (labelVisibility == "unlabeled") null else {
+                                {
+                                    Text(
+                                        label,
+                                        fontFamily = chromeFontFamily,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
                             },
+                            alwaysShowLabel = labelVisibility != "selected",
                             // `active_color` (TabBar::activeColor) tints the selected
                             // tab; `text_color` (TabBar::textColor) tints the inactive
                             // icons + labels. Layer both onto the M3 defaults via copy()
