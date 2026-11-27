@@ -105,6 +105,23 @@ final class PerTabNavigationCoordinator: ObservableObject {
         return "/" + path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
+    /// The tab a pushed screen belongs to: the one whose own screen sits
+    /// highest on PHP's router stack below it. `/people/42` opened from a
+    /// Home tab at `/` (stack `/`, `/people/42`) stays in Home, though it
+    /// starts with a People tab's URL. Nil when the screen is itself a
+    /// tab's screen (a tab tap, or a navigation to another tab), or when
+    /// no tab's screen is under it (an app launched into a sub-route), so
+    /// the URL prefix match decides, as before.
+    static func tabIndex(pushing uri: String, stack: [String], tabUrls: [String]) -> Int? {
+        func tab(of entry: String) -> Int? {
+            tabUrls.firstIndex { !$0.isEmpty && ($0 == entry || $0 == path(of: entry)) }
+        }
+
+        guard stack.last == uri, tab(of: uri) == nil else { return nil }
+
+        return stack.dropLast().reversed().lazy.compactMap { tab(of: $0) }.first
+    }
+
     /// Whether a publish's URI is this tab's root: the tab's URL itself,
     /// or the tab's path with a query.
     private func isRoot(_ uri: String) -> Bool {

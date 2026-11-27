@@ -81,15 +81,25 @@ struct NativeRootTabsRenderer: View {
         let highlightedIdx: Int? = tabHighlight.isEmpty
             ? nil
             : tabs.firstIndex { $0.props.getString("id", default: "") == tabHighlight }
+        let stackUris = node.props.getString("stack_uris", default: "")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
         // Determine which tab "owns" the current URI via an explicit
-        // `TabBarOptions::highlight()` override first, then longest URL
-        // prefix match against tab URLs. This is what lets a pushed
-        // sub-route (e.g. `/syncup-native/chat/123` under a
-        // `/syncup-native` Chats tab) render INSIDE the Chats tab's
-        // NavigationStack rather than full-screen-replacing the layout.
+        // `TabBarOptions::highlight()` override first, then the tab a
+        // pushed screen was opened from (so `/people/42` pushed from Home
+        // stays in Home), then longest URL prefix match against tab URLs.
+        // The prefix match is what lets a pushed sub-route (e.g.
+        // `/syncup-native/chat/123` under a `/syncup-native` Chats tab)
+        // render INSIDE the Chats tab's NavigationStack rather than
+        // full-screen-replacing the layout.
         // Falls back to `BottomNavItem.active` (TabBar::highlight set
         // the same way) so non-prefix tab layouts still pick correctly.
         let owningIdx = highlightedIdx
+            ?? PerTabNavigationCoordinator.tabIndex(
+                pushing: currentUri,
+                stack: stackUris,
+                tabUrls: tabs.map { $0.props.getString("url", default: "") }
+            )
             ?? owningTabIndex(for: currentUri, tabs: tabs)
             ?? (tabs.firstIndex { $0.props.getBool("active") } ?? 0)
         let owningId = owningIdx < tabs.count
@@ -103,9 +113,6 @@ struct NativeRootTabsRenderer: View {
         if !currentUri.isEmpty, owningIdx < tabs.count {
             let owningRootUri = tabs[owningIdx].props.getString("url", default: "")
             let stackDepth = node.props.getInt("stack_depth", default: 0)
-            let stackUris = node.props.getString("stack_uris", default: "")
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .map(String.init)
             let coord = tabBag.coordinator(forIdx: owningIdx, rootUri: owningRootUri)
             coord.cache(uri: currentUri, node: node)
             DispatchQueue.main.async {
