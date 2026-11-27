@@ -746,9 +746,11 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                             screenPaddings.remove(key)
                         }
                     }
+                    // A copy, not `padding` itself: Scaffold updates that object in
+                    // place, so a kept reference would follow the next screen's bars.
+                    val layoutDirection = LocalLayoutDirection.current
                     val screenPadding = if (key == targetKey) {
-                        screenPaddings[key] = padding
-                        padding
+                        padding.snapshot(layoutDirection).also { screenPaddings[key] = it }
                     } else {
                         screenPaddings[key] ?: padding
                     }

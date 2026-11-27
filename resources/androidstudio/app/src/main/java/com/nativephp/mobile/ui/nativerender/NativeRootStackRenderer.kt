@@ -477,9 +477,11 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     } else {
                         Modifier
                     }
+                    // A copy, not `padding` itself: Scaffold updates that object in
+                    // place, so a kept reference would follow the next level's bars.
+                    val layoutDirection = LocalLayoutDirection.current
                     val levelPadding = if (uri == activeUri) {
-                        levelPaddings[uri] = padding
-                        padding
+                        padding.snapshot(layoutDirection).also { levelPaddings[uri] = it }
                     } else {
                         levelPaddings[uri] ?: padding
                     }
