@@ -148,6 +148,13 @@ class NativeRootTabs extends Element
         if (isset($attrs['stackUris'])) {
             $this->props['stack_uris'] = implode("\n", array_map('strval', (array) $attrs['stackUris']));
         }
+        // Per-mount screen tokens, bottom first, one per line (as with
+        // `stack_uris`, sentinel props carry strings). Android scopes each
+        // screen's saved view state (list scroll position) by its token
+        // and drops it when the token leaves the list; iOS ignores it.
+        if (isset($attrs['screenTokens'])) {
+            $this->props['screen_tokens'] = implode("\n", array_map('strval', (array) $attrs['screenTokens']));
+        }
 
         // Per-screen tab-bar overrides folded in by `wrapWithNativeChrome`.
         // `hide_tab_bar` is the explicit signal renderers use to hide the
