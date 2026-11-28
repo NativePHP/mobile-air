@@ -10,6 +10,8 @@ use Native\Mobile\PendingPushNotificationEnrollment;
  * @method static string|null checkPermission()
  * @method static string|null getToken()
  * @method static void clearBadge()
+ * @method static void setBadge(int $count)
+ * @method static void removeDelivered(string $thread)
  *
  * @see \Native\Mobile\PushNotifications
  */

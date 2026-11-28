@@ -7,6 +7,7 @@ import com.nativephp.mobile.bridge.functions.DeviceFunctions
 import com.nativephp.mobile.bridge.functions.DialogFunctions
 import com.nativephp.mobile.bridge.functions.EventFunctions
 import com.nativephp.mobile.bridge.functions.FileFunctions
+import com.nativephp.mobile.bridge.functions.NotificationFunctions
 import com.nativephp.mobile.bridge.functions.PerfFunctions
 import com.nativephp.mobile.bridge.functions.QueueWorkerFunctions
 import com.nativephp.mobile.bridge.functions.SystemFunctions
@@ -89,6 +90,10 @@ private fun registerCoreContextBridgeFunctions(registry: BridgeFunctionRegistry,
 
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). iOS twin: Bridge/Functions/SystemFunctions.swift.
+    // Notification.* — badge and delivered notifications, without a push plugin.
+    registry.register("Notification.SetBadge", NotificationFunctions.SetBadge())
+    registry.register("Notification.RemoveDelivered", NotificationFunctions.RemoveDelivered(context))
+
     registry.register("System.OpenAppSettings", SystemFunctions.OpenAppSettings(context))
     registry.register("System.GetAppearance", SystemFunctions.GetAppearance(context))
     registry.register("System.SetAppearance", SystemFunctions.SetAppearance(context))
