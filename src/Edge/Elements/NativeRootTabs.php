@@ -193,6 +193,13 @@ class NativeRootTabs extends Element
         if (isset($attrs['navSearchOnSubmitMethod'])) {
             $this->navSearchOnSubmitMethod = $attrs['navSearchOnSubmitMethod'];
         }
+
+        // The query the current search items answer, so the renderers can
+        // show a spinner rather than "No Results" until the typed query's
+        // own answer arrives.
+        if (isset($attrs['navSearchAnsweredQuery'])) {
+            $this->props['nav_search_answered_query'] = (string) $attrs['navSearchAnsweredQuery'];
+        }
     }
 
     protected function resolveProps(CallbackRegistry $registry): array
