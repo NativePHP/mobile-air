@@ -47,7 +47,8 @@ object NavigationCoordinator {
      * PHP router stack depth when this stack session's root was seeded.
      * Absolute depth from PHP maps to a path length as `depth - rootDepth`.
      */
-    private var rootDepth: Int = 1
+    var rootDepth: Int = 1
+        private set
 
     /**
      * Update the per-URI cache only. Safe to call from inside a Compose

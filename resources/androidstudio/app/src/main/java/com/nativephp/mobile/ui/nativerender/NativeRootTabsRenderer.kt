@@ -680,7 +680,23 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // free via per-tab NavigationStack; Compose lacks that, so we
         // drive both off `pendingTransition` and the (tabIdx, uri) key.
         val pendingTransition by NativeUIBridge.pendingTransition
-        val targetKey = "$activeTabIdx|$currentUri"
+        //
+        // Saved view state per mounted screen (#298): the pane a screen
+        // is pushed over is disposed, so its list scroll position is
+        // parked under its screen token until PHP resumes it. With tokens
+        // the pane is keyed by the top screen's token rather than its URI,
+        // so a fresh mount of the same URI (replace) starts clean and a
+        // republish of the same screen keeps its pane. The tab index stays
+        // in front: the transition and morph checks read it from the key.
+        val screenTokens = ScreenTokens.parse(node.props.getString("screen_tokens", ""))
+        val screenStates = rememberScreenStateHolder(screenTokens)
+        val topToken = screenTokens.lastOrNull()
+        val targetKey = "$activeTabIdx|${topToken ?: currentUri}"
+        // The token each pane was keyed with, for its saved-state scope.
+        val paneTokens = remember { HashMap<String, String>() }
+        if (topToken != null) {
+            paneTokens[targetKey] = topToken
+        }
 
         // Scaffold padding follows the current screen's bars (nav bar
         // presence, hidden tab bar), which swap instantly on navigation.
@@ -744,6 +760,7 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                         onDispose {
                             paneNodes.remove(key)
                             screenPaddings.remove(key)
+                            paneTokens.remove(key)
                         }
                     }
                     val screenPadding = if (key == targetKey) {
@@ -770,21 +787,23 @@ fun NativeRootTabsRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                     CompositionLocalProvider(
                         LocalChromeScrollController provides if (drivesBar) chromeScrollController else null
                     ) {
-                        Box(modifier = scrollModifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
-                            if (paneBottomBar != null) {
-                                // Screen content fills the space above the pinned bar; the
-                                // bar sits at the bottom. Root `imePadding` shrinks this
-                                // column when the keyboard opens so the bar rides above it.
-                                Column(modifier = Modifier.fillMaxSize()) {
-                                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                                        if (paneScreen != null) NodeView(node = paneScreen)
+                        ScreenStateScope(screenStates, paneTokens[key]) {
+                            Box(modifier = scrollModifier.fillMaxSize().screenBackground(paneScreen).padding(screenPadding)) {
+                                if (paneBottomBar != null) {
+                                    // Screen content fills the space above the pinned bar; the
+                                    // bar sits at the bottom. Root `imePadding` shrinks this
+                                    // column when the keyboard opens so the bar rides above it.
+                                    Column(modifier = Modifier.fillMaxSize()) {
+                                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                            if (paneScreen != null) NodeView(node = paneScreen)
+                                        }
+                                        paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
                                     }
-                                    paneBottomBar.children.firstOrNull()?.let { NodeView(node = it) }
+                                } else if (paneScreen != null) {
+                                    NodeView(node = paneScreen)
+                                } else {
+                                    Box(modifier = Modifier.fillMaxSize())
                                 }
-                            } else if (paneScreen != null) {
-                                NodeView(node = paneScreen)
-                            } else {
-                                Box(modifier = Modifier.fillMaxSize())
                             }
                         }
                     }
