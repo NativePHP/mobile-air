@@ -2109,8 +2109,19 @@ abstract class NativeComponent
             $element = $result instanceof View
                 ? $this->fromView($result)
                 : $result;
+            $tree = $this->memoizedToArray($element);
+
+            // The navigation waits for the screen's first frame, and the
+            // placeholder is that frame: signal it here, as the render loop
+            // does, or the placeholder is published as an update of the
+            // screen being left and the transition waits for mount(). It
+            // also drops the leaving screen's queued taps now, so a back
+            // tapped while mount() runs is answered, not dropped by the
+            // first real frame.
+            $this->nativeRouter?->flushDeferredTransition();
+
             $this->publishedFrame = null;
-            nativephp_element_publish($this->memoizedToArray($element));
+            nativephp_element_publish($tree);
         } catch (\Throwable $e) {
             NativeRouter::debugLog('placeholder() FAILED in '.static::class.': '.$e->getMessage());
         }
