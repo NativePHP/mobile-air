@@ -30,6 +30,10 @@ func registerBridgeFunctions() {
 
     // System.* — core built-in (migrated from the nativephp/mobile-system
     // plugin). Android twin: bridge/functions/SystemFunctions.kt.
+    // Notification.* — badge and delivered notifications, without a push plugin.
+    registry.register("Notification.SetBadge", function: NotificationFunctions.SetBadge())
+    registry.register("Notification.RemoveDelivered", function: NotificationFunctions.RemoveDelivered())
+
     registry.register("System.OpenAppSettings", function: SystemFunctions.OpenAppSettings())
     registry.register("System.GetAppearance", function: SystemFunctions.GetAppearance())
     registry.register("System.SetAppearance", function: SystemFunctions.SetAppearance())
