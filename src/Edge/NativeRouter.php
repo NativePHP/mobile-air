@@ -145,6 +145,28 @@ class NativeRouter
     }
 
     /**
+     * The intent's transition as a case. navigate(), back() and replace()
+     * accept a Transition or its backing string ('fade'), but the deferred
+     * transition is typed ?Transition, so a string assigned as given threw a
+     * TypeError and ended the navigation loop. An unknown string falls back
+     * to the navigation's default rather than ending it.
+     */
+    protected static function transitionOf(Transition|string|null $transition): ?Transition
+    {
+        if (! is_string($transition)) {
+            return $transition;
+        }
+
+        $case = Transition::tryFrom($transition);
+
+        if ($case === null) {
+            static::debugLog("Unknown transition '{$transition}', using the default");
+        }
+
+        return $case;
+    }
+
+    /**
      * Render a lightweight placeholder frame to shared memory.
      * Available for long-loading screens that want to show a skeleton
      * before the real content renders.
@@ -947,7 +969,7 @@ class NativeRouter
                     }
 
                     static::debugLog("NAVIGATE: resolved to {$resolved['class']}, deferring transition");
-                    $this->deferredTransition = $intent->transition ?? Transition::SlideFromRight;
+                    $this->deferredTransition = static::transitionOf($intent->transition) ?? Transition::SlideFromRight;
 
                     static::debugLog("NAVIGATE: creating component {$resolved['class']}");
                     $next = $this->createComponent(
@@ -984,7 +1006,7 @@ class NativeRouter
                     }
 
                     static::debugLog('BACK: deferring transition, stack='.count($this->stack));
-                    $this->deferredTransition = $intent->transition ?? Transition::SlideFromLeft;
+                    $this->deferredTransition = static::transitionOf($intent->transition) ?? Transition::SlideFromLeft;
                     $queuedSystemBacks += $this->takeQueuedSystemBacks();
                     break;
 
@@ -1014,7 +1036,7 @@ class NativeRouter
                     array_pop($this->stack);
 
                     static::debugLog('REPLACE: deferring transition, stack='.count($this->stack));
-                    $this->deferredTransition = $intent->transition ?? Transition::Fade;
+                    $this->deferredTransition = static::transitionOf($intent->transition) ?? Transition::Fade;
 
                     try {
                         static::debugLog("REPLACE: creating component {$resolved['class']}");
