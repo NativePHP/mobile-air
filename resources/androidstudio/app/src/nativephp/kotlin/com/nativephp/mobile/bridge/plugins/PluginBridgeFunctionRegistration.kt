@@ -6,6 +6,10 @@ import android.content.Context
 // AUTO-GENERATED FILE - DO NOT EDIT
 // This file is overwritten during the build process with plugin registrations
 
+fun runPluginInitFunctions(context: Context) {
+    // No plugins installed - this file will be replaced during build
+}
+
 fun registerPluginBridgeFunctions(activity: FragmentActivity, context: Context) {
     // No plugins installed - this file will be replaced during build
 }
