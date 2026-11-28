@@ -201,6 +201,13 @@ class NativeRouter
     protected ?Transition $deferredTransition = null;
 
     /**
+     * The deferred transition answers a system back. Native navigation
+     * already shows the screen below, so input queued since was made on
+     * it, and the transition keeps it instead of dropping it.
+     */
+    protected bool $deferredFromSystemBack = false;
+
+    /**
      * Native events kept from the reset in flushDeferredTransition(), for
      * the runloop of the screen that's showing to handle next.
      *
@@ -225,6 +232,12 @@ class NativeRouter
      * They're taken after the transition is signalled, right before the
      * reset. On iOS the signal waits for the main thread, which is busy
      * with the outgoing screen, and a task can finish in that wait.
+     *
+     * After a system back, the queue holds what the user did on the screen
+     * native navigation has already gone back to, while PHP popped and
+     * resumed it. Those events are kept too, in order, so a tap made right
+     * after Back is answered instead of lost. A system back among them is
+     * the user going back again, and is kept as one.
      */
     public function flushDeferredTransition(): void
     {
@@ -234,10 +247,17 @@ class NativeRouter
 
         $t = $this->deferredTransition;
         $this->deferredTransition = null;
+        $fromSystemBack = $this->deferredFromSystemBack;
+        $this->deferredFromSystemBack = false;
 
         static::signalTransition($t);
 
-        $this->carriedEvents = [...$this->carriedEvents, ...static::drainEvents()['native_events']];
+        ['native_events' => $kept, 'system_backs' => $backs] = static::drainEvents($fromSystemBack);
+        $this->carriedEvents = [...$this->carriedEvents, ...$kept];
+
+        for ($i = 0; $fromSystemBack && $i < $backs; $i++) {
+            $this->carriedEvents[] = ['type' => NativeComponent::EVENT_SYSTEM_BACK];
+        }
 
         static::resetBuffers();
     }
@@ -262,9 +282,9 @@ class NativeRouter
      * every other queued event when the next screen draws its first frame,
      * leaving PHP one screen down while native navigation is several.
      */
-    protected function takeQueuedSystemBacks(): int
+    protected function takeQueuedSystemBacks(bool $keepInput = false): int
     {
-        ['native_events' => $nativeEvents, 'system_backs' => $backs] = static::drainEvents();
+        ['native_events' => $nativeEvents, 'system_backs' => $backs] = static::drainEvents($keepInput);
 
         $this->carriedEvents = [...$this->carriedEvents, ...$nativeEvents];
 
@@ -279,9 +299,12 @@ class NativeRouter
      * screen dispatched it, and an #[On] listener filters on the payload, so
      * handing it to the next runloop is what a moment later would have done.
      *
+     * With $keepInput, UI events are kept too, in order: after a system
+     * back they were made on the screen being returned to.
+     *
      * @return array{native_events: list<array<string, mixed>>, system_backs: int}
      */
-    protected static function drainEvents(): array
+    protected static function drainEvents(bool $keepInput = false): array
     {
         $nativeEvents = [];
         $backs = 0;
@@ -293,7 +316,7 @@ class NativeRouter
                 continue;
             }
 
-            if (($event['type'] ?? null) === NativeComponent::EVENT_NATIVE) {
+            if ($keepInput || ($event['type'] ?? null) === NativeComponent::EVENT_NATIVE) {
                 $nativeEvents[] = $event;
             }
         }
@@ -917,6 +940,7 @@ class NativeRouter
 
                 if (! empty($this->stack)) {
                     $this->deferredTransition = Transition::SlideFromLeft;
+                    $this->deferredFromSystemBack = false;
                 }
 
                 continue;
@@ -948,6 +972,7 @@ class NativeRouter
 
                     static::debugLog("NAVIGATE: resolved to {$resolved['class']}, deferring transition");
                     $this->deferredTransition = $intent->transition ?? Transition::SlideFromRight;
+                    $this->deferredFromSystemBack = false;
 
                     static::debugLog("NAVIGATE: creating component {$resolved['class']}");
                     $next = $this->createComponent(
@@ -985,7 +1010,8 @@ class NativeRouter
 
                     static::debugLog('BACK: deferring transition, stack='.count($this->stack));
                     $this->deferredTransition = $intent->transition ?? Transition::SlideFromLeft;
-                    $queuedSystemBacks += $this->takeQueuedSystemBacks();
+                    $this->deferredFromSystemBack = $intent->fromSystemBack;
+                    $queuedSystemBacks += $this->takeQueuedSystemBacks($intent->fromSystemBack);
                     break;
 
                 case NavigationIntent::REPLACE:
@@ -1015,6 +1041,7 @@ class NativeRouter
 
                     static::debugLog('REPLACE: deferring transition, stack='.count($this->stack));
                     $this->deferredTransition = $intent->transition ?? Transition::Fade;
+                    $this->deferredFromSystemBack = false;
 
                     try {
                         static::debugLog("REPLACE: creating component {$resolved['class']}");
