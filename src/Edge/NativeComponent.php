@@ -167,6 +167,17 @@ abstract class NativeComponent
 
     protected ?NativeRouter $nativeRouter = null;
 
+    /**
+     * Opaque identity of this mounted screen instance, created on first
+     * use and kept for the instance's lifetime: re-renders and onResume()
+     * keep it, while every fresh mount (navigate, replace — even of the
+     * same URI — or a rebuilt stack) gets a new one. Random rather than
+     * a counter so a restarted process can never reuse an old token.
+     * The device keys per-screen saved view state (list scroll position)
+     * by it. See screenTokensForFrame().
+     */
+    private ?string $nativeScreenToken = null;
+
     protected array $nativeParams = [];
 
     protected array $nativeNavigationData = [];
@@ -1055,6 +1066,10 @@ abstract class NativeComponent
             // unseen, and the tab can't tell where its levels start. With the
             // stack it finds its root and the screens above it in any frame.
             $attrs['stackUris'] = array_column($this->nativeRouter?->getStackEntries() ?? [], 'uri');
+            // Per-mount screen tokens, bottom first: lets Android keep a
+            // pushed-over screen's saved view state (list scroll position)
+            // and drop it once the screen leaves the stack.
+            $attrs['screenTokens'] = $this->screenTokensForFrame();
 
             if (func_num_args() < 5) {
                 $tabOptions = $this->tabBarOptions();
@@ -1200,6 +1215,8 @@ abstract class NativeComponent
             // Router stack depth — depth-based reconciliation (see the
             // tabs sentinel above for rationale).
             $attrs['stackDepth'] = $this->nativeRouter?->stackDepth() ?? 0;
+            // Per-mount screen tokens — see the tabs sentinel above.
+            $attrs['screenTokens'] = $this->screenTokensForFrame();
             // Per-screen nav-bar opt-out — the sentinel (and its
             // NavigationStack) survives; only the toolbar hides.
             if ($this->shouldHideNavBar()) {
@@ -3936,6 +3953,34 @@ abstract class NativeComponent
     }
 
     // ── Navigation methods ──────────────────────────
+
+    /**
+     * This screen instance's opaque per-mount token (32 hex chars). Stable
+     * for as long as this instance lives; a new mount gets a new one.
+     */
+    public function screenToken(): string
+    {
+        return $this->nativeScreenToken ??= bin2hex(random_bytes(16));
+    }
+
+    /**
+     * The `screen_tokens` a chrome frame carries: every live router stack
+     * entry's token, bottom first, with this screen's own token last when
+     * it is not on the stack yet (a preloaded or placeholder frame, or a
+     * screen rendered without a router).
+     *
+     * @return list<string>
+     */
+    private function screenTokensForFrame(): array
+    {
+        $tokens = $this->nativeRouter?->stackScreenTokens() ?? [];
+
+        if (! in_array($this->screenToken(), $tokens, true)) {
+            $tokens[] = $this->screenToken();
+        }
+
+        return $tokens;
+    }
 
     public function navigate(string $uri, array $data = [], Transition|string|null $transition = null): static
     {

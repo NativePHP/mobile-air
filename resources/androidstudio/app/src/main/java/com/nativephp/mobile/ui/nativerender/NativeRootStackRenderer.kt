@@ -404,6 +404,28 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         // entering level uses the live padding, the exiting level keeps
         // the padding it was last laid out with, and each level's
         // vertical origin stays fixed for the whole slide.
+        // Saved view state per mounted screen (#298): a level pushed over
+        // is disposed by the AnimatedContent below, so its list scroll
+        // position is parked under its screen token until it comes back.
+        // PHP's router stack runs bottom first in `screen_tokens`; the
+        // shown level sits at depth rootDepth + path.size (before the
+        // coordinator seeds its root, at the frame's own depth). Reading
+        // it by depth stays right while back has shrunk `path` locally
+        // and PHP's matching frame hasn't landed yet.
+        val screenTokens = ScreenTokens.parse(node.props.getString("screen_tokens", ""))
+        val screenStates = rememberScreenStateHolder(screenTokens)
+        val activeDepth = if (rootUri == null) {
+            node.props.getInt("stack_depth", 0).takeIf { it > 0 } ?: screenTokens.size
+        } else {
+            coordinator.rootDepth + path.size
+        }
+        val activeToken = ScreenTokens.atDepth(screenTokens, activeDepth)
+        // The token each level was shown with, so a level sliding out keeps
+        // its own scope for the rest of the transition.
+        val levelTokens = remember { HashMap<String, String>() }
+        if (activeToken != null) {
+            levelTokens[activeUri] = activeToken
+        }
         val levelPaddings = remember { HashMap<String, PaddingValues>() }
         // Remember how deep each level sat when it
         // was shown so the slide can tell push from pop. A pop (target
@@ -419,6 +441,9 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
         val levelNodes = remember { HashMap<String, NativeUINode>() }
         if (levelNodes.size > 16) {
             levelNodes.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
+        }
+        if (levelTokens.size > 16) {
+            levelTokens.keys.retainAll((path + listOfNotNull(rootUri, activeUri)).toSet())
         }
         // A `morph` push cross-fades the two levels while every `ref` they
         // share flies between its old and new bounds, the same as the
@@ -491,13 +516,16 @@ fun NativeRootStackRenderer(node: NativeUINode, modifier: Modifier = Modifier) {
                             it.type != "top_bar_action" && it.type != "top_bar_title" &&
                                 it.type != "bottom_bar" && !NativeRootHostRegistry.consumes(it.type)
                         }
-                        Box(modifier = scrollModifier.fillMaxSize().screenBackground(levelContent).padding(levelPadding)) {
-                            if (levelContent != null) {
-                                NodeView(node = levelContent)
-                            } else if (uri == currentUri && screenContent != null) {
-                                NodeView(node = screenContent)
-                            } else {
-                                Box(modifier = Modifier.fillMaxSize())
+                        val levelToken = if (uri == activeUri) activeToken else levelTokens[uri]
+                        ScreenStateScope(screenStates, levelToken) {
+                            Box(modifier = scrollModifier.fillMaxSize().screenBackground(levelContent).padding(levelPadding)) {
+                                if (levelContent != null) {
+                                    NodeView(node = levelContent)
+                                } else if (uri == currentUri && screenContent != null) {
+                                    NodeView(node = screenContent)
+                                } else {
+                                    Box(modifier = Modifier.fillMaxSize())
+                                }
                             }
                         }
                     }

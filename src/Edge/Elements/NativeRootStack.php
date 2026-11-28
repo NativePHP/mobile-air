@@ -85,6 +85,13 @@ class NativeRootStack extends Element
         if (isset($attrs['stackDepth'])) {
             $this->props['stack_depth'] = (int) $attrs['stackDepth'];
         }
+        // Per-mount screen tokens, bottom first, one per line (as with
+        // `stack_uris`, sentinel props carry strings). Android scopes each
+        // screen's saved view state (list scroll position) by its token
+        // and drops it when the token leaves the list; iOS ignores it.
+        if (isset($attrs['screenTokens'])) {
+            $this->props['screen_tokens'] = implode("\n", array_map('strval', (array) $attrs['screenTokens']));
+        }
 
         // Inline NavBar search field — Apple HIG / Expo pattern.
         // iOS attaches `.searchable` to the destination view; Android

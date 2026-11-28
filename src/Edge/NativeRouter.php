@@ -663,6 +663,20 @@ class NativeRouter
     }
 
     /**
+     * Each live stack entry's per-mount screen token, bottom (root) first.
+     * See NativeComponent::screenToken().
+     *
+     * @return list<string>
+     */
+    public function stackScreenTokens(): array
+    {
+        return array_values(array_map(
+            fn (array $entry): string => $entry['component']->screenToken(),
+            $this->stack
+        ));
+    }
+
+    /**
      * True if the current screen is the first one on the stack
      * (i.e., it was not pushed from anything).
      */
