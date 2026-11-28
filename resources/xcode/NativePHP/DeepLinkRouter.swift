@@ -14,12 +14,20 @@ final class DeepLinkRouter {
         DebugLogger.shared.log("🔗 WebView marked as ready")
         isWebViewReady = true
         processePendingURLIfReady()
+        NotificationTapRouter.shared.flushIfReady()
     }
 
     func markPhpReady() {
         DebugLogger.shared.log("🔗 PHP marked as ready")
         isPhpReady = true
         processePendingURLIfReady()
+        NotificationTapRouter.shared.flushIfReady()
+    }
+
+    /// True once a native event reaches PHP: PHP is up and either the WebView
+    /// has loaded or native-ui is active, the same test a deep link waits for.
+    var canDeliverEvents: Bool {
+        isPhpReady && (isWebViewReady || NativeUIBridge.shared.isActive)
     }
 
     private func processePendingURLIfReady() {
@@ -71,6 +79,7 @@ final class DeepLinkRouter {
     /// that handles __deeplink events is up.
     func replayPendingDeepLink() {
         processePendingURLIfReady()
+        NotificationTapRouter.shared.flushIfReady()
     }
 
     func handle(url: URL) {

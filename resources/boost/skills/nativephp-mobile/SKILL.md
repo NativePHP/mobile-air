@@ -438,6 +438,9 @@ alongside existing `memUsed`). `Device::getTimezone()` gives the phone's IANA ti
 returns; `onResume()` does not, it runs only when a pop reveals a screen. `$secondsAway` keeps counting while the
 device sleeps, so use it for lock and refresh timeouts. A cold launch fires neither. On Android, opening the
 system camera or an in-app browser backgrounds the app too (they run in other processes); on iOS it does not.
+`NotificationTapped($action, $id, $data, $text)` (`BroadcastsGlobally`) fires when the user opens a push or local
+notification, including one that launches the app (held until the first screen is live). `$action` is `default`
+for a tap, else the action identifier (iOS); `$text` is a text-input reply (iOS); `$data` is the custom payload.
 
 **Plugins** (separate Composer packages): browser, camera, microphone, network, share (free); biometrics,
 geolocation, scanner, secure-storage (paid); firebase (push notifications, proprietary); vibe
