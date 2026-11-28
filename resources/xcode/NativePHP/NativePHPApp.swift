@@ -45,6 +45,9 @@ struct NativePHPApp: App {
         // All heavy initialization is deferred to after the splash view is visible
         DebugLogger.shared.log("📱 NativePHPApp.init() registering bridge functions")
         registerBridgeFunctions()
+        // After the plugins' init functions (they run inside
+        // registerBridgeFunctions), so a delegate one of them set is kept.
+        NotificationTapRouter.install()
         ThermalStateMonitor.start()
         AppLifecycleMonitor.start()
         SystemFunctions.startAppearanceOverride()
@@ -249,6 +252,8 @@ struct NativePHPApp: App {
         // 5. Execute plugin initialization callbacks (on main thread)
         DispatchQueue.main.async {
             NativePHPPluginRegistry.shared.executeOnAppLaunch()
+            // A plugin may set its own delegate from an onAppLaunch callback.
+            NotificationTapRouter.install()
         }
 
         // 6. Reload handling + hot reload server. The coordinator must be

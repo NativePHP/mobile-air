@@ -211,6 +211,8 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
         }
 
         handleDeepLinkIntent(intent)
+        NotificationTapMonitor.hold()
+        NotificationTapMonitor.handle(intent, recreated = savedInstanceState != null)
 
         NativeUIBridge.createState()
         NativeUIThemeProvider.createState()
@@ -556,6 +558,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
 
         // The start screen has published, so its loop is waiting for events.
         coldAppLink?.let { (route, url) -> navigateWarm(route, url) }
+        NotificationTapMonitor.flush()
     }
 
     /**
@@ -733,6 +736,7 @@ class MainActivity : FragmentActivity(), WebViewProvider, NativeElementBridge.We
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleDeepLinkIntent(intent)
+        NotificationTapMonitor.handle(intent, recreated = false)
 
         // If deep link didn't fire but we have a notification URL, navigate via Inertia
         if (intent.data == null) {
