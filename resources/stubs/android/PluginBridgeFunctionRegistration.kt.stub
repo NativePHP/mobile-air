@@ -8,10 +8,27 @@ import com.nativephp.mobile.bridge.BridgeFunctionRegistry
 // AUTO-GENERATED FILE - DO NOT EDIT
 // Generated from installed NativePHP plugins
 
+@Volatile
+private var pluginInitFunctionsRan = false
+
+/**
+ * Run every plugin's init function, once per process. PluginInitProvider
+ * calls this when the process starts, before any activity, service or
+ * receiver, so a plugin is set up however the app was started. The later
+ * call from registerPluginBridgeFunctions() then does nothing.
+ */
+@Synchronized
+fun runPluginInitFunctions(context: Context) {
+    if (pluginInitFunctionsRan) return
+    pluginInitFunctionsRan = true
+
+{{ INIT_FUNCTIONS }}
+}
+
 fun registerPluginBridgeFunctions(activity: FragmentActivity, context: Context) {
     val registry = BridgeFunctionRegistry.shared
 
-{{ INIT_FUNCTIONS }}
+    runPluginInitFunctions(context)
 
 {{ REGISTRATIONS }}
 }

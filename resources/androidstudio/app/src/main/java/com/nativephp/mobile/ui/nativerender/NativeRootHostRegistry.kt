@@ -9,8 +9,8 @@ import androidx.compose.runtime.Composable
  *
  * This is the native half of the framework's chrome seam. Core stays
  * chrome-agnostic: it never names "drawer" (or any specific chrome). A plugin
- * registers a host from its init function (which runs in `onCreate` before the
- * first composition — see `registerPluginBridgeFunctions()`), and core folds
+ * registers a host from its init function (which runs when the process starts,
+ * before the first composition — see `runPluginInitFunctions()`), and core folds
  * every registered host around the root in [NativeUIContent].
  *
  * A host typically pairs with a **sentinel element** that a PHP chrome

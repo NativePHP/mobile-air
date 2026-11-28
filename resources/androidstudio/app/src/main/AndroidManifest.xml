@@ -23,6 +23,12 @@
         <property
                 android:name="android.app.16kb_pages.enabled"
                 android:value="true" />
+        <!-- Runs plugin init functions when the process starts, whatever
+             starts it: an activity, a push, a receiver or a worker. -->
+        <provider
+            android:name="com.nativephp.mobile.bridge.PluginInitProvider"
+            android:authorities="${applicationId}.nativephp-plugin-init"
+            android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

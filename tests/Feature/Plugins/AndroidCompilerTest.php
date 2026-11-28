@@ -163,6 +163,58 @@ dependencies {
     /**
      * @test
      *
+     * Init functions should run once, from their own entry point, so they
+     * can run at process start without MainActivity.
+     */
+    public function it_runs_init_functions_once_from_their_own_entry_point(): void
+    {
+        $plugin = $this->createTestPlugin([
+            'bridge_functions' => [
+                [
+                    'name' => 'Test.Execute',
+                    'android' => 'com.test.plugin.TestFunctions.Execute',
+                    'ios' => 'TestFunctions.Execute',
+                ],
+            ],
+            'android' => ['permissions' => [], 'dependencies' => [], 'init_function' => 'com.test.plugin.initTestPlugin'],
+        ]);
+
+        $this->mockRegistry
+            ->shouldReceive('all')
+            ->andReturn(collect([$plugin]));
+
+        $this->compiler->compile();
+
+        $content = $this->files->get($this->testBasePath.'/android/app/src/nativephp/kotlin/com/nativephp/mobile/bridge/plugins/PluginBridgeFunctionRegistration.kt');
+
+        $this->assertStringContainsString('import com.test.plugin.initTestPlugin', $content);
+        $this->assertSame(1, substr_count($content, 'initTestPlugin(context)'));
+
+        // The init call sits behind the once-guard in runPluginInitFunctions,
+        // which PluginInitProvider calls at process start ...
+        $initBody = $this->between($content, 'fun runPluginInitFunctions(context: Context) {', 'fun registerPluginBridgeFunctions(');
+        $this->assertStringContainsString('if (pluginInitFunctionsRan) return', $initBody);
+        $this->assertStringContainsString('initTestPlugin(context)', $initBody);
+
+        // ... and the activity path delegates to it instead of calling init itself.
+        $bridgeBody = $this->between($content, 'fun registerPluginBridgeFunctions(', 'fun registerContextOnlyBridgeFunctions(');
+        $this->assertStringContainsString('runPluginInitFunctions(context)', $bridgeBody);
+        $this->assertStringNotContainsString('initTestPlugin', $bridgeBody);
+    }
+
+    private function between(string $content, string $start, string $end): string
+    {
+        $from = strpos($content, $start);
+        $to = strpos($content, $end, $from === false ? 0 : $from);
+        $this->assertNotFalse($from, "Missing: {$start}");
+        $this->assertNotFalse($to, "Missing: {$end}");
+
+        return substr($content, $from, $to - $from);
+    }
+
+    /**
+     * @test
+     *
      * Should generate proper import statements for plugin classes.
      */
     public function it_generates_import_statements(): void
