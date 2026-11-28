@@ -3985,7 +3985,11 @@ abstract class NativeComponent
         }
 
         $this->flushDispatchedEvents();
-        $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::BACK, transition: $transition);
+        $this->nativeNavigationIntent = new NavigationIntent(
+            NavigationIntent::BACK,
+            transition: $transition,
+            fromSystemBack: $this->nativeAnsweringSystemBack,
+        );
 
         // The farewell frame keeps a PHP-initiated pop looking fresh while
         // the native side animates it. Answering a SYSTEM back is the

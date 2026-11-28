@@ -19,5 +19,8 @@ class NavigationIntent
         public readonly ?string $uri = null,
         public readonly array $data = [],
         public readonly Transition|string|null $transition = null,
+        // A BACK answering a system back: native navigation has already
+        // popped, so what the user does next is on the screen below.
+        public readonly bool $fromSystemBack = false,
     ) {}
 }
